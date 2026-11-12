@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/persona-hero.jpg" width="100%" alt="Persona — Your personal AI teammates. Anywhere. Desktop chat and Bot settings." />
+
 **English** · [简体中文](README.zh-CN.md)
 
 **[Quick Start](#quick-start)** · **[Features](#features)** · **[Engines](#choose-an-engine)** · **[Self-Hosting](#self-hosting-and-other-devices)** · **[Development](#development)**
@@ -17,7 +19,7 @@ Each teammate has its own identity, memory, and skills. Keep the conversation go
 To run from source, install **Git**, **Node.js 24+**, and **pnpm 10.20.0**. Then run:
 
 ```sh
-git clone https://github.com/Personed/persona.git
+git clone https://github.com/brandlll-lee/persona.git
 cd persona
 pnpm install --frozen-lockfile
 pnpm desktop
@@ -157,7 +159,7 @@ Output goes to `apps/desktop/release`. Local builds are unsigned.
 
 ## Contributing
 
-Report problems and suggest features through [Issues](https://github.com/Personed/persona/issues). Pull requests for code, documentation, and the user experience are welcome. If Persona is useful to you, a star helps others find it.
+Report problems and suggest features through [Issues](https://github.com/brandlll-lee/persona/issues). Pull requests for code, documentation, and the user experience are welcome. If Persona is useful to you, a star helps others find it.
 
 ## License
 

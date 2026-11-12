@@ -34,6 +34,7 @@ export const translations: Record<Language, Record<string, string>> = {
     打开: "Abrir",
     完成: "Concluir",
     返回: "Voltar",
+    开始: "Iniciar",
     返回对话: "Voltar à conversa",
     "返回对话 · Esc": "Voltar à conversa · Esc",
     搜索设置: "Buscar configurações",
@@ -53,6 +54,7 @@ export const translations: Record<Language, Record<string, string>> = {
     "正在连接…": "Conectando…",
     "正在重连…": "Reconectando…",
     "正在加载对话…": "Carregando conversa…",
+    "关闭入门提示失败，请重试。": "Não foi possível fechar. Tente novamente.",
     聊天记录: "Histórico de mensagens",
     你的消息: "Sua mensagem",
     有新消息: "Nova mensagem",
@@ -511,6 +513,41 @@ export const translations: Record<Language, Record<string, string>> = {
     "取个名字，再选择工作电脑和模型。":
       "Dê um nome ao Bot e selecione o computador e modelo de trabalho.",
     "Bot 在哪里工作？": "Onde o Bot irá trabalhar?",
+    首次设置: "Configuração inicial",
+    "正在加载设置…": "Carregando configurações…",
+    "选择工作环境。之后可以更改。":
+      "Escolha um ambiente de trabalho. Você poderá alterar depois.",
+    "连接 AI 账户以开始第一个任务。":
+      "Conecte sua conta de IA para iniciar a primeira tarefa.",
+    "请先保存模型配置。": "Salve a configuração do modelo primeiro.",
+    "请联系管理员完成初始设置。":
+      "Solicite ao administrador para concluir a configuração inicial.",
+    "未找到初始 Bot。请重新连接 Persona。":
+      "Bot inicial não encontrado. Reconecte ao Persona.",
+    "Bot 的工作环境": "Ambiente de trabalho deste Bot",
+    使用服务容器: "Usar contêiner do serviço",
+    使用服务电脑: "Usar computador do serviço",
+    使用这台电脑: "Usar este computador",
+    共享隔离电脑: "Computador isolado compartilhado",
+    专用隔离电脑: "Computador isolado exclusivo",
+    "访问 Persona 运行环境中的命令和文件。":
+      "Acessa os comandos e arquivos do ambiente onde o Persona está rodando.",
+    "与其他 Bot 共享文件。需要 Docker。":
+      "Compartilha arquivos com outros Bots. Requer Docker.",
+    "仅此 Bot 使用。需要 Docker。":
+      "Dedicado apenas para este Bot. Requer Docker.",
+    "确认后，你允许 Bot 在此环境中运行命令并管理文件。":
+      "Ao confirmar, você permite que o Bot execute comandos e gerencie arquivos neste ambiente.",
+    "确认后，将准备镜像。对话仍保存在 Persona。":
+      "Ao confirmar, a imagem será preparada. As conversas permanecem salvas no Persona.",
+    "此服务器暂不支持隔离电脑。":
+      "Este servidor ainda não possui suporte a computadores isolados.",
+    "正在准备环境并绑定 Bot…": "Preparando ambiente e vinculando o Bot…",
+    "电脑准备失败，请重试。":
+      "Falha na preparação do computador. Tente novamente.",
+    "准备中…": "Preparando…",
+    授权并继续: "Autorizar e Continuar",
+    准备隔离电脑: "Preparar computador isolado",
     "创建未确认。请重试，系统会核对原请求。":
       "Criação não confirmada. Tente novamente, a requisição será verificada.",
     名字: "Nome",
@@ -585,6 +622,17 @@ export const translations: Record<Language, Record<string, string>> = {
       "Escolha os recursos que o novo dispositivo pode acessar.",
     "使用 Bot": "Usar Bots",
     "管理 Persona": "Gerenciar Persona",
+    我的设备: "Meu dispositivo",
+    "连接这个 Persona": "Conectar a este Persona",
+    "正在连接到 Persona…": "Conectando ao Persona…",
+    "请输入提供的配对码以继续。": "Digite o código fornecido para continuar.",
+    设备名称: "Nome do dispositivo",
+    配对码: "Código",
+    "连接中…": "Conectando…",
+    "正在加载连接信息…": "Carregando informações da conexão…",
+    "暂时无法连接到 Persona。":
+      "Temporariamente incapaz de conectar ao Persona.",
+    "无法加载设备状态。": "Não foi possível carregar o status do dispositivo.",
     一次性配对码: "Código de pareamento único",
     "在另一台设备打开这个 Persona 的地址，再输入配对码。远程连接需要可访问的 HTTPS 地址。":
       "Abra este endereço do Persona em outro dispositivo e insira o código de pareamento. Conexões remotas requerem um endereço HTTPS acessível.",

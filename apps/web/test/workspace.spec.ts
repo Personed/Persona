@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mcpFixture } from "../../../packages/agent/test/fixtures/mcp.mjs";
 import { codexWork } from "../../../packages/agent/test/fixtures/native-work.ts";
-import { expect, test } from "./fixtures.ts";
+import { expect, setTestLanguage, test } from "./fixtures.ts";
 
 let worker: ChildProcess;
 let directory: string;
@@ -146,12 +146,12 @@ test("Apps manages a real MCP connection and Bot grants across reloads and theme
     await expect(
       connection.getByRole("checkbox", { name: "write", exact: true }),
     ).not.toBeChecked();
-    await connection.getByRole("button", { name: "Local Docs的操作" }).click();
+    await connection.getByRole("button", { name: "Local Docs · 操作" }).click();
     await page.getByRole("menuitem", { name: "停用", exact: true }).click();
     await expect(connection.getByText(/^已禁用/)).toBeVisible();
-    await connection.getByRole("button", { name: "Local Docs的操作" }).click();
+    await connection.getByRole("button", { name: "Local Docs · 操作" }).click();
     await page.getByRole("menuitem", { name: "启用", exact: true }).click();
-    await connection.getByRole("button", { name: "Local Docs的操作" }).click();
+    await connection.getByRole("button", { name: "Local Docs · 操作" }).click();
     await page.getByRole("menuitem", { name: "编辑", exact: true }).click();
     await dialog
       .getByRole("textbox", { name: "名称", exact: true })
@@ -164,7 +164,7 @@ test("Apps manages a real MCP connection and Bot grants across reloads and theme
       .locator(".apps-item")
       .filter({ hasText: "Team Docs" });
     await expect(renamed.getByText(/^可用/)).toBeVisible({ timeout: 20_000 });
-    await renamed.getByRole("button", { name: "Team Docs的操作" }).click();
+    await renamed.getByRole("button", { name: "Team Docs · 操作" }).click();
     await page.getByRole("menuitem", { name: "删除", exact: true }).click();
     await page
       .getByRole("dialog", { name: "删除连接", exact: true })
@@ -304,7 +304,7 @@ test("three columns keep the identity capsule and navigation clear at each width
   });
   await page.goto(url);
   const details = page.locator("#bot-details");
-  const capsule = page.getByRole("button", { name: "Bot详情", exact: true });
+  const capsule = page.locator("#details-trigger");
   await expect(details).toBeVisible();
   await expect(details.getByRole("button", { name: /^记忆/ })).toBeVisible();
   expect(workStreams).toBe(0);
@@ -322,11 +322,8 @@ test("three columns keep the identity capsule and navigation clear at each width
     Math.abs(pill.x + pill.width / 2 - frame.x - frame.width / 2),
   ).toBeLessThan(1);
   const avatar = await capsule.locator(".bot-avatar").boundingBox();
-  const mark = capsule.locator(".engine-mark");
-  const logo = await mark.boundingBox();
-  if (!logo || !avatar) throw new Error("Identity icons missing");
-  expect(logo.x).toBeLessThan(avatar.x + avatar.width);
-  await expect(mark).toHaveAttribute("data-provider", "pi");
+  if (!avatar) throw new Error("Bot avatar missing");
+  await expect(capsule).toHaveAccessibleName("Persona");
   await expect(capsule.locator(".character")).toHaveCount(1);
   const footer = page.locator(".sidebar-footer");
   const composer = await page.locator(".message-composer").boundingBox();
@@ -378,12 +375,10 @@ test("centered dialogs share stable geometry and Harness marks", async ({
   page,
 }) => {
   await page.goto(url);
-  for (const selector of [".chat-identity", ".context-ring"]) {
-    const mark = page.locator(`${selector} .engine-mark`);
-    await expect(mark).toHaveAttribute("data-provider", "pi");
-    await expect(mark.locator("path")).not.toHaveCount(0);
-    await expect(mark).toHaveCSS("transform", "none");
-  }
+  const mark = page.locator(".context-ring .engine-mark");
+  await expect(mark).toHaveAttribute("data-provider", "pi");
+  await expect(mark.locator("path")).not.toHaveCount(0);
+  await expect(mark).toHaveCSS("transform", "none");
   for (const width of [1360, 390]) {
     await page.setViewportSize({ width, height: 900 });
     if (width === 390) {
@@ -406,8 +401,7 @@ test("centered dialogs share stable geometry and Harness marks", async ({
       "blur(8px)",
     );
     await page.keyboard.press("Escape");
-    if (width === 390)
-      await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+    if (width === 390) await page.locator("#details-trigger").click();
     await page
       .locator("#bot-details")
       .getByRole("button", { name: /^记忆(?:\s|$)/ })
@@ -446,7 +440,7 @@ test("centered dialogs share stable geometry and Harness marks", async ({
 
 test("chat input stays active while a panel closes", async ({ page }) => {
   await page.goto(url);
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   const panel = page.getByRole("complementary", { name: /的详情$/ });
   await expect(panel).toBeInViewport();
   await panel.getByRole("button", { name: "关闭", exact: true }).click();
@@ -696,11 +690,13 @@ test("usage totals distinguish unknown costs and include recorded zero-cost days
   const total = usage.locator(".usage-breakdown-total");
   await expect(usage.locator(".usage-hero-value")).toHaveText("未提供");
   await expect(total).toContainText("未提供");
+  await expect(usage.locator(".usage-facts")).toContainText("峰值日—未提供");
   records = [{ ...record, costUsd: 100, costScope: "session" }];
   await usage.getByRole("button", { name: "刷新用量", exact: true }).click();
   await expect(usage.locator(".usage-footer")).toContainText("1 条会话累计");
   await expect(usage.locator(".usage-hero-value")).toHaveText("未提供");
   await expect(total).toContainText("未提供");
+  await expect(usage.locator(".usage-facts")).toContainText("峰值日—未提供");
   records = [
     { ...record, costUsd: 1 },
     {
@@ -846,7 +842,7 @@ test("Bot model selection saves choices and fits both themes", async ({
   page,
 }, info) => {
   await page.goto(url);
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   const trigger = page.getByRole("combobox", {
     name: "模型",
     exact: true,
@@ -893,7 +889,7 @@ test("Bot model selection saves choices and fits both themes", async ({
     )
     .toBe("faux/faux-2");
   await page.reload();
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await expect(trigger).toContainText("测试模型二");
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme });
@@ -942,7 +938,7 @@ test("native Harness controls persist and client accounts retain model access", 
   await page.goto(url);
   await page.getByLabel("配对码", { exact: true }).fill(ready.pairing);
   await page.getByRole("button", { name: "连接", exact: true }).click();
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   const trigger = page.getByRole("combobox", { name: "模型", exact: true });
   const popup = page.locator(".model-selector-popup");
   const captions = await page
@@ -1044,7 +1040,7 @@ test("native Harness controls persist and client accounts retain model access", 
     )
     .toBe("high");
   await page.reload();
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await trigger.click();
   await expect(
     effort.getByRole("radio", { name: "高", exact: true }),
@@ -1075,11 +1071,12 @@ test("native Harness controls persist and client accounts retain model access", 
   const pairing = await response.json();
   const client = await browser.newContext();
   try {
+    await setTestLanguage(client);
     const paired = await client.newPage();
     await paired.goto(url);
     await paired.getByLabel("配对码", { exact: true }).fill(pairing.code);
     await paired.getByRole("button", { name: "连接", exact: true }).click();
-    await paired.getByRole("button", { name: "Bot详情", exact: true }).click();
+    await paired.locator("#details-trigger").click();
     await paired.getByRole("combobox", { name: "模型", exact: true }).click();
     await expect(
       paired.getByRole("tab", { name: "Pi", exact: true }),
@@ -1113,7 +1110,7 @@ test("computer viewing uses separate tabs and releases control when closed", asy
 }, info) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(url);
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await page.getByRole("tab", { name: "Computer", exact: true }).click();
   const details = page.locator("#bot-details");
   const identity = details.locator(".detail-identity");
@@ -1175,9 +1172,7 @@ test("computer viewing uses separate tabs and releases control when closed", asy
     view.getByRole("button", { name: "接管", exact: true }),
   ).toBeVisible();
   await details.getByRole("button", { name: "关闭", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Bot详情", exact: true }),
-  ).toBeFocused();
+  await expect(page.locator("#details-trigger")).toBeFocused();
 });
 
 test("workspace empty states stay centered at every panel width", async ({
@@ -1194,7 +1189,7 @@ test("workspace empty states stay centered at every panel width", async ({
       });
     });
     await page.goto(url);
-    await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+    await page.locator("#details-trigger").click();
     await page.getByRole("tab", { name: "Computer", exact: true }).click();
     if (state === "loading")
       await expect(
@@ -1206,7 +1201,7 @@ test("workspace empty states stay centered at every panel width", async ({
       ).toBeVisible();
     else if (state === "unavailable")
       await expect(
-        page.getByRole("heading", { name: "桌面尚未就绪" }),
+        page.getByRole("heading", { name: "桌面 尚未就绪" }),
       ).toBeVisible();
     else
       await expect(
@@ -1241,7 +1236,7 @@ test("computer connection failures keep a direct retry", async ({ page }) => {
     route.abort("failed"),
   );
   await page.goto(url);
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await page.getByRole("tab", { name: "Computer", exact: true }).click();
   const view = page.getByRole("region", {
     name: "Persona的电脑",
@@ -1285,7 +1280,7 @@ it("chat reflows within the frame budget and retains its position", async ({
   await expect(
     page.getByRole("button", { name: "发送", exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await expect
     .poll(() =>
       page
@@ -1439,7 +1434,7 @@ test("Bot panels keep their hierarchy in both themes and panel widths", async ({
 }, testInfo) => {
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto(url);
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   const details = page.getByRole("complementary", {
     name: "Persona的详情",
     exact: true,
@@ -1834,12 +1829,12 @@ test("panels resize live, persist only on release, and retain drafts across layo
       ),
     )
     .toBe(before + 40);
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   const details = page.getByRole("complementary", { name: /的详情$/ });
   await details.getByRole("button", { name: "编辑", exact: true }).click();
   const name = page.getByRole("textbox", { name: "名字", exact: true });
   await name.fill("尚未保存的名字");
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await page.getByRole("tab", { name: "Computer", exact: true }).click();
   await page.getByRole("button", { name: "电脑设置", exact: true }).click();
   await details.getByRole("button", { name: "返回", exact: true }).click();
@@ -1871,7 +1866,7 @@ test("panels resize live, persist only on release, and retain drafts across layo
   await expect(inspector).toHaveAttribute("aria-modal", "true");
   await page.keyboard.press("Escape");
   await expect(input).toHaveValue("保留消息草稿");
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await details.getByRole("button", { name: "编辑", exact: true }).click();
   await expect(name).toHaveValue("尚未保存的名字");
   await page.keyboard.press("Escape");
@@ -2022,11 +2017,11 @@ test("empty chats retain their creation time and compact controls across layouts
   await expect(input).toHaveCSS("outline-style", "none");
   await expect(page.getByRole("searchbox")).toHaveAttribute(
     "placeholder",
-    "搜索",
+    "搜索联系人",
   );
   await page.reload();
   await expect(time).toHaveAttribute("datetime", createdAt ?? "");
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await page.getByRole("tab", { name: "Computer", exact: true }).click();
   await page.getByRole("button", { name: "电脑设置", exact: true }).click();
   const details = page.getByRole("complementary", { name: "Persona的详情" });
@@ -2041,7 +2036,7 @@ test("empty chats retain their creation time and compact controls across layouts
     exact: true,
   });
   await expect(
-    environment.getByRole("radiogroup", { name: "此 Bot 的工作环境" }),
+    environment.getByRole("radiogroup", { name: "Bot 的工作环境" }),
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(environment).toBeHidden();
@@ -2083,10 +2078,10 @@ test("contact rows keep their density and searchable previews across selections"
     .click();
   await create.getByRole("button", { name: "开始", exact: true }).click();
   await expect(create).toBeHidden();
-  await expect(
-    page.getByRole("button", { name: "Bot详情", exact: true }),
-  ).toContainText("研究助手");
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await expect(page.locator("#details-trigger")).toHaveAccessibleName(
+    "研究助手",
+  );
+  await page.locator("#details-trigger").click();
   const details = page.getByRole("complementary", {
     name: "研究助手的详情",
     exact: true,
@@ -2113,9 +2108,7 @@ test("contact rows keep their density and searchable previews across selections"
     .click();
   await create.getByRole("button", { name: "开始", exact: true }).click();
   await expect(create).toBeHidden();
-  await expect(
-    page.getByRole("button", { name: "Bot详情", exact: true }),
-  ).toContainText(longName);
+  await expect(page.locator("#details-trigger")).toHaveAccessibleName(longName);
   const contacts = page.getByRole("navigation", {
     name: "联系人",
     exact: true,
@@ -2147,18 +2140,18 @@ test("contact rows keep their density and searchable previews across selections"
   await search.clear();
   const root = contacts.getByRole("link", { name: "Persona", exact: true });
   await root.click();
-  await expect(
-    page.getByRole("button", { name: "Bot详情", exact: true }),
-  ).toContainText("Persona");
+  await expect(page.locator("#details-trigger")).toHaveAccessibleName(
+    "Persona",
+  );
   await page
     .getByRole("textbox", { name: "消息", exact: true })
     .fill("核对列表预览");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(root).toContainText("已收到：核对列表预览");
   await contacts.getByRole("link", { name: "研究助手", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Bot详情", exact: true }),
-  ).toContainText("研究助手");
+  await expect(page.locator("#details-trigger")).toHaveAccessibleName(
+    "研究助手",
+  );
   await search.fill("已收到：核对列表预览");
   await expect(root).toBeVisible();
   await search.clear();
@@ -2175,7 +2168,7 @@ test("control geometry and interaction states stay consistent", async ({
   page,
 }) => {
   await page.goto(url);
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   const details = page.getByRole("complementary", { name: "Persona的详情" });
   const edit = details.getByRole("button", { name: "编辑", exact: true });
   const inset = await edit.evaluate((item) => {
@@ -2219,7 +2212,7 @@ test("control geometry and interaction states stay consistent", async ({
     exact: true,
   });
   expect((await model.boundingBox())?.height).toBeGreaterThanOrEqual(32);
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await page.getByRole("tab", { name: "Computer", exact: true }).click();
   await page.getByRole("button", { name: "电脑设置", exact: true }).click();
   const select = details.getByRole("combobox", {
@@ -2277,7 +2270,7 @@ test("resizing tolerates blocked preferences and pointer cancellation", async ({
     };
   });
   await page.goto(url);
-  const handle = page.getByRole("separator", { name: "调整联系人宽度" });
+  const handle = page.locator('.panel-resizer[data-side="sidebar"]');
   await handle.press("Home");
   const min = await handle.getAttribute("aria-valuemin");
   await expect(handle).toHaveAttribute("aria-valuenow", min ?? "");
@@ -2371,7 +2364,7 @@ test("panel transitions preserve the transcript and draft through rapid toggles 
     };
     requestAnimationFrame(sample);
   });
-  const trigger = page.getByRole("button", { name: "Bot详情", exact: true });
+  const trigger = page.locator("#details-trigger");
   const close = page
     .locator("#bot-details")
     .getByRole("button", { name: "关闭", exact: true });
@@ -3031,9 +3024,7 @@ test("returning to a Bot shows retained messages and draft while its stream is d
     .click();
   await create.getByRole("button", { name: "开始", exact: true }).click();
   await expect(create).toBeHidden();
-  await expect(
-    page.getByRole("button", { name: "Bot详情", exact: true }),
-  ).toContainText("乙");
+  await expect(page.locator("#details-trigger")).toHaveAccessibleName("乙");
   const gate = Promise.withResolvers<void>();
   let waiting = false;
   await page.route("**/rpc/changes", async (route) => {

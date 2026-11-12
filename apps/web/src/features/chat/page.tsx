@@ -264,7 +264,6 @@ function BotChat({
               bot={bot}
               busy={Boolean(chat.view?.busy)}
               detailsOpen={detailsOpen}
-              provider={chat.view?.engine?.provider}
               onDetails={() => showPanel("root")}
             />
             <span className="sr-only" role="status">

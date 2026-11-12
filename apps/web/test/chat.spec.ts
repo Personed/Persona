@@ -11,7 +11,13 @@ import { characterIdentity } from "@persona/ui/characters";
 import { layout } from "@persona/ui/tokens";
 import { png } from "../../../packages/agent/test/fixtures/png.ts";
 import type { AppRouter } from "../../api/src/router.ts";
-import { expect, type FileChooser, type Page, test } from "./fixtures.ts";
+import {
+  expect,
+  type FileChooser,
+  type Page,
+  setTestLanguage,
+  test,
+} from "./fixtures.ts";
 
 let worker: ChildProcess;
 let url: string;
@@ -76,7 +82,10 @@ async function attachFiles(
   await (await chooser).setFiles(files);
 }
 
-async function openSettings(page: import("@playwright/test").Page) {
+async function openSettings(
+  page: import("@playwright/test").Page,
+  isPt = false,
+) {
   if ((page.viewportSize()?.width ?? 0) < layout.sidebar.min + layout.chatMin)
     await expect(page.locator(".workspace")).toHaveAttribute(
       "data-mobile",
@@ -84,39 +93,63 @@ async function openSettings(page: import("@playwright/test").Page) {
     );
   else
     await expect(page.locator(".workspace")).not.toHaveAttribute("data-mobile");
-  const settings = page.getByRole("main", { name: "设置", exact: true });
+  const settings = page.getByRole("main", {
+    name: isPt ? "Configurações" : "设置",
+    exact: true,
+  });
   if (!(await settings.isVisible())) {
     const overlay = page.locator(
       '.workspace-panel[data-side="inspector"][data-modal]',
     );
     if (await overlay.isVisible())
-      await overlay.getByRole("button", { name: "关闭", exact: true }).click();
-    const contacts = page.getByRole("button", { name: "联系人", exact: true });
+      await overlay
+        .getByRole("button", { name: isPt ? "Fechar" : "关闭", exact: true })
+        .click();
+    const contacts = page.getByRole("button", {
+      name: isPt ? "Contatos" : "联系人",
+      exact: true,
+    });
     if (
       (page.viewportSize()?.width ?? 0) <
       layout.sidebar.min + layout.chatMin
     ) {
       await contacts.click();
     } else await expect(contacts).toHaveCount(0);
-    await page.getByRole("button", { name: "设置", exact: true }).click();
+    await page
+      .getByRole("button", {
+        name: isPt ? "Configurações" : "设置",
+        exact: true,
+      })
+      .click();
     await expect(page.locator(".settings-main")).toBeFocused();
   }
-  await settings.getByRole("tab", { name: "通用", exact: true }).click();
+  await settings
+    .getByRole("tab", { name: isPt ? "Geral" : "通用", exact: true })
+    .click();
   return settings;
 }
 
 async function chooseAppearance(
   page: import("@playwright/test").Page,
   label: string,
+  isPt = false,
 ) {
-  const settings = page.getByRole("main", { name: "设置", exact: true });
+  const settings = page.getByRole("main", {
+    name: isPt ? "Configurações" : "设置",
+    exact: true,
+  });
   const opened = !(await settings.isVisible());
-  await openSettings(page);
-  await page.getByRole("combobox", { name: "外观", exact: true }).click();
+  await openSettings(page, isPt);
+  await page
+    .getByRole("combobox", { name: isPt ? "Aparência" : "外观", exact: true })
+    .click();
   await page.getByRole("option", { name: label, exact: true }).click();
   if (opened)
     await settings
-      .getByRole("button", { name: "返回对话", exact: true })
+      .getByRole("button", {
+        name: isPt ? "Voltar à conversa" : "返回对话",
+        exact: true,
+      })
       .click();
 }
 
@@ -149,7 +182,7 @@ async function chooseDetail(
 async function openDetails(page: import("@playwright/test").Page) {
   const details = page.getByRole("complementary", { name: /的详情$/ });
   if (!(await details.isVisible()))
-    await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+    await page.locator("#details-trigger").click();
   return details;
 }
 
@@ -349,6 +382,7 @@ test("chat suggestions fill the draft and dismissal stays complete on other devi
   }
   const remote = await browser.newContext();
   try {
+    await setTestLanguage(remote);
     const second = await remote.newPage();
     await second.goto(url);
     await expect(
@@ -381,7 +415,7 @@ test("Bot details manage identity, memory, shared skills, routines and actual pr
   page,
 }) => {
   await page.goto(url);
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   const dialog = page.getByRole("complementary", { name: /的详情$/ });
   const sections = dialog;
   await chooseDetail(sections, "身份");
@@ -494,7 +528,7 @@ test("Bot details manage identity, memory, shared skills, routines and actual pr
   await stop();
   await start(port);
   await page.reload();
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await chooseDetail(sections, "记忆");
   await expect(memoryDialog.locator(".item-list")).toContainText(
     "报告使用公制单位。",
@@ -532,14 +566,14 @@ test("Bot details retain invalid skill edits and fit a narrow viewport", async (
 }) => {
   await page.setViewportSize({ width: 320, height: 740 });
   await page.goto(url);
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   const dialog = page.getByRole("complementary", { name: /的详情$/ });
   const sections = dialog;
   await chooseDetail(sections, "技能");
   await dialog.getByRole("button", { name: "新建技能", exact: true }).click();
   await dialog.getByLabel("新建 SKILL.md").fill("invalid skill");
   await dialog.getByRole("button", { name: "保存技能", exact: true }).click();
-  await expect(dialog.getByRole("alert")).toContainText("YAML");
+  await expect(dialog.getByRole("alert")).toContainText("提交的内容不完整");
   await expect(dialog.getByLabel("新建 SKILL.md")).toHaveValue("invalid skill");
   expect(
     await dialog.evaluate(
@@ -548,11 +582,9 @@ test("Bot details retain invalid skill edits and fit a narrow viewport", async (
   ).toBe(true);
   await page.screenshot({ path: "test-results/bot-work-mobile.png" });
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Bot详情", exact: true }),
-  ).toBeFocused();
+  await expect(page.locator("#details-trigger")).toBeFocused();
   await chooseAppearance(page, "深色");
-  await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+  await page.locator("#details-trigger").click();
   await chooseDetail(sections, "身份");
   await expect(dialog.getByLabel("名字", { exact: true })).toBeEnabled();
   expect(
@@ -567,7 +599,7 @@ test("Bot details share the desktop with chat and cover narrow screens", async (
   page,
 }) => {
   await page.goto(url);
-  const trigger = page.getByRole("button", { name: "Bot详情", exact: true });
+  const trigger = page.locator("#details-trigger");
   const panel = page.getByRole("complementary", { name: /的详情$/ });
   await trigger.click();
   await chooseDetail(panel, "身份");
@@ -644,7 +676,7 @@ test("workspace separates Bot controls and global settings", async ({
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(url);
-  const trigger = page.getByRole("button", { name: "Bot详情", exact: true });
+  const trigger = page.locator("#details-trigger");
   for (const width of [360, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     const header = await trigger.boundingBox();
@@ -1594,6 +1626,7 @@ test("two windows can submit while a reply is active", async ({
   await page.goto(url);
   await expect(page.getByLabel("消息", { exact: true })).toBeEnabled();
   const other = await browser.newPage();
+  await setTestLanguage(other.context());
   await other.goto(url);
   await expect(other.getByLabel("消息", { exact: true })).toBeEnabled();
   await control("gate");
@@ -1737,11 +1770,11 @@ test("appearance remains usable when storage is blocked", async ({ page }) => {
     };
   });
   await page.goto(url);
-  await openSettings(page);
-  await chooseAppearance(page, "浅色");
+  await openSettings(page, true);
+  await chooseAppearance(page, "Claro", true);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(
-    page.getByRole("alert").filter({ hasText: "外观已应用" }),
+    page.getByRole("alert").filter({ hasText: "Aparência aplicada" }),
   ).toBeVisible();
 });
 
@@ -1831,9 +1864,7 @@ test("composer grows, shrinks, and keeps one focus surface in both themes", asyn
   expect(action?.width).toBeGreaterThanOrEqual(32);
   expect(action?.height).toBeGreaterThanOrEqual(32);
   expect((await form.boundingBox())?.height).toBeLessThanOrEqual(60);
-  await expect(
-    page.getByRole("button", { name: "Bot详情", exact: true }),
-  ).toBeVisible();
+  await expect(page.locator("#details-trigger")).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -3787,9 +3818,7 @@ test("computer details share live directory status and recover a failed refresh"
     .focus();
   await page.keyboard.press("Escape");
   await expect(details).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "Bot详情", exact: true }),
-  ).toBeFocused();
+  await expect(page.locator("#details-trigger")).toBeFocused();
 });
 
 test("composer menu adds task materials, keeps drafts, and fits both themes", async ({

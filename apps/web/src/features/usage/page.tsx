@@ -181,15 +181,15 @@ export function UsageSurface() {
 
   const peak = useMemo(() => {
     let topDay = "";
-    let topCost = 0;
+    let topCost: number | null = null;
     for (const day of days) {
-      const cost = usageValue(day.rows, "cost") ?? 0;
-      if (cost >= topCost) {
+      const cost = usageValue(day.rows, "cost");
+      if (cost !== null && (topCost === null || cost > topCost)) {
         topCost = cost;
         topDay = day.day;
       }
     }
-    return { day: topDay, cost: topCost || null };
+    return { day: topDay, cost: topCost };
   }, [days]);
 
   const activeDays = useMemo(
@@ -416,7 +416,9 @@ export function UsageSurface() {
             >
               <header className="usage-section-head">
                 <h2>
-                  {metricLabel(metric)} {isPt ? "· Tendência" : "趋势"}
+                  {isPt
+                    ? `${metricLabel(metric)} · Tendência`
+                    : `${metricLabel(metric)}趋势`}
                 </h2>
                 <SegmentedControl
                   label={isPt ? "Métrica estatística" : "统计指标"}

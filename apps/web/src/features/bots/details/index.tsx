@@ -8,6 +8,7 @@ import type { useChat } from "../../chat/use-chat.ts";
 import { WorkPanel } from "../../chat/work.tsx";
 import type { useComputer } from "../../computer/use-computer.ts";
 import { ComputerWorkspace } from "../../computer/workspace.tsx";
+import { useI18n } from "../../i18n/context.tsx";
 import { ComputerSettings } from "./computer.tsx";
 import { BotIdentity, IdentityEditor } from "./identity.tsx";
 import { MemoryDialog } from "./memory.tsx";
@@ -76,6 +77,7 @@ export function BotDetails({
   takeoverId?: string;
   workRun?: string;
 }) {
+  const { language } = useI18n();
   const [memoryOpen, setMemoryOpen] = useState(false);
   const workActive =
     active &&
@@ -152,7 +154,11 @@ export function BotDetails({
       id="bot-details"
       className="bot-details"
       data-computer={(view === "root" && tab !== "bot") || undefined}
-      aria-label={`${translate("Detalhes de")} ${bot.name}`}
+      aria-label={
+        language === "zh-CN"
+          ? `${bot.name}的详情`
+          : `${translate("Detalhes de")} ${bot.name}`
+      }
     >
       <PanelHeader
         title={title}

@@ -51,7 +51,7 @@ export function ChatWelcome({
   return (
     <section
       className="chat-welcome"
-      aria-label="Dicas iniciais"
+      aria-label={language === "zh-CN" ? "入门提示" : "Dicas iniciais"}
       aria-busy={pending}
     >
       <header>
@@ -59,7 +59,7 @@ export function ChatWelcome({
         <Button
           variant="ghost"
           size="icon-small"
-          aria-label="Fechar dicas"
+          aria-label={language === "zh-CN" ? "关闭入门提示" : "Fechar dicas"}
           disabled={disabled}
           pending={pending}
           onClick={async () => {
@@ -69,7 +69,7 @@ export function ChatWelcome({
               await client.bots.completeWelcome({ botId });
               onDismissed();
             } catch {
-              setError("Não foi possível fechar. Tente novamente.");
+              setError(t("关闭入门提示失败，请重试。"));
             } finally {
               setPending(false);
             }
