@@ -4,7 +4,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, type Page, type TestInfo, test } from "./fixtures.ts";
+import {
+  expect,
+  type Page,
+  setTestLanguage,
+  type TestInfo,
+  test,
+} from "./fixtures.ts";
 
 async function capture(page: Page, info: TestInfo, name: string) {
   for (const colorScheme of ["light", "dark"] as const) {
@@ -97,7 +103,7 @@ test("first use prepares the default Bot with a computer and model before shared
     await next.scrollIntoViewIfNeeded();
     await expect(next).toBeInViewport();
     await page.setViewportSize({ width: 1360, height: 900 });
-    const service = setup.getByRole("radio", { name: /^使用服务所在电脑/ });
+    const service = setup.getByRole("radio", { name: /^使用服务电脑/ });
     const title = await service.locator("strong").boundingBox();
     const description = await service
       .locator(".choice-description")
@@ -112,7 +118,7 @@ test("first use prepares the default Bot with a computer and model before shared
       setup.getByRole("heading", { name: "Bot 在哪里工作？" }),
     ).toBeVisible();
     await expect(
-      setup.getByRole("radio", { name: /^共用一台隔离电脑/ }),
+      setup.getByRole("radio", { name: /^共享隔离电脑/ }),
     ).toBeDisabled();
     await expect(
       setup.getByRole("button", { name: "返回", exact: true }),
@@ -160,6 +166,7 @@ test("first use prepares the default Bot with a computer and model before shared
     );
     const remote = await browser.newContext();
     try {
+      await setTestLanguage(remote);
       const second = await remote.newPage();
       await second.goto(`http://127.0.0.1:${ready.port}`);
       await second.getByLabel("配对码", { exact: true }).fill(ready.clientCode);

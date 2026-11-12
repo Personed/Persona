@@ -1,6 +1,7 @@
 import { Button } from "@persona/ui/controls";
 import { useCallback, useState } from "react";
 import type { client } from "../../../client.ts";
+import { useI18n } from "../../i18n/context.tsx";
 import { ModelSetting } from "../../models/model-setting.tsx";
 
 export function ModelSetup({
@@ -14,6 +15,7 @@ export function ModelSetup({
   onBack?: () => void;
   onReady?: () => void;
 }) {
+  const { t } = useI18n();
   const [profile, setProfile] =
     useState<Awaited<ReturnType<typeof client.engines.get>>>();
   const [busy, setBusy] = useState(false);
@@ -37,7 +39,7 @@ export function ModelSetup({
         <div className="dialog-actions">
           {onBack && (
             <Button variant="ghost" disabled={busy} onClick={onBack}>
-              Voltar
+              {t("返回")}
             </Button>
           )}
           {onReady && (
@@ -45,7 +47,7 @@ export function ModelSetup({
               disabled={busy || !(profile?.revision || profile?.prepared)}
               onClick={onReady}
             >
-              Iniciar
+              {t("开始")}
             </Button>
           )}
         </div>

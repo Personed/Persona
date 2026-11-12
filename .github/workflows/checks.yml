@@ -34,6 +34,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: "! git grep -i domos -- ':!docs/decisions/0008-rebrand-persona.md' ':!docs/reports' ':!.github/workflows/checks.yml'"
   native:
     needs: check
     env:

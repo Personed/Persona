@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/persona-hero.jpg" width="100%" alt="Persona：你的个人 AI 伙伴，随处就位。桌面聊天与 Bot 设置界面。" />
+
 [English](README.md) · **简体中文**
 
 **[快速开始](#快速开始)** · **[核心功能](#核心功能)** · **[选择引擎](#选择引擎)** · **[自托管](#自托管与多端互联)** · **[本地开发](#本地开发)**
@@ -17,7 +19,7 @@
 从源码运行需要安装 **Git**、**Node.js 24+** 和 **pnpm 10.20.0**，然后执行：
 
 ```sh
-git clone https://github.com/Personed/persona.git
+git clone https://github.com/brandlll-lee/persona.git
 cd persona
 pnpm install --frozen-lockfile
 pnpm desktop
@@ -157,7 +159,7 @@ pnpm --filter @persona/desktop dist
 
 ## 贡献与社区
 
-通过 [Issues](https://github.com/Personed/persona/issues) 反馈问题、提出建议。欢迎提交代码、文档和体验改进。如果 Persona 对你有帮助，也欢迎点一颗 Star，让更多人发现它。
+通过 [Issues](https://github.com/brandlll-lee/persona/issues) 反馈问题、提出建议。欢迎提交代码、文档和体验改进。如果 Persona 对你有帮助，也欢迎点一颗 Star，让更多人发现它。
 
 ## 项目许可
 

@@ -215,7 +215,7 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
     await expect(page.getByRole("button", { name: "Bot详情" })).toBeVisible();
     await expect(page.locator(".app-titlebar, .app-rail")).toHaveCount(0);
     await expect(page.locator("#bot-details")).toBeVisible();
-    await expect(page.locator(".chat-identity .engine-mark")).toBeVisible();
+    await expect(page.locator(".chat-identity .bot-avatar")).toBeVisible();
     await captureWindow(
       desktop,
       page,
@@ -228,7 +228,7 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
     await expect(
       selector.getByRole("button", { name: "配置连接", exact: true }),
     ).toBeVisible();
-    await expect(page.locator(".chat-identity .engine-mark")).toHaveAttribute(
+    await expect(page.locator(".context-ring .engine-mark")).toHaveAttribute(
       "data-provider",
       "pi",
     );
@@ -329,10 +329,13 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
     for (const theme of ["dark", "light"] as const) {
       await page.emulateMedia({ colorScheme: theme });
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-      await expect(page.locator(".chat-identity")).toHaveCSS(
-        "background-color",
-        theme === "dark" ? "rgb(20, 20, 22)" : "rgb(250, 250, 250)",
-      );
+      expect(
+        await page.evaluate(() =>
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--color-surface")
+            .trim(),
+        ),
+      ).toBe(theme === "dark" ? "#141416" : "#fafafa");
       await captureWindow(
         desktop,
         page,

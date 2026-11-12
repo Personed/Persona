@@ -25,10 +25,9 @@ test("plush identities load, animate and survive profile changes", async ({
   try {
     const [ready] = (await once(worker, "message")) as [{ port: number }];
     await page.goto(`http://127.0.0.1:${ready.port}`);
-    await expect(
-      page.getByRole("button", { name: "Bot详情", exact: true }),
-    ).toBeVisible();
+    await expect(page.locator("#details-trigger")).toBeVisible();
     const avatar = page.locator(".chat-header .character");
+    await expect(avatar).toHaveCSS("width", "56px");
     await page.getByLabel("消息", { exact: true }).fill("保存这条消息的主题");
     await page.getByRole("button", { name: "发送", exact: true }).click();
     const bubble = page.getByLabel("你的消息").locator(".message-bubble");
@@ -86,8 +85,12 @@ test("plush identities load, animate and survive profile changes", async ({
     ).toBe(0);
     const header = page.locator(".chat-header .bot-avatar");
     const initial = await header.getAttribute("data-seed");
-    await page.getByRole("button", { name: "Bot详情", exact: true }).click();
+    await page.locator("#details-trigger").click();
     const details = page.getByRole("complementary", { name: "Persona的详情" });
+    await expect(details.locator(".bot-hero-avatar .character")).toHaveCSS(
+      "width",
+      "56px",
+    );
     await details.getByRole("button", { name: "编辑", exact: true }).click();
     await details
       .getByRole("button", { name: "选择头像", exact: true })

@@ -4,6 +4,7 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { client } from "../../client.ts";
 import { ModelSetup } from "../bots/details/model.tsx";
 import { ComputerLocation } from "../computer/location.tsx";
+import { useI18n } from "../i18n/context.tsx";
 import type { SettingsAccess } from "../settings/sections.tsx";
 import { Titlebar } from "../shell/titlebar.tsx";
 
@@ -21,6 +22,7 @@ export function Onboarding({
   admin,
   standalone,
 }: SettingsAccess & { children: ReactNode }) {
+  const { t } = useI18n();
   const [setup, setSetup] = useState<Setup>();
   const [error, setError] = useState("");
   const [step, setStep] = useState<0 | 1>();
@@ -29,7 +31,7 @@ export function Onboarding({
     setError("");
     const bots = await client.bots.list();
     const bot = bots[0];
-    if (!bot) throw new Error("未找到初始 Bot。请重新连接 Persona。");
+    if (!bot) throw new Error(t("未找到初始 Bot。请重新连接 Persona。"));
     const [binding, location, engine] = await Promise.all([
       client.computer.get({ botId: bot.id }),
       client.computer.setup(),
@@ -45,7 +47,7 @@ export function Onboarding({
     };
     setSetup(next);
     return next;
-  }, []);
+  }, [t]);
   const initialize = useCallback(async () => {
     const next = await refresh();
     setFinished(next.configured && next.computer);
@@ -67,20 +69,20 @@ export function Onboarding({
     <div className="setup-window">
       <Titlebar />
       <SetupPage
-        label="Configuração inicial"
+        label={t("首次设置")}
         title={
           step === undefined
-            ? "Carregando configurações…"
+            ? t("正在加载设置…")
             : computer
-              ? "Onde o Bot irá trabalhar?"
-              : "Escolha o modelo de IA"
+              ? t("Bot 在哪里工作？")
+              : t("选择对话模型")
         }
         description={
           step === undefined
             ? undefined
             : computer
-              ? "Escolha um ambiente de trabalho. Você poderá alterar depois."
-              : "Conecte sua conta de IA para iniciar a primeira tarefa."
+              ? t("选择工作环境。之后可以更改。")
+              : t("连接 AI 账户以开始第一个任务。")
         }
         progress={
           step !== undefined ? { current: step + 1, total: 2 } : undefined
@@ -107,8 +109,7 @@ export function Onboarding({
                     void refresh()
                       .then((next) => {
                         if (next.configured && next.computer) setFinished(true);
-                        else
-                          setError("Salve a configuração do modelo primeiro.");
+                        else setError(t("请先保存模型配置。"));
                       })
                       .catch((cause) => setError(cause.message))
                   }
@@ -116,11 +117,9 @@ export function Onboarding({
               )}
             </>
           ) : (
-            <p role="status">
-              Solicite ao administrador para concluir a configuração inicial.
-            </p>
+            <p role="status">{t("请联系管理员完成初始设置。")}</p>
           ))}
-        {!setup && !error && <p role="status">Carregando configurações…</p>}
+        {!setup && !error && <p role="status">{t("正在加载设置…")}</p>}
         {error && (
           <p role="alert" className="alert">
             {error}
@@ -133,7 +132,7 @@ export function Onboarding({
               void initialize().catch((cause) => setError(cause.message))
             }
           >
-            Tentar novamente
+            {t("重试")}
           </Button>
         )}
       </SetupPage>

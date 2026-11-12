@@ -2,6 +2,7 @@ import { Button } from "@persona/ui/controls";
 import { TextField } from "@persona/ui/field";
 import { SetupPage } from "@persona/ui/setup";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { useI18n } from "../i18n/context.tsx";
 import { Onboarding } from "../onboarding/root.tsx";
 import { SettingsRoot } from "../settings/root.tsx";
 import { Titlebar } from "../shell/titlebar.tsx";
@@ -11,13 +12,14 @@ import "./style.css";
 type Session = { device: { id: string; scope: string } };
 
 export function HostingRoot({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
   const [state, setState] = useState<
     "loading" | "pair" | "ready" | "standalone"
   >("loading");
   const [session, setSession] = useState<Session>();
   const [error, setError] = useState("");
   const [code, setCode] = useState("");
-  const [label, setLabel] = useState("Meu dispositivo");
+  const [label, setLabel] = useState(() => t("我的设备"));
   const [busy, setBusy] = useState(false);
   const refresh = useCallback(async () => {
     const info = await fetch("/hosting/info");
@@ -25,19 +27,17 @@ export function HostingRoot({ children }: { children: ReactNode }) {
       setState("standalone");
       return;
     }
-    if (!info.ok)
-      throw new Error("Temporariamente incapaz de conectar ao Persona.");
+    if (!info.ok) throw new Error(t("暂时无法连接到 Persona。"));
     const response = await fetch("/hosting/session");
     if (response.status === 401) {
       setState("pair");
       return;
     }
-    if (!response.ok)
-      throw new Error("Não foi possível carregar o status do dispositivo.");
+    if (!response.ok) throw new Error(t("无法加载设备状态。"));
     const value: Session = await response.json();
     setSession(value);
     setState("ready");
-  }, []);
+  }, [t]);
   useEffect(() => {
     void refresh().catch((error) => setError(error.message));
     const unauthorized = () => {
@@ -68,19 +68,15 @@ export function HostingRoot({ children }: { children: ReactNode }) {
       <Titlebar />
       <SetupPage
         title={
-          state === "pair"
-            ? "Conectar a este Persona"
-            : "Conectando ao Persona…"
+          state === "pair" ? t("连接这个 Persona") : t("正在连接到 Persona…")
         }
         description={
-          state === "pair"
-            ? "Digite o código fornecido para continuar."
-            : undefined
+          state === "pair" ? t("请输入提供的配对码以继续。") : undefined
         }
       >
         {state === "loading" && (
           <p role="status" className="detail-note">
-            Carregando informações da conexão…
+            {t("正在加载连接信息…")}
           </p>
         )}
         {state === "pair" && (
@@ -104,7 +100,7 @@ export function HostingRoot({ children }: { children: ReactNode }) {
             }}
           >
             <TextField
-              label="Nome do dispositivo"
+              label={t("设备名称")}
               value={label}
               maxLength={80}
               onValueChange={setLabel}
@@ -112,7 +108,7 @@ export function HostingRoot({ children }: { children: ReactNode }) {
               disabled={busy}
             />
             <TextField
-              label="Código"
+              label={t("配对码")}
               value={code}
               autoComplete="off"
               onValueChange={setCode}
@@ -126,7 +122,7 @@ export function HostingRoot({ children }: { children: ReactNode }) {
             )}
             <div className="setup-actions">
               <Button type="submit" pending={busy}>
-                {busy ? "Conectando…" : "Conectar"}
+                {busy ? t("连接中…") : t("连接")}
               </Button>
             </div>
           </form>
@@ -143,7 +139,7 @@ export function HostingRoot({ children }: { children: ReactNode }) {
               void refresh().catch((error) => setError(error.message))
             }
           >
-            Tentar novamente
+            {t("重试")}
           </Button>
         )}
       </SetupPage>

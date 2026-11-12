@@ -11,7 +11,6 @@ export function ChatHeader({
   bot: Bot;
   busy: boolean;
   detailsOpen: boolean;
-  provider?: string;
   onDetails: () => void;
 }) {
   return (
@@ -27,13 +26,11 @@ export function ChatHeader({
         aria-controls={detailsOpen ? "bot-details" : undefined}
         onClick={onDetails}
       >
-        <span className="chat-identity-icons" aria-hidden="true">
-          <BotAvatar
-            seed={bot.avatar}
-            size="small"
-            state={busy ? "running" : "idle"}
-          />
-        </span>
+        <BotAvatar
+          seed={bot.avatar}
+          size="panel"
+          state={busy ? "running" : "idle"}
+        />
       </Button>
     </header>
   );

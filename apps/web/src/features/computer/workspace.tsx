@@ -33,7 +33,7 @@ export function ComputerWorkspace({
   onSettings: () => void;
   takeoverId?: string;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const status = computer.status;
   const { state, busy, error, configure, reload } = useComputerServices(
     bot.id,
@@ -44,7 +44,11 @@ export function ComputerWorkspace({
   return (
     <section
       className="computer-workspace"
-      aria-label={`${t("Computador de")} ${bot.name}`}
+      aria-label={
+        language === "zh-CN"
+          ? `${bot.name}的电脑`
+          : `${t("Computador de")} ${bot.name}`
+      }
     >
       <div className="computer-workspace-stage">
         {status?.authorized && item?.enabled && item.available ? (
