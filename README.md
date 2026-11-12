@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="docs/assets/persona-hero.jpg" width="100%" alt="Persona — Your personal AI teammates. Anywhere. Desktop chat and Bot settings." />
-
 **English** · [简体中文](README.zh-CN.md)
 
 **[Quick Start](#quick-start)** · **[Features](#features)** · **[Engines](#choose-an-engine)** · **[Self-Hosting](#self-hosting-and-other-devices)** · **[Development](#development)**
