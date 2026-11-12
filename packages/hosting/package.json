@@ -1,0 +1,21 @@
+{
+  "name": "@persona/hosting",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./store": "./src/store.ts",
+    "./credentials": "./src/credentials.ts",
+    "./sessions": "./src/sessions.ts",
+    "./desktop": "./src/desktop.ts",
+    "./stack": "./src/stack.ts",
+    "./instance": "./src/instance.ts",
+    "./install": "./src/install.ts",
+    "./maintenance": "./src/maintenance.ts"
+  },
+  "dependencies": {
+    "@persona/agent": "workspace:*",
+    "@earendil-works/pi-ai": "1.4.0",
+    "zod": "4.6.7",
+    "tar": "7.5.22"
+  }
+}

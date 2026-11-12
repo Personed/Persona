@@ -1,0 +1,92 @@
+import { fileURLToPath } from "node:url";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Models } from "@earendil-works/pi-ai/models";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { RPCHandler } from "@orpc/server/fetch";
+import { MAX_FILE_BYTES } from "@persona/agent/attachments";
+import type { Bots } from "@persona/agent/bots";
+import type { Computers } from "@persona/agent/computer/catalog";
+import type { Files } from "@persona/agent/files";
+import type { McpConnections } from "@persona/agent/mcp";
+import type { Runtime } from "@persona/agent/runtime";
+import type { BotWork } from "@persona/agent/work";
+import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
+import { createRouter } from "./router.ts";
+
+export function createApp(
+  bots: Bots,
+  models: Models,
+  files: Files,
+  work: BotWork,
+  computer?: Computers,
+  staticDir = fileURLToPath(new URL("../../web/dist", import.meta.url)),
+  engines?: Runtime,
+  mcp?: McpConnections,
+  mcpCallback?: string,
+) {
+  const app = new Hono();
+  const handler = new RPCHandler(
+    createRouter(
+      bots,
+      models,
+      files,
+      work,
+      computer,
+      engines,
+      mcp,
+      mcpCallback,
+    ),
+  );
+  app.use(
+    "/rpc/files/upload",
+    bodyLimit({ maxSize: MAX_FILE_BYTES + 1024 * 1024 }),
+  );
+  app.use("/rpc/*", async (c, next) => {
+    const { matched, response } = await handler.handle(c.req.raw, {
+      prefix: "/rpc",
+    });
+    if (matched) return c.newResponse(response.body, response);
+    await next();
+  });
+  app.get("/health", (c) => c.json({ ok: true }));
+  app.get("/mcp/oauth/callback", async (c) => {
+    c.header("Cache-Control", "no-store");
+    c.header("Referrer-Policy", "no-referrer");
+    const state = c.req.query("state");
+    const code = c.req.query("code");
+    if (!mcp || !state || !code)
+      return c.text("授权未完成。请返回 Persona 重试。", 400);
+    try {
+      await mcp.complete(state, code, BACKGROUND_CONTEXT);
+      return c.text("授权已完成。请返回 Persona 刷新连接。");
+    } catch {
+      return c.text("授权失败或已取消。请返回 Persona 重试。", 400);
+    }
+  });
+  app.get("/files/:botId/:id", async (c) => {
+    const botId = Number(c.req.param("botId"));
+    if (
+      !Number.isSafeInteger(botId) ||
+      !(await bots.conversation(botId, BACKGROUND_CONTEXT))
+    )
+      return c.notFound();
+    try {
+      const file = await files.download(botId, c.req.param("id"));
+      if (!file.type.startsWith("image/")) return c.notFound();
+      return new Response(file, {
+        headers: {
+          "Content-Type": file.type,
+          "Content-Disposition": "inline",
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": "private, max-age=31536000, immutable",
+        },
+      });
+    } catch {
+      return c.notFound();
+    }
+  });
+  app.use("/*", serveStatic({ root: staticDir }));
+  app.onError(() => new Response("服务暂时不可用。", { status: 500 }));
+  return app;
+}

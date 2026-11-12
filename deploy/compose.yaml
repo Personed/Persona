@@ -1,0 +1,53 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports: ["127.0.0.1:4310:4310"]
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      PERSONA_CONFIG: /control/persona.config.json
+      PERSONA_PUBLIC_URL: ${PERSONA_PUBLIC_URL:-http://localhost:4310}
+    volumes:
+      - app-data:/data
+      - control-data:/control
+    networks: [default, control]
+    tmpfs: [/tmp]
+    stop_grace_period: 30s
+    restart: unless-stopped
+    depends_on:
+      controller:
+        condition: service_healthy
+  controller:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    init: true
+    user: "0:0"
+    command: [node, apps/controller/src/main.ts, /control/controller.json]
+    volumes:
+      - control-data:/control
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [control]
+    read_only: true
+    tmpfs: [/tmp]
+    stop_grace_period: 30s
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "apps/controller/src/health.ts", "/control/controller.json"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+volumes:
+  app-data:
+  control-data:
+networks:
+  control:
+    internal: true

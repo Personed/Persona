@@ -1,0 +1,227 @@
+import { spawnSync } from "node:child_process";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { metrics, themes } from "@persona/ui/tokens";
+import { build } from "esbuild";
+import { desktopBinary } from "../../packages/agent/src/harness/desktop-driver.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(here, "../..");
+const runtime = join(here, "runtime");
+const dist = join(here, "dist");
+const release = JSON.parse(
+  await readFile(join(root, "deploy/release.json"), "utf8"),
+);
+const pnpm = (...args) => {
+  const result = spawnSync(
+    process.execPath,
+    [process.env.npm_execpath, ...args],
+    { cwd: root, stdio: "inherit", windowsHide: true },
+  );
+  if (result.status !== 0) throw new Error("桌面构建未完成。");
+};
+pnpm("build");
+await rm(runtime, { recursive: true, force: true });
+pnpm(
+  "--config.node-linker=hoisted",
+  "--filter",
+  "@persona/api",
+  "deploy",
+  "--legacy",
+  "--prod",
+  runtime,
+);
+createRequire(join(runtime, "node_modules/@persona/agent/package.json"))(
+  "electron",
+);
+await rm(dist, { recursive: true, force: true });
+await mkdir(dist, { recursive: true });
+const banner = {
+  js: 'import { createRequire as createDesktopRequire } from "node:module"; const require = createDesktopRequire(import.meta.url);',
+};
+await build({
+  entryPoints: [join(here, "src/main.ts")],
+  outfile: join(dist, "main.mjs"),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node24",
+  external: ["electron"],
+  banner,
+});
+const external = [
+  "@earendil-works/*",
+  "@hono/*",
+  "@orpc/*",
+  "hono",
+  "hono/*",
+  "undici",
+  "zod",
+];
+for (const [entry, output] of [
+  ["apps/api/src/main.ts", "server.mjs"],
+  ["apps/controller/src/main.ts", "controller.mjs"],
+  ["packages/agent/src/computer/bridge.ts", "bridge.mjs"],
+])
+  await build({
+    entryPoints: [join(root, entry)],
+    outfile: join(runtime, output),
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node24",
+    external,
+    banner,
+  });
+await cp(join(here, "src/preload.cjs"), join(dist, "preload.cjs"));
+for (const name of ["setup.html", "setup.css", "setup.js", "setup-preload.cjs"])
+  await cp(join(here, "src", name), join(dist, name));
+await cp(
+  join(root, "packages/ui/src/web/controls.css"),
+  join(dist, "controls.css"),
+);
+await cp(
+  join(root, "packages/ui/src/web/setup.css"),
+  join(dist, "setup-layout.css"),
+);
+const variables = (values, prefix = "") =>
+  Object.entries(values)
+    .map(([key, value]) => `--${prefix}${key}:${value};`)
+    .join("");
+await writeFile(
+  join(dist, "setup-theme.css"),
+  `:root{${variables(metrics)}${variables(themes.light, "color-")}}@media(prefers-color-scheme:dark){:root{${variables(themes.dark, "color-")}}}`,
+);
+await cp(join(root, "packages/ui/assets/icon.png"), join(dist, "icon.png"));
+await cp(join(root, "apps/web/dist"), join(runtime, "web"), {
+  recursive: true,
+});
+await cp(join(root, "deploy/NOTICE"), join(runtime, "NOTICE"));
+await cp(join(root, "deploy/licenses"), join(runtime, "licenses"), {
+  recursive: true,
+});
+await mkdir(join(runtime, "work/deploy"), { recursive: true });
+await mkdir(join(runtime, "work/packages/agent/src/harness"), {
+  recursive: true,
+});
+for (const name of [
+  "worker.mjs",
+  "account-environment.mjs",
+  "pi-auth.mjs",
+  "pi-tools.mjs",
+  "http-service.mjs",
+  "native-history.mjs",
+  "native-mcp.mjs",
+  "mcp-client.mjs",
+  "gateway.mjs",
+  "tool-results.mjs",
+  "browser-service.mjs",
+  "browser-tools.mjs",
+  "browser-command.mjs",
+  "browser-view.mjs",
+  "desktop-view.mjs",
+  "computer-service.mjs",
+  "desktop-tools.mjs",
+  "desktop-driver.mjs",
+  "cursor-theme.mjs",
+  "cursor.lottie",
+])
+  await cp(
+    join(root, "packages/agent/src/harness", name),
+    join(runtime, "work/packages/agent/src/harness", name),
+  );
+const nativeBinary = await desktopBinary(homedir());
+const nativeDirectory = join(
+  runtime,
+  "work/packages/agent/src/harness/cua-driver",
+);
+await mkdir(nativeDirectory, { recursive: true });
+await cp(
+  nativeBinary,
+  join(
+    nativeDirectory,
+    process.platform === "win32" ? "cua-driver.exe" : "cua-driver",
+  ),
+);
+await cp(
+  join(
+    dirname(nativeBinary),
+    process.platform === "win32" ? "cua-cursor-theme.exe" : "cua-cursor-theme",
+  ),
+  join(
+    nativeDirectory,
+    process.platform === "win32" ? "cua-cursor-theme.exe" : "cua-cursor-theme",
+  ),
+);
+await cp(
+  join(root, "deploy/workspace.Dockerfile"),
+  join(runtime, "work/deploy/workspace.Dockerfile"),
+);
+await cp(
+  join(root, "deploy/workspace.mjs"),
+  join(runtime, "work/deploy/workspace.mjs"),
+);
+for (const name of ["proxy.Dockerfile", "squid.conf"])
+  await cp(join(root, "deploy", name), join(runtime, "work/deploy", name));
+await cp(join(root, "deploy/licenses"), join(runtime, "work/deploy/licenses"), {
+  recursive: true,
+});
+const service = join(runtime, "service");
+await mkdir(service, { recursive: true });
+for (const name of [
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "patches",
+  "persona.config.json",
+  ".dockerignore",
+])
+  await cp(join(root, name), join(service, name), { recursive: true });
+for (const name of [
+  "apps/api",
+  "apps/cli",
+  "apps/controller",
+  "apps/web",
+  "packages/agent",
+  "packages/hosting",
+  "packages/ui",
+])
+  await cp(join(root, name), join(service, name), {
+    recursive: true,
+    filter: (path) =>
+      !path
+        .split(/[\\/]/)
+        .some((part) =>
+          ["node_modules", "dist", "test", "runtime", "release"].includes(part),
+        ),
+  });
+await mkdir(join(service, "apps/desktop"), { recursive: true });
+await cp(
+  join(here, "package.json"),
+  join(service, "apps/desktop/package.json"),
+);
+await mkdir(join(service, "deploy"), { recursive: true });
+for (const name of ["Dockerfile", "release.json", "NOTICE", "licenses"])
+  await cp(join(root, "deploy", name), join(service, "deploy", name), {
+    recursive: true,
+  });
+await writeFile(
+  join(runtime, "release.json"),
+  JSON.stringify({
+    version: release.version,
+    serviceImage: release.serviceImage,
+    serviceBuild: { context: "service", dockerfile: "deploy/Dockerfile" },
+    workImage: release.workImage,
+    proxyImage: release.proxyImage,
+    proxyBuild: { context: "work", dockerfile: "deploy/proxy.Dockerfile" },
+    controllerEntry: "controller.mjs",
+    serverEntry: "server.mjs",
+    bridgeEntry: "bridge.mjs",
+    workerEntry: "node_modules/@persona/agent/src/harness/worker.mjs",
+    staticDir: "web",
+    workBuild: { context: "work", dockerfile: "deploy/workspace.Dockerfile" },
+  }),
+);

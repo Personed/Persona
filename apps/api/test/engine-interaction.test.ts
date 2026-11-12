@@ -1,0 +1,229 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { createRegistry } from "@earendil-works/pi-durable";
+import { createORPCClient } from "@orpc/client";
+import { RPCLink } from "@orpc/client/fetch";
+import type { RouterClient } from "@orpc/server";
+import { openAgent } from "@persona/agent";
+import type { Computers } from "@persona/agent/computer/catalog";
+import { expect, onTestFinished, test } from "vitest";
+import { ComputersDoc } from "../../../packages/agent/src/computer/state.ts";
+import { ProtocolProcess } from "../../../packages/agent/test/fixtures/engine-process.ts";
+import { createApp } from "../src/app.ts";
+import type { AppRouter } from "../src/router.ts";
+
+test("Claude questions return distinct answers and use the Bot skill and memory authority", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "persona-interaction-"));
+  const models = createModels();
+  models.setProvider(fauxProvider().provider);
+  const skillId = crypto.randomUUID();
+  let updatedInput: unknown;
+  let operation: unknown;
+  const computers = {
+    initialize: async () => {},
+    preflight: async () => {},
+    computerId: async () => "local",
+    tools: { catalog: async () => [], finish: () => {} },
+    process: async (...args: Parameters<Computers["process"]>) => {
+      const process = new ProtocolProcess();
+      const launch = process.launch.bind(process);
+      process.launch = async (spec) => {
+        if (spec.args.includes("--version")) {
+          process.output.write("fixture-cli 1.0.0\n");
+          process.ended.resolve({ code: 0 });
+        } else await launch(spec);
+      };
+      process.request = async <T>(path: string) =>
+        (path === "/provider" ? { all: [], connected: [] } : {}) as T;
+      process.receive = async (request) => {
+        if (request.type !== "user") return;
+        const allowed = await args[2](
+          "operation",
+          "approve",
+          { tool_name: "Bash", input: { command: "pwd" } },
+          new AbortController().signal,
+        );
+        operation = JSON.parse((allowed.content[0] as { text: string }).text);
+        const memory = await args[2](
+          "memory",
+          "memory_list",
+          {},
+          new AbortController().signal,
+        );
+        const skill = await args[2](
+          "skill",
+          "skill_read",
+          { id: skillId },
+          new AbortController().signal,
+        );
+        const result = await args[2](
+          "ask",
+          "approve",
+          {
+            tool_name: "AskUserQuestion",
+            input: {
+              questions: [
+                {
+                  question: "Target?",
+                  options: [{ label: "Preview", description: "Test release" }],
+                  multiSelect: false,
+                },
+                {
+                  question: "Regions?",
+                  options: [{ label: "EU" }, { label: "US" }],
+                  multiSelect: true,
+                },
+              ],
+            },
+          },
+          new AbortController().signal,
+        );
+        updatedInput = JSON.parse((result.content[0] as { text: string }).text);
+        await args[2](
+          "next-operation",
+          "approve",
+          { tool_name: "Bash", input: { command: "pwd" } },
+          new AbortController().signal,
+        );
+        process.frame({
+          type: "assistant",
+          message: {
+            id: "answer",
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ memory, skill, updatedInput }),
+              },
+            ],
+          },
+        });
+        process.frame({ type: "result" });
+      };
+      return process;
+    },
+  } as unknown as Computers;
+  const runtime = await openAgent(
+    join(directory, "agent.sqlite"),
+    { registry: createRegistry(), models, computers },
+    {},
+    context,
+  );
+  onTestFinished(async () => {
+    await runtime.harness.close(context);
+    await rm(directory, { recursive: true, force: true });
+  });
+  const app = createApp(
+    runtime.bots,
+    models,
+    runtime.files,
+    runtime.work,
+    undefined,
+    undefined,
+    runtime.engines,
+  );
+  const client: RouterClient<AppRouter> = createORPCClient(
+    new RPCLink({
+      url: "http://localhost/rpc",
+      fetch: async (request, init) => app.fetch(new Request(request, init)),
+    }),
+  );
+  const botId = runtime.conversation.id;
+  await runtime.harness.commit(async (tx) => {
+    const doc = await tx.doc(ComputersDoc);
+    doc.items = [
+      {
+        id: "local",
+        name: "Local",
+        config: { kind: "process" },
+        authorized: true,
+      },
+    ];
+    doc.bindings[String(botId)] = {
+      computerId: "local",
+      revision: 0,
+      requestId: "",
+      approvalMode: "auto",
+    };
+  }, context);
+  await client.engines.configure({
+    botId,
+    config: { provider: "claude", model: null },
+    revision: 0,
+    requestId: crypto.randomUUID(),
+  });
+  await client.work.memory.save({
+    botId,
+    id: crypto.randomUUID(),
+    text: "Use Chinese",
+    shared: false,
+    revision: 0,
+    requestId: crypto.randomUUID(),
+  });
+  const skill = await client.work.skills.save({
+    botId,
+    id: skillId,
+    content:
+      "---\nname: release\ndescription: Release work\n---\nCheck the release.",
+    revision: 0,
+    requestId: crypto.randomUUID(),
+  });
+  await client.work.skills.enable({
+    botId,
+    id: skill.id,
+    revision: skill.revision,
+    enabled: true,
+    requestId: crypto.randomUUID(),
+  });
+  const submission = await client.send({
+    botId,
+    text: "Work",
+    requestId: crypto.randomUUID(),
+  });
+  await expect
+    .poll(async () => (await client.get({ botId })).approvals?.[0]?.kind)
+    .toBe("question");
+  const approval = (await client.get({ botId })).approvals?.[0];
+  expect(operation).toMatchObject({
+    behavior: "allow",
+    updatedInput: { command: "pwd" },
+  });
+  if (!approval) throw new Error("Native question was not received");
+  expect((await client.engines.get({ botId })).config.provider).toBe("claude");
+  expect(approval?.questions).toMatchObject([
+    { id: "Target?", multiple: false },
+    { id: "Regions?", multiple: true },
+  ]);
+  await runtime.harness.commit(async (tx) => {
+    const binding = (await tx.doc(ComputersDoc)).bindings[String(botId)];
+    if (binding) binding.approvalMode = "ask";
+  }, context);
+  await client.engines.answer({
+    botId,
+    id: approval.id,
+    allow: true,
+    answers: { "Target?": ["Preview"], "Regions?": ["EU", "US"] },
+  });
+  await expect
+    .poll(async () => (await client.get({ botId })).approvals?.[0]?.kind)
+    .toBe("permission");
+  const next = (await client.get({ botId })).approvals?.[0];
+  if (!next) throw new Error("Operation confirmation required");
+  await client.engines.answer({ botId, id: next.id, allow: false });
+  await runtime.harness
+    .submission(submission.id, context)
+    .then((item) => item?.wait(context));
+  expect(updatedInput).toMatchObject({
+    behavior: "allow",
+    updatedInput: { answers: { "Target?": "Preview", "Regions?": "EU, US" } },
+  });
+  expect(JSON.stringify((await client.get({ botId })).messages)).toContain(
+    "Use Chinese",
+  );
+  expect(JSON.stringify((await client.get({ botId })).messages)).toContain(
+    "Check the release.",
+  );
+});

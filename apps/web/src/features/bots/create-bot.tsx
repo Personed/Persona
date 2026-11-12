@@ -1,0 +1,162 @@
+import type { Bot } from "@persona/agent/bots";
+import { BOT_NAME_LENGTH } from "@persona/agent/work/limits";
+import { characterSeed } from "@persona/ui/characters";
+import { Button } from "@persona/ui/controls";
+import { Dialog } from "@persona/ui/dialog";
+import { TextField } from "@persona/ui/field";
+import { PlusIcon } from "@phosphor-icons/react/dist/csr/Plus";
+import { useRef, useState } from "react";
+import { client } from "../../client.ts";
+import { rejectionMessage } from "../chat/request-error.ts";
+import { ComputerLocation } from "../computer/location.tsx";
+import { useI18n } from "../i18n/context.tsx";
+import { AvatarEditor } from "./avatar-editor.tsx";
+import { ModelSetup } from "./details/model.tsx";
+
+export function CreateBot({ onCreated }: { onCreated: (bot: Bot) => void }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(value) => {
+        if (!saving) setOpen(value);
+      }}
+      title={t("新建 Bot")}
+      description={t("取个名字，再选择工作电脑和模型。")}
+      trigger={
+        <Button
+          variant="ghost"
+          size="icon-small"
+          aria-label={t("新建 Bot")}
+          title={t("新建 Bot")}
+        >
+          <PlusIcon />
+        </Button>
+      }
+    >
+      {open && (
+        <BotForm
+          saving={saving}
+          onSavingChange={setSaving}
+          onCancel={() => setOpen(false)}
+          onCreated={(bot) => {
+            setOpen(false);
+            onCreated(bot);
+          }}
+        />
+      )}
+    </Dialog>
+  );
+}
+
+function BotForm({
+  saving,
+  onSavingChange,
+  onCancel,
+  onCreated,
+}: {
+  saving: boolean;
+  onSavingChange: (saving: boolean) => void;
+  onCancel: () => void;
+  onCreated: (bot: Bot) => void;
+}) {
+  const { t } = useI18n();
+  const [computerReady, setComputerReady] = useState(false);
+  const [name, setName] = useState("");
+  const [avatar, setAvatar] = useState(characterSeed);
+  const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<{
+    bot: Bot;
+    setup: Awaited<ReturnType<typeof client.computer.setup>>;
+  }>();
+  const request = useRef<{ id: string; payload: string } | null>(null);
+  if (created)
+    return (
+      <div className="detail-stack">
+        <h2>{computerReady ? t("选择对话模型") : t("Bot 在哪里工作？")}</h2>
+        <div hidden={computerReady}>
+          <ComputerLocation
+            botId={created.bot.id}
+            {...created.setup}
+            onBusyChange={onSavingChange}
+            onReady={() => setComputerReady(true)}
+          />
+        </div>
+        {computerReady && (
+          <ModelSetup
+            botId={created.bot.id}
+            onBusyChange={onSavingChange}
+            onBack={() => setComputerReady(false)}
+            onReady={() => onCreated(created.bot)}
+          />
+        )}
+      </div>
+    );
+  return (
+    <form
+      className="bot-form"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        if (!name.trim() || saving) return;
+        const input = {
+          name: name.trim(),
+          avatar,
+        };
+        const payload = JSON.stringify(input);
+        if (request.current?.payload !== payload)
+          request.current = { id: crypto.randomUUID(), payload };
+        onSavingChange(true);
+        setError(null);
+        try {
+          const setup = await client.computer.setup();
+          const bot = await client.bots.create({
+            ...input,
+            computerId: null,
+            requestId: request.current.id,
+          });
+          setCreated({ bot, setup });
+        } catch (cause) {
+          setError(
+            rejectionMessage(cause) ??
+              t("创建未确认。请重试，系统会核对原请求。"),
+          );
+        } finally {
+          onSavingChange(false);
+        }
+      }}
+    >
+      <fieldset disabled={saving} className="bot-fields">
+        <div className="profile-identity">
+          <AvatarEditor value={avatar} onChange={setAvatar} />
+          <TextField
+            label={t("名字")}
+            value={name}
+            onValueChange={setName}
+            required
+            maxLength={BOT_NAME_LENGTH}
+          />
+        </div>
+      </fieldset>
+      {error && (
+        <p className="alert" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="dialog-actions">
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={onCancel}
+          disabled={saving}
+        >
+          {t("取消")}
+        </Button>
+        <Button type="submit" pending={saving} disabled={!name.trim()}>
+          {saving ? t("正在创建…") : t("创建")}
+        </Button>
+      </div>
+    </form>
+  );
+}

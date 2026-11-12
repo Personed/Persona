@@ -1,0 +1,138 @@
+import type { Bot } from "@persona/agent/bots";
+import { BOT_NAME_LENGTH, WORK_TEXT_LENGTH } from "@persona/agent/work/limits";
+import { BotAvatar } from "@persona/ui/avatar";
+import { Button } from "@persona/ui/controls";
+import { TextField } from "@persona/ui/field";
+import { PencilSimpleIcon } from "@phosphor-icons/react/dist/csr/PencilSimple";
+import { client } from "../../../client.ts";
+import { useI18n } from "../../i18n/context.tsx";
+import { AvatarEditor } from "../avatar-editor.tsx";
+import {
+  type Profile,
+  useIdentityDraft,
+  type WorkAction,
+} from "./use-bot-work.ts";
+
+export function IdentityEditor({
+  profile,
+  action,
+  onSaved,
+}: {
+  profile: Profile;
+  action: WorkAction;
+  onSaved: (profile: Profile) => void;
+}) {
+  const { t } = useI18n();
+  const { name, instructions, avatar, change } = useIdentityDraft(profile);
+  const setName = (name: string) => change({ name });
+  const setInstructions = (instructions: string) => change({ instructions });
+  const setAvatar = (avatar: string) => change({ avatar });
+  const dirty =
+    name !== profile.name ||
+    instructions !== profile.instructions ||
+    avatar !== profile.avatar;
+  const input = {
+    botId: profile.id,
+    name,
+    instructions,
+    avatar,
+    revision: profile.revision,
+  };
+  return (
+    <form
+      className="bot-form"
+      aria-busy={action.busy}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!dirty) return;
+        void action.run(
+          ["profile", input],
+          (requestId) => client.work.update({ ...input, requestId }),
+          onSaved,
+        );
+      }}
+    >
+      <fieldset className="bot-fields" disabled={action.busy}>
+        <div className="profile-identity">
+          <AvatarEditor value={avatar} onChange={setAvatar} />
+          <TextField
+            label={t("名字")}
+            value={name}
+            onValueChange={setName}
+            required
+            maxLength={BOT_NAME_LENGTH}
+          />
+        </div>
+        <TextField
+          label={t("职责与长期指令")}
+          value={instructions}
+          onValueChange={setInstructions}
+          multiline
+          maxLength={WORK_TEXT_LENGTH}
+          placeholder={t("例如：帮我整理资料、准备每周工作计划。")}
+        />
+        {dirty && (
+          <div className="form-actions">
+            <Button
+              type="button"
+              variant="ghost"
+              size="small"
+              onClick={() => {
+                setName(profile.name);
+                setInstructions(profile.instructions);
+                setAvatar(profile.avatar);
+              }}
+            >
+              {t("还原")}
+            </Button>
+            <Button
+              type="submit"
+              size="small"
+              aria-label={t("保存身份")}
+              pending={action.busy}
+              disabled={!name.trim()}
+            >
+              {t("保存")}
+            </Button>
+          </div>
+        )}
+      </fieldset>
+    </form>
+  );
+}
+
+export function BotIdentity({
+  bot,
+  profile,
+  onEdit,
+}: {
+  bot: Bot;
+  profile: Profile | null;
+  onEdit: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <section className="bot-hero" aria-label={t("Bot资料")}>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="bot-hero-avatar"
+        aria-label={t("编辑")}
+        onClick={onEdit}
+      >
+        <BotAvatar
+          seed={profile?.avatar ?? bot.avatar}
+          size="panel"
+          statusLabel={t("正在工作")}
+        />
+        <span className="bot-hero-pencil" aria-hidden="true">
+          <PencilSimpleIcon size={12} />
+        </span>
+      </Button>
+      <div className="bot-hero-copy">
+        <h2>{profile?.name ?? bot.name}</h2>
+        {profile?.instructions.trim() && <p>{profile.instructions}</p>}
+      </div>
+    </section>
+  );
+}

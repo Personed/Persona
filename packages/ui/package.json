@@ -1,0 +1,43 @@
+{
+  "name": "@persona/ui",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./panel": "./src/web/panel.tsx",
+    "./tabs": "./src/web/tabs.tsx",
+    "./toast": "./src/web/toast.ts",
+    "./setting-row": "./src/web/setting-row.tsx",
+    "./avatar": "./src/web/avatar.tsx",
+    "./characters": "./src/characters.ts",
+    "./tokens": "./src/tokens.ts",
+    "./controls": "./src/web/controls.tsx",
+    "./menu": "./src/web/menu.tsx",
+    "./choice": "./src/web/choice.tsx",
+    "./dialog": "./src/web/dialog.tsx",
+    "./scroll-area": "./src/web/scroll-area.tsx",
+    "./field": "./src/web/field.tsx",
+    "./setup": "./src/web/setup.tsx",
+    "./picker": "./src/web/picker.tsx",
+    "./model-selector": "./src/web/model-selector.tsx",
+    "./message": "./src/web/message.tsx",
+    "./activity": "./src/web/activity.tsx",
+    "./attachment": "./src/web/attachment.tsx",
+    "./composer": "./src/web/composer.tsx",
+    "./context-window": "./src/web/context-window.tsx",
+    "./markdown": "./src/web/markdown.tsx",
+    "./theme": "./src/web/theme.tsx",
+    "./style.css": "./src/web/style.css",
+    "./popover": "./src/web/popover.ts"
+  },
+  "dependencies": {
+    "@base-ui/react": "1.9.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0"
+  }
+}

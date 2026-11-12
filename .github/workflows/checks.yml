@@ -1,0 +1,267 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - AGENTS.md
+      - README*.md
+      - docs/**/*.md
+  pull_request:
+    paths-ignore:
+      - AGENTS.md
+      - README*.md
+      - docs/**/*.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@v6.1.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+  native:
+    needs: check
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@v6.1.0
+      - run: pnpm install --frozen-lockfile
+      - name: Select sandboxed system Chrome
+        if: runner.os == 'Linux'
+        run: echo "AGENT_BROWSER_EXECUTABLE_PATH=/opt/google/chrome/chrome" >> "$GITHUB_ENV"
+      - name: Verify Harness process and recovery contracts
+        run: pnpm test packages/agent/test/harness-process.test.ts packages/agent/test/harness-protocols.test.ts packages/agent/test/harness-context.test.ts packages/agent/test/harness-recovery.test.ts --reporter=default --reporter=junit --outputFile.junit=test-results/harness.xml
+      - name: Verify browser services on Linux
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pnpm test packages/agent/test/computer-services.test.ts --reporter=default --reporter=junit --outputFile.junit=test-results/browser.xml
+      - name: Verify browser services
+        if: runner.os != 'Linux'
+        run: pnpm test packages/agent/test/computer-services.test.ts --reporter=default --reporter=junit --outputFile.junit=test-results/browser.xml
+      - name: Verify application regressions
+        run: pnpm test --exclude=apps/web/test/viewer-input.test.ts --exclude=packages/agent/test/desktop-view.test.ts --exclude=packages/agent/test/computer-input.test.ts --exclude=packages/agent/test/browser-runtime.test.ts --exclude=packages/agent/test/browser-command.test.ts --exclude=packages/agent/test/takeover.test.ts --exclude=packages/agent/test/computer-control.test.ts --exclude=packages/agent/test/harness-process.test.ts --exclude=packages/agent/test/harness-protocols.test.ts --exclude=packages/agent/test/harness-context.test.ts --exclude=packages/agent/test/harness-recovery.test.ts --exclude=packages/agent/test/computer-services.test.ts --reporter=default --reporter=junit --outputFile.junit=test-results/unit.xml
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: native-${{ matrix.os }}
+          path: test-results/
+          if-no-files-found: ignore
+  web:
+    needs: check
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        shard: [1, 2]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@v6.1.0
+      - run: pnpm install --frozen-lockfile
+      - name: Select sandboxed system Chrome
+        if: runner.os == 'Linux'
+        run: echo "AGENT_BROWSER_EXECUTABLE_PATH=/opt/google/chrome/chrome" >> "$GITHUB_ENV"
+      - run: pnpm exec playwright install chromium --only-shell --with-deps
+      - name: Verify web workflows
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a pnpm test:e2e --shard=${{ matrix.shard }}/2 --output=test-results/e2e
+          else
+            pnpm test:e2e --shard=${{ matrix.shard }}/2 --output=test-results/e2e
+          fi
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: web-${{ matrix.os }}-${{ matrix.shard }}
+          path: test-results/
+          if-no-files-found: ignore
+  computer-input:
+    needs: check
+    uses: ./.github/workflows/computer-input.yml
+  desktop:
+    needs: check
+    timeout-minutes: 15
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@v6.1.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @persona/desktop build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: pnpm exec playwright install chromium --only-shell
+      - run: pnpm exec playwright test --config apps/desktop/playwright.config.ts desktop.spec.ts runtime.spec.ts
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: desktop-e2e
+          path: test-results/desktop/
+          if-no-files-found: ignore
+      - run: pnpm --filter @persona/desktop exec electron-builder --win nsis --config.win.signAndEditExecutable=false
+      - run: node --test apps/desktop/test/package.test.mjs
+      - uses: actions/upload-artifact@v6
+        with:
+          name: persona-windows-test
+          path: apps/desktop/release/*.exe
+  sandbox:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [docker, ssh]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@v6.1.0
+      - run: pnpm install --frozen-lockfile
+      - name: Build work image and install egress rules
+        run: |
+          docker build -f deploy/workspace.Dockerfile -t persona-workspace:1.2.0 .
+          docker build -f deploy/proxy.Dockerfile -t persona-egress:1 .
+          sudo bash deploy/restrict-computer-egress.sh
+          sudo /usr/local/sbin/persona-computer-egress --check
+      - name: Prepare SSH transport
+        if: matrix.transport == 'ssh'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+          sudo systemctl start ssh
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/persona-key"
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          cat "$RUNNER_TEMP/persona-key.pub" >> "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          awk '{print "persona-ci " $1 " " $2}' /etc/ssh/ssh_host_ed25519_key.pub > "$RUNNER_TEMP/persona-known-hosts"
+          node --input-type=module <<'JS'
+          import { writeFileSync } from 'node:fs';
+          import { userInfo } from 'node:os';
+          const directory = process.env.RUNNER_TEMP;
+          writeFileSync(`${directory}/persona-test.json`, JSON.stringify({ computer: { ssh: {
+            host: '127.0.0.1', user: userInfo().username,
+            identityFile: `${directory}/persona-key`, knownHostsFile: `${directory}/persona-known-hosts`, hostKeyAlias: 'persona-ci'
+          } } }));
+          JS
+          echo "PERSONA_TEST_CONFIG=$RUNNER_TEMP/persona-test.json" >> "$GITHUB_ENV"
+      - name: Verify real sandbox execution and isolation
+        env:
+          PERSONA_CONTAINER_TESTS: "1"
+        run: pnpm exec vitest run packages/agent/test/container.test.ts
+      - name: Build and verify application deployment
+        run: |
+          docker build -f deploy/Dockerfile -t persona-app:test .
+          docker volume create persona-app-test
+          for cycle in 1 2; do
+            docker run -d --name persona-app-test --read-only --cap-drop=ALL --security-opt=no-new-privileges:true --tmpfs /tmp -v persona-app-test:/data -p 127.0.0.1:4310:4310 -e PERSONA_PUBLIC_URL=http://127.0.0.1:4310 persona-app:test
+            for attempt in $(seq 1 45); do
+              if curl --fail --silent http://127.0.0.1:4310/health >/dev/null; then break; fi
+              sleep 1
+            done
+            curl --fail --silent http://127.0.0.1:4310/health
+            curl --fail --silent http://127.0.0.1:4310/ >/dev/null
+            docker exec persona-app-test node --input-type=module -e 'import { Computer } from "./packages/agent/src/computer/index.ts"; import { loadConfig } from "./packages/agent/src/runtime/config.ts"; const state=await new Computer(await loadConfig()).status(); if(state.boundary!=="application"||state.os.split(" ")[0]!=="linux")process.exit(1);'
+            if [ "$cycle" = 1 ]; then
+              docker exec persona-app-test node -e 'require("fs").writeFileSync("/data/deployment-check", "durable")'
+            else
+              docker exec persona-app-test node -e 'if(require("fs").readFileSync("/data/deployment-check","utf8")!=="durable")process.exit(1)'
+            fi
+            docker stop --time 20 persona-app-test
+            docker rm persona-app-test
+          done
+          docker volume rm persona-app-test
+      - name: Verify managed services and Bot work environments
+        if: matrix.transport == 'docker'
+        env:
+          PERSONA_CONTAINER_TESTS: "1"
+        run: pnpm exec vitest run apps/api/test/stack-container.test.ts
+      - name: Verify application container to SSH work sandbox
+        if: matrix.transport == 'ssh'
+        run: |
+          mkdir "$RUNNER_TEMP/persona-app-ssh"
+          sudo install -m 0600 -o 1000 -g 1000 "$RUNNER_TEMP/persona-key" "$RUNNER_TEMP/persona-app-ssh/id_ed25519"
+          cp "$RUNNER_TEMP/persona-known-hosts" "$RUNNER_TEMP/persona-app-ssh/known_hosts"
+          node --input-type=module <<'JS'
+          import { writeFileSync } from 'node:fs';
+          import { userInfo } from 'node:os';
+          writeFileSync(`${process.env.RUNNER_TEMP}/persona-app.json`, JSON.stringify({
+            model: { provider: 'deepseek', modelId: 'deepseek-flash' },
+            computer: { kind: 'docker', id: 'ci-app', image: 'persona-workspace:1.2.0', volume: 'persona-ci-app-work', ssh: {
+              host: 'host.docker.internal', user: userInfo().username, identityFile: '/home/node/.ssh/id_ed25519',
+              knownHostsFile: '/home/node/.ssh/known_hosts', hostKeyAlias: 'persona-ci'
+            } }
+          }));
+          JS
+          docker run -d --name persona-app-ssh --read-only --cap-drop=ALL --security-opt=no-new-privileges:true --tmpfs /tmp --add-host host.docker.internal:host-gateway -v persona-app-ssh-data:/data -v "$RUNNER_TEMP/persona-app-ssh:/home/node/.ssh:ro" -v "$RUNNER_TEMP/persona-app.json:/app/config.json:ro" -e PERSONA_CONFIG=/app/config.json persona-app:test
+          docker exec -i -w /app/packages/agent persona-app-ssh node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { join } from 'node:path';
+          import { Computer } from './src/computer/index.ts';
+          import { loadConfig } from './src/runtime/config.ts';
+          import { Files } from './src/files.ts';
+          import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context';
+          import { getOrThrow } from '@earendil-works/pi-durable/env';
+          const config = await loadConfig();
+          const computer = new Computer(config);
+          try {
+            await computer.manage('start', context, async () => {});
+            const files = new Files(join(config.dataDir, 'agent.sqlite'), (id, ctx) => computer.workspace(id, ctx));
+            const uploaded = await files.upload(1, 'data.csv', new TextEncoder().encode('value\n3\n5\n'));
+            const env = await computer.workspace(1, context);
+            const script = "import csv,sys; open('report.txt','w').write(str(sum(int(row['value']) for row in csv.DictReader(open(sys.argv[1])))))";
+            assert.equal(getOrThrow(await env.exec(['python3','-c',script,uploaded.path], undefined, context)).exitCode, 0);
+            const artifact = await files.publish(1, 'report.txt', context);
+            assert.equal(await (await files.download(1, artifact.id)).text(), '8');
+            assert.equal((await computer.status()).boundary, 'sandbox');
+            await computer.manage('stop', context, async () => {});
+            assert.equal(await (await files.download(1, artifact.id)).text(), '8');
+          } finally { await computer.close(context); }
+          JS
+          docker stop --time 20 persona-app-ssh
+          docker rm persona-app-ssh
+          docker rm persona-ci-app
+          docker volume rm persona-ci-app-work
+          docker volume rm persona-app-ssh-data
+      - name: Report application failure
+        if: failure()
+        run: |
+          docker inspect --format '{{json .State}}' persona-app-test 2>/dev/null || true
+          docker top persona-app-test -eo pid,stat,comm 2>/dev/null || true
+          docker logs --tail 30 persona-app-test 2>/dev/null || true
+          docker logs --tail 30 persona-app-ssh 2>/dev/null || true

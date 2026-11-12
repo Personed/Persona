@@ -1,0 +1,98 @@
+diff --git a/cjs/react-dom-client.development.js b/cjs/react-dom-client.development.js
+--- a/cjs/react-dom-client.development.js
++++ b/cjs/react-dom-client.development.js
+@@ -24266,6 +24266,11 @@
+                 error.message ||
+               "Skipping view transition because viewport size changed." ===
+                 error.message ||
++              "Transition was aborted because of invalid state." === error.message ||
++              "Transition was aborted because of invalid state. Document hidden" === error.message ||
++              "Transition was aborted because of invalid state. Viewport size changed" === error.message ||
++              "Skipped ViewTransition due to document being hidden" === error.message ||
++              "Skipped view transition due to viewport resize" === error.message ||
+               "Transition was aborted because of invalid state" ===
+                 error.message
+             )
+@@ -24446,7 +24451,7 @@
+             ownerDocument.__reactViewTransition === transition &&
+               (ownerDocument.__reactViewTransition = null);
+             try {
+-              (error = customizeViewTransitionError(error, !1)),
++              (error = customizeViewTransitionError(error, !0)),
+                 null !== error && errorCallback(error);
+             } finally {
+               mutationCallback(),
+diff --git a/cjs/react-dom-client.production.js b/cjs/react-dom-client.production.js
+--- a/cjs/react-dom-client.production.js
++++ b/cjs/react-dom-client.production.js
+@@ -15867,6 +15867,9 @@
+         try {
+           if ("object" === typeof error && null !== error)
+             switch (error.name) {
++              case "AbortError":
++                error = null;
++                break;
+               case "InvalidStateError":
+                 if (
+                   "View transition was skipped because document visibility state is hidden." ===
+@@ -15875,6 +15878,11 @@
+                     error.message ||
+                   "Skipping view transition because viewport size changed." ===
+                     error.message ||
++                  "Transition was aborted because of invalid state." === error.message ||
++                  "Transition was aborted because of invalid state. Document hidden" === error.message ||
++                  "Transition was aborted because of invalid state. Viewport size changed" === error.message ||
++                  "Skipped ViewTransition due to document being hidden" === error.message ||
++                  "Skipped view transition due to viewport resize" === error.message ||
+                   "Transition was aborted because of invalid state" ===
+                     error.message
+                 )
+diff --git a/cjs/react-dom-profiling.development.js b/cjs/react-dom-profiling.development.js
+--- a/cjs/react-dom-profiling.development.js
++++ b/cjs/react-dom-profiling.development.js
+@@ -24274,6 +24274,11 @@
+                 error.message ||
+               "Skipping view transition because viewport size changed." ===
+                 error.message ||
++              "Transition was aborted because of invalid state." === error.message ||
++              "Transition was aborted because of invalid state. Document hidden" === error.message ||
++              "Transition was aborted because of invalid state. Viewport size changed" === error.message ||
++              "Skipped ViewTransition due to document being hidden" === error.message ||
++              "Skipped view transition due to viewport resize" === error.message ||
+               "Transition was aborted because of invalid state" ===
+                 error.message
+             )
+@@ -24454,7 +24459,7 @@
+             ownerDocument.__reactViewTransition === transition &&
+               (ownerDocument.__reactViewTransition = null);
+             try {
+-              (error = customizeViewTransitionError(error, !1)),
++              (error = customizeViewTransitionError(error, !0)),
+                 null !== error && errorCallback(error);
+             } finally {
+               mutationCallback(),
+diff --git a/cjs/react-dom-profiling.profiling.js b/cjs/react-dom-profiling.profiling.js
+--- a/cjs/react-dom-profiling.profiling.js
++++ b/cjs/react-dom-profiling.profiling.js
+@@ -17769,6 +17769,9 @@
+         try {
+           if ("object" === typeof error && null !== error)
+             switch (error.name) {
++              case "AbortError":
++                error = null;
++                break;
+               case "InvalidStateError":
+                 if (
+                   "View transition was skipped because document visibility state is hidden." ===
+@@ -17777,6 +17780,11 @@
+                     error.message ||
+                   "Skipping view transition because viewport size changed." ===
+                     error.message ||
++                  "Transition was aborted because of invalid state." === error.message ||
++                  "Transition was aborted because of invalid state. Document hidden" === error.message ||
++                  "Transition was aborted because of invalid state. Viewport size changed" === error.message ||
++                  "Skipped ViewTransition due to document being hidden" === error.message ||
++                  "Skipped view transition due to viewport resize" === error.message ||
+                   "Transition was aborted because of invalid state" ===
+                     error.message
+                 )

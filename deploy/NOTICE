@@ -1,0 +1,70 @@
+Rakazo
+Copyright 2026 Rakazo contributors
+Licensed under the Apache License, Version 2.0. See licenses/rakazo.txt.
+Source: https://github.com/elie222/rakazo
+
+deploy/restrict-computer-egress.sh derives from
+infra/compose/restrict-computer-egress.sh.
+Persona changes the bridge prefix, removes the shared-bridge bypass, and adds
+verification of installed rule prefixes.
+
+packages/agent/src/computer/docker.ts adapts the container security and
+resource configuration from
+infra/sandboxes/supervisor/src/computer-spec.ts:containerCreateOptions.
+Persona uses the Docker CLI and Pi execution environments.
+
+packages/hosting/src/stack.ts adapts the managed startup sequence from
+apps/desktop/src/local-stack.ts.
+apps/controller/src/server.ts adapts per-computer lifecycle serialization from
+infra/sandboxes/supervisor/src/index.ts.
+
+Pi
+Copyright (c) 2025 Mario Zechner
+Licensed under the MIT License. See licenses/pi.txt.
+Source: https://github.com/earendil-works/pi
+The work image distributes the official pi-env 1.4.0 daemon.
+
+Model Context Protocol TypeScript SDK
+Copyright (c) 2024 Anthropic, PBC
+Licensed under the MIT License. See licenses/mcp-sdk.txt.
+Source: https://github.com/modelcontextprotocol/typescript-sdk
+
+cross-spawn and proper-lockfile
+Copyright (c) 2018 Made With MOXY Lda
+Licensed under the MIT License.
+See licenses/cross-spawn.txt and licenses/proper-lockfile.txt.
+Source: https://github.com/moxystudio/node-cross-spawn
+Source: https://github.com/moxystudio/node-proper-lockfile
+
+UI adaptations
+
+apps/web/src/features/shell/resize-handle.tsx adapts
+Rakazo apps/web/src/pages/ResizableSidePanel.tsx under Apache-2.0.
+Persona supplies layout limits and saves preferences after interaction.
+apps/web/src/features/settings uses the navigation and content composition
+of Rakazo apps/web/src/pages/SettingsOverlay.tsx with Persona panels and tokens.
+
+agent-browser
+Licensed under the Apache License, Version 2.0. See licenses/agent-browser.txt.
+Source: https://github.com/vercel-labs/agent-browser
+
+Cua Driver
+Copyright (c) 2025 Cua AI, Inc.
+Licensed under the MIT License. See licenses/cua-driver.txt.
+Source: https://github.com/trycua/cua
+
+Lobe Icons 1.101.0
+Copyright (c) 2023 LobeHub
+Licensed under the MIT License. See licenses/lobe-icons.txt.
+Source: https://github.com/lobehub/lobe-icons
+apps/web/src/features/bots/engine-mark.tsx contains selected Harness vectors.
+
+JMESPath 0.16.0
+Copyright 2014 James Saryerwinnie
+Licensed under the Apache License, Version 2.0. See licenses/jmespath.txt.
+Source: https://github.com/jmespath/jmespath.js
+
+fflate 0.8.2
+Copyright (c) 2023 Arjun Barrett
+Licensed under the MIT License. See licenses/fflate.txt.
+Source: https://github.com/101arrowz/fflate

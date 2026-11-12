@@ -1,0 +1,119 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { Type } from "@earendil-works/pi-ai";
+import { createModels } from "@earendil-works/pi-ai/models";
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+} from "@earendil-works/pi-ai/providers/faux";
+import {
+  createRegistry,
+  defineExtension,
+  defineTool,
+} from "@earendil-works/pi-durable";
+import { expect, onTestFinished, test } from "vitest";
+import { chatView } from "../src/chat-view.ts";
+import { openAgent } from "../src/open-agent.ts";
+import { chatTranscript } from "../src/transcript.ts";
+
+test("native assistant messages arrive during work and survive restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "persona-delivery-"));
+  onTestFinished(() => rm(directory, { recursive: true, force: true }));
+  const database = join(directory, "agent.sqlite");
+  const faux = fauxProvider();
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const registry = createRegistry();
+  const name = `work_${crypto.randomUUID().replaceAll("-", "")}`;
+  const work = fauxToolCall(name, {});
+  const gate = Promise.withResolvers<void>();
+  registry.install(
+    defineExtension({
+      name: "work",
+      tools: [
+        defineTool({
+          name,
+          description: "Wait for work completion.",
+          parameters: Type.Object({}),
+          replay: "safe",
+          async execute(_args, _api, ctx) {
+            const release = () => gate.resolve();
+            ctx.abortSignal?.addEventListener("abort", release, { once: true });
+            try {
+              await gate.promise;
+            } finally {
+              ctx.abortSignal?.removeEventListener("abort", release);
+            }
+            return { output: [{ type: "text", text: "Ready" }] };
+          },
+        }),
+      ],
+    }),
+  );
+  faux.setResponses([
+    fauxAssistantMessage(
+      [{ type: "text", text: "I will check the source." }, work],
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("Complete result"),
+  ]);
+  const options = { models, registry };
+  const agent = { model: { provider: "faux", modelId: "faux-1" } };
+  const first = await openAgent(database, options, agent, context);
+  const state = await first.conversation.viewState(context);
+  let avatar: string | undefined;
+  const delivered = () =>
+    chatTranscript(chatView(state.value)).flatMap((item) =>
+      item.kind === "message" && item.message.role === "assistant"
+        ? item.message.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+        : [],
+    );
+  try {
+    avatar = (await first.bots.list(context))[0]?.avatar;
+    await first.conversation.submit(
+      { type: "input", content: "Check" },
+      context,
+    );
+    await expect
+      .poll(() =>
+        chatView(state.value).tools.some(
+          (tool) => tool.callId === work.id && tool.status === "running",
+        ),
+      )
+      .toBe(true);
+    expect(chatView(state.value).busy).toBe(true);
+    expect(delivered()).toEqual(["I will check the source."]);
+  } finally {
+    state.dispose();
+    await first.harness.close(context);
+  }
+  const second = await openAgent(database, options, agent, context);
+  try {
+    await second.conversation.waitForIdle(context);
+    const restored = await second.conversation.viewState(context);
+    try {
+      const items = chatTranscript(chatView(restored.value));
+      const texts = items.flatMap((item) =>
+        item.kind === "message" && item.message.role === "assistant"
+          ? item.message.content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+          : [],
+      );
+      expect(texts).toEqual(["I will check the source.", "Complete result"]);
+      expect(new Set(items.map((item) => `${item.kind}:${item.id}`)).size).toBe(
+        items.length,
+      );
+      expect((await second.bots.list(context))[0]?.avatar).toBe(avatar);
+    } finally {
+      restored.dispose();
+    }
+  } finally {
+    await second.harness.close(context);
+  }
+});

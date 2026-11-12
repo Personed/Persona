@@ -1,0 +1,81 @@
+import type { Attachment } from "@persona/agent/attachments";
+import { FileAttachment } from "@persona/ui/attachment";
+import { Button } from "@persona/ui/controls";
+import { DownloadSimpleIcon } from "@phosphor-icons/react/dist/csr/DownloadSimple";
+import { useState } from "react";
+import { client } from "../../client.ts";
+import { chatCopy } from "./copy.ts";
+import { ImageGallery } from "./image-gallery.tsx";
+
+export function Attachments({
+  botId,
+  files,
+  caption,
+}: {
+  botId: number;
+  files: Attachment[];
+  caption?: string;
+}) {
+  const [error, setError] = useState(false);
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const images = files.filter((file) => file.mimeType?.startsWith("image/"));
+  const documents = files.filter(
+    (file) => !file.mimeType?.startsWith("image/"),
+  );
+  async function download(file: Attachment) {
+    setDownloading(file.id);
+    setError(false);
+    try {
+      const blob = await client.files.download({ botId, id: file.id });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = file.name;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      setError(true);
+    } finally {
+      setDownloading(null);
+    }
+  }
+  return (
+    <div className="attachments">
+      {images.length > 0 && (
+        <ImageGallery
+          botId={botId}
+          files={images}
+          caption={caption}
+          onDownload={(file) => void download(file)}
+          downloading={downloading !== null}
+          error={error ? chatCopy.errors.download : undefined}
+        />
+      )}
+      {documents.map((file) => (
+        <FileAttachment
+          key={file.id}
+          name={file.name}
+          size={file.size}
+          action={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={`${chatCopy.download} ${file.name}`}
+              title={chatCopy.download}
+              disabled={downloading !== null}
+              onClick={() => void download(file)}
+            >
+              <DownloadSimpleIcon />
+            </Button>
+          }
+        />
+      ))}
+      {error && images.length === 0 && (
+        <p role="alert" className="alert">
+          {chatCopy.errors.download}
+        </p>
+      )}
+    </div>
+  );
+}

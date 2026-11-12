@@ -1,0 +1,158 @@
+import type { EngineRuntimeState } from "@persona/agent/harness/types";
+import { ContextWindow, contextPercent } from "@persona/ui/context-window";
+import { Button } from "@persona/ui/controls";
+import { client } from "../../client.ts";
+import { useWorkAction } from "../bots/details/use-bot-work.ts";
+import { EngineMark } from "../bots/engine-mark.tsx";
+import { useI18n } from "../i18n/context.tsx";
+
+const compactNumber = (value: number) =>
+  new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+
+const automaticLabel = (state: EngineRuntimeState, isPt: boolean) =>
+  state.contextPolicy?.automatic === "enabled"
+    ? isPt
+      ? "Ativado"
+      : "已开启"
+    : state.contextPolicy?.automatic === "disabled"
+      ? isPt
+        ? "Desativado"
+        : "已关闭"
+      : state.contextPolicy?.automatic === "native"
+        ? isPt
+          ? "Gerenciado pelo motor"
+          : "由引擎管理"
+        : isPt
+          ? "Não fornecido"
+          : "未提供";
+
+export function ContextRing({
+  botId,
+  state,
+  provider,
+  busy,
+}: {
+  botId: number;
+  state?: EngineRuntimeState;
+  provider?: string;
+  busy: boolean;
+}) {
+  const { language } = useI18n();
+  const isPt = language === "pt-BR";
+  const action = useWorkAction();
+  const used = state?.contextTokens;
+  const capacity = state?.contextWindow;
+  const percent = contextPercent(used, capacity);
+  const manual = state?.contextPolicy?.manual ?? state?.controls?.compact;
+  const compaction = state?.compactionDetails;
+  const status =
+    state?.compaction === "running"
+      ? isPt
+        ? "Compactando…"
+        : "正在压缩…"
+      : state?.compaction === "completed"
+        ? isPt
+          ? "Compactação concluída"
+          : "压缩完成"
+        : state?.compaction === "uncertain"
+          ? isPt
+            ? "Resultado da compactação não confirmado"
+            : "压缩结果未确认"
+          : isPt
+            ? "Falha na compactação"
+            : "压缩失败";
+  const free =
+    used != null && capacity != null ? Math.max(0, capacity - used) : null;
+  const summary =
+    percent == null
+      ? isPt
+        ? "Janela de contexto"
+        : "上下文窗口"
+      : isPt
+        ? `Contexto ${percent.toFixed(1)}% · Restante ${free == null ? "—" : compactNumber(free)}`
+        : `上下文 ${percent.toFixed(1)}% · 剩余 ${free == null ? "—" : compactNumber(free)}`;
+  return (
+    <ContextWindow
+      used={used}
+      capacity={capacity}
+      estimated={state?.context?.estimated}
+      trigger={
+        <button
+          type="button"
+          className="context-ring"
+          data-level={percent != null && percent >= 90 ? "high" : undefined}
+          aria-label={isPt ? "Janela de contexto" : "上下文窗口"}
+          title={summary}
+        >
+          <svg viewBox="0 0 32 32" aria-hidden="true">
+            <circle className="context-ring-track" cx="16" cy="16" r="13.5" />
+            {percent != null && (
+              <circle
+                className="context-ring-arc"
+                cx="16"
+                cy="16"
+                r="13.5"
+                pathLength={100}
+                strokeDasharray={`${percent} 100`}
+              />
+            )}
+          </svg>
+          {provider && <EngineMark provider={provider} />}
+        </button>
+      }
+    >
+      <div className="context-window-footer">
+        {state?.compaction && (
+          <p className="context-window-status" role="status">
+            {status}
+          </p>
+        )}
+        {compaction && (
+          <p className="context-window-meta">
+            {compaction.beforeTokens?.toLocaleString() ??
+              (isPt ? "Não fornecido" : "未提供")}{" "}
+            →{" "}
+            {compaction.afterTokens?.toLocaleString() ??
+              (isPt ? "Aguardando" : "待更新")}{" "}
+            Token
+          </p>
+        )}
+        {compaction?.error && (
+          <p className="context-window-status" role="alert">
+            {compaction.error}
+          </p>
+        )}
+        {action.error && (
+          <p className="context-window-status" role="alert">
+            {action.error}
+          </p>
+        )}
+        <div className="context-window-actions">
+          <p className="context-window-meta">
+            {isPt
+              ? `Compactação automática: ${state ? automaticLabel(state, true) : "Não fornecido"}`
+              : `自动压缩${state ? automaticLabel(state, false) : "未提供"}`}
+          </p>
+          {manual && (
+            <Button
+              className="context-window-action"
+              size="small"
+              variant="secondary"
+              disabled={busy || action.busy}
+              onClick={() =>
+                void action.run(["compact", botId], (requestId) =>
+                  client.engines.compact({ botId, requestId }),
+                )
+              }
+            >
+              {isPt ? "Compactar contexto" : "压缩上下文"}
+            </Button>
+          )}
+        </div>
+      </div>
+    </ContextWindow>
+  );
+}

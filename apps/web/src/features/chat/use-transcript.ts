@@ -1,0 +1,315 @@
+import type { TranscriptItem } from "@persona/agent/transcript";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+
+const positions = new Map<
+  number,
+  {
+    top: number;
+    following: boolean;
+    range: { start: number; end: number } | null;
+  }
+>();
+export function clearTranscriptPositions(ids?: Set<number>) {
+  for (const id of positions.keys()) if (!ids?.has(id)) positions.delete(id);
+}
+window.addEventListener("persona:pair", () => positions.clear());
+const pageSize = 120;
+const keyOf = (item: TranscriptItem) => `${item.kind}:${item.id}`;
+const incoming = (item: TranscriptItem) =>
+  item.kind === "attachments" ||
+  (item.kind === "message" && item.message.role === "assistant");
+
+export function useTranscript(
+  items: TranscriptItem[],
+  ready: boolean,
+  sentRequest?: string,
+  typing = false,
+  botId?: number,
+) {
+  const viewport = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const restored = useRef(
+    botId === undefined ? undefined : positions.get(botId),
+  );
+  const following = useRef(restored.current?.following ?? true);
+  const frame = useRef<number | undefined>(undefined);
+  const measure = useRef(() => {});
+  const previous = useRef<{
+    items: TranscriptItem[];
+    ready: boolean;
+    width: number;
+    height: number;
+    padding: number;
+    typing: boolean;
+  }>({
+    items: [],
+    ready: false,
+    width: 0,
+    height: 0,
+    padding: 0,
+    typing: false,
+  });
+  const sent = useRef(sentRequest);
+  const ownedTop = useRef(0);
+  const scrolled = useRef(false);
+  const jumping = useRef(false);
+  const animate = useRef(false);
+  const scrolling = useRef(false);
+  const anchor = useRef<{ key: string; top: number } | null>(null);
+  const reading = useRef<{ node: HTMLElement; top: number } | null>(null);
+  const reply = useRef<string | null>(null);
+  const [range, setRange] = useState<{ start: number; end: number } | null>(
+    restored.current?.range ?? null,
+  );
+  const [atBottom, setAtBottom] = useState(true);
+  const [unread, setUnread] = useState(false);
+  const start = range?.start ?? Math.max(0, items.length - pageSize);
+  const end = range?.end ?? items.length;
+  const visible = items.slice(start, end);
+  const schedule = useCallback(() => {
+    if (frame.current !== undefined) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = undefined;
+      measure.current();
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    const first = previous.current.items[0];
+    const prepended = first
+      ? items.findIndex((item) => keyOf(item) === keyOf(first))
+      : 0;
+    if (range && prepended > 0) {
+      previous.current = { ...previous.current, items };
+      setRange({
+        start: Math.max(0, range.start + prepended - pageSize),
+        end: range.start + prepended + pageSize,
+      });
+      return;
+    }
+    if (previous.current.ready && sentRequest && sent.current !== sentRequest) {
+      following.current = true;
+      jumping.current = true;
+      animate.current = false;
+      scrolling.current = false;
+      setRange(null);
+    }
+    sent.current = sentRequest;
+    const nodes = new Map(
+      Array.from(content.current?.children ?? []).flatMap((child) =>
+        child instanceof HTMLElement && child.dataset.transcriptKey
+          ? [[child.dataset.transcriptKey, child] as const]
+          : [],
+      ),
+    );
+    const seen = new Set(previous.current.items.map(keyOf));
+    measure.current = () => {
+      const element = viewport.current;
+      const list = content.current;
+      if (previous.current.typing !== typing) scrolling.current = false;
+      if (
+        !element ||
+        !list ||
+        !ready ||
+        !element.checkVisibility() ||
+        scrolling.current
+      )
+        return;
+      const old = previous.current;
+      const added =
+        old.ready && old.items !== items
+          ? items.filter((item) => incoming(item) && !seen.has(keyOf(item)))
+          : [];
+      const style = getComputedStyle(element);
+      const top = Number.parseFloat(style.paddingTop);
+      const bottom = Number.parseFloat(style.paddingBottom);
+      const bounds = element.getBoundingClientRect();
+      if (
+        scrolled.current &&
+        old.width === element.clientWidth &&
+        old.height === element.clientHeight &&
+        old.padding === bottom &&
+        Math.abs(element.scrollTop - ownedTop.current) > 1
+      ) {
+        reading.current = null;
+        following.current =
+          element.scrollHeight - element.clientHeight - element.scrollTop <= 2;
+        reply.current = null;
+        if (!following.current && !range) setRange({ start, end });
+        if (following.current && range && end === items.length) setRange(null);
+      }
+      scrolled.current = false;
+      let target = element.scrollTop;
+      if (!old.ready || jumping.current) {
+        target =
+          restored.current && !restored.current.following
+            ? restored.current.top
+            : element.scrollHeight;
+        const wasFollowing = restored.current?.following ?? true;
+        restored.current = undefined;
+        following.current = wasFollowing;
+        reply.current = null;
+        jumping.current = false;
+        setUnread(false);
+      } else if (anchor.current) {
+        const node = nodes.get(anchor.current.key);
+        if (node) {
+          target += node.getBoundingClientRect().top - anchor.current.top;
+          reading.current = { node, top: anchor.current.top };
+        }
+        anchor.current = null;
+      } else if (added.length && following.current) {
+        const first = added.map((item) => nodes.get(keyOf(item))).find(Boolean);
+        const lastItem = added.at(-1);
+        const last = lastItem ? nodes.get(keyOf(lastItem)) : undefined;
+        if (
+          first &&
+          last &&
+          last.getBoundingClientRect().bottom -
+            first.getBoundingClientRect().top >
+            element.clientHeight - top - bottom
+        ) {
+          reply.current = first.dataset.transcriptKey ?? null;
+          target += first.getBoundingClientRect().top - bounds.top - top;
+          following.current = false;
+          if (!range) setRange({ start, end });
+        } else target = element.scrollHeight;
+      } else if (added.length) setUnread(true);
+      else if (following.current) target = element.scrollHeight;
+      else if (reply.current) {
+        const node = nodes.get(reply.current);
+        if (node) target += node.getBoundingClientRect().top - bounds.top - top;
+      } else if (reading.current && list.contains(reading.current.node)) {
+        target +=
+          reading.current.node.getBoundingClientRect().top -
+          reading.current.top;
+      }
+      if (
+        animate.current &&
+        Math.abs(
+          element.scrollTop -
+            Math.min(target, element.scrollHeight - element.clientHeight),
+        ) > 1 &&
+        !matchMedia("(prefers-reduced-motion: reduce)").matches
+      ) {
+        animate.current = false;
+        scrolling.current = true;
+        element.scrollTo({ top: target, behavior: "smooth" });
+        return;
+      }
+      animate.current = false;
+      if (target !== element.scrollTop) element.scrollTop = target;
+      ownedTop.current = element.scrollTop;
+      if (botId !== undefined)
+        positions.set(botId, {
+          top: element.scrollTop,
+          following: following.current,
+          range,
+        });
+      const bottomReached =
+        element.scrollHeight - element.clientHeight - element.scrollTop <= 2;
+      setAtBottom(bottomReached && end === items.length);
+      if (bottomReached && end === items.length) setUnread(false);
+      if (!following.current && !reading.current) {
+        const node = document
+          .elementFromPoint(
+            bounds.left + bounds.width / 2,
+            bounds.top + top + 1,
+          )
+          ?.closest<HTMLElement>("[data-transcript-key]");
+        if (node && list.contains(node))
+          reading.current = { node, top: node.getBoundingClientRect().top };
+      } else if (following.current) reading.current = null;
+      previous.current = {
+        items,
+        ready,
+        width: element.clientWidth,
+        height: element.clientHeight,
+        padding: bottom,
+        typing,
+      };
+    };
+    measure.current();
+  }, [items, ready, range, start, end, sentRequest, typing, botId]);
+
+  useEffect(() => {
+    const element = viewport.current;
+    const complete = () => {
+      if (!scrolling.current) return;
+      scrolling.current = false;
+      ownedTop.current = element?.scrollTop ?? 0;
+      schedule();
+    };
+    const interrupt = () => {
+      if (!scrolling.current || !element) return;
+      scrolling.current = false;
+      element.scrollTo({ top: element.scrollTop, behavior: "instant" });
+      following.current = false;
+      scrolled.current = true;
+      schedule();
+    };
+    element?.addEventListener("scrollend", complete);
+    element?.addEventListener("wheel", interrupt, { passive: true });
+    element?.addEventListener("touchstart", interrupt, { passive: true });
+    const observer = new ResizeObserver(() => measure.current());
+    if (viewport.current) observer.observe(viewport.current);
+    if (content.current) observer.observe(content.current);
+    return () => {
+      observer.disconnect();
+      element?.removeEventListener("scrollend", complete);
+      element?.removeEventListener("wheel", interrupt);
+      element?.removeEventListener("touchstart", interrupt);
+      if (frame.current !== undefined) cancelAnimationFrame(frame.current);
+    };
+  }, [schedule]);
+
+  return {
+    initialized: previous.current.ready,
+    viewport,
+    content,
+    visible,
+    hasEarlier: start > 0,
+    atLatest: end === items.length,
+    atBottom,
+    unread,
+    onScroll() {
+      if (scrolling.current) return;
+      scrolled.current = true;
+      schedule();
+    },
+    jumpToLatest() {
+      following.current = true;
+      jumping.current = true;
+      animate.current = true;
+      setRange(null);
+      schedule();
+    },
+    async loadEarlier(load?: () => Promise<void>) {
+      const first = content.current?.querySelector<HTMLElement>(
+        "[data-transcript-key]",
+      );
+      if (first?.dataset.transcriptKey)
+        anchor.current = {
+          key: first.dataset.transcriptKey,
+          top: first.getBoundingClientRect().top,
+        };
+      following.current = false;
+      reply.current = null;
+      if (load) {
+        await load();
+        setRange({ start, end });
+        return;
+      }
+      setRange({
+        start: Math.max(0, start - pageSize),
+        end: Math.min(items.length, start + pageSize),
+      });
+    },
+  };
+}

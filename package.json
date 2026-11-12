@@ -1,0 +1,30 @@
+{
+  "name": "persona",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.20.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "chat": "node --env-file-if-exists=.env apps/cli/src/main.ts",
+    "host": "node apps/cli/src/host.ts",
+    "desktop": "pnpm --filter @persona/desktop dev",
+    "start": "node --env-file-if-exists=.env apps/api/src/main.ts",
+    "web": "pnpm --filter @persona/web dev",
+    "build": "pnpm --filter @persona/web build",
+    "test:e2e": "pnpm build && playwright test",
+    "test": "vitest run",
+    "eval:computer": "node apps/cli/src/eval-computer.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check apps packages package.json persona.config.json tsconfig.json biome.json vitest.config.ts playwright.config.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@playwright/test": "1.64.1",
+    "@types/cross-spawn": "6.0.6",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2",
+    "vitest": "5.0.4"
+  }
+}

@@ -1,0 +1,326 @@
+import { randomUUID } from "node:crypto";
+import type { Context } from "@earendil-works/chord/context";
+import type { WorkProcess } from "../harness/process.ts";
+import type { ProductResult } from "../harness/types.ts";
+import type {
+  ComputerRequest,
+  ComputerService,
+  ServiceState,
+} from "./service-types.ts";
+
+type Control = {
+  owner?: string;
+  lease?: string;
+  releasing?: string;
+  revision: number;
+  calls: Set<{
+    botId: number;
+    controller: AbortController;
+    signal: AbortSignal;
+    done: Promise<unknown>;
+  }>;
+  botId?: number;
+};
+
+export class ComputerServices {
+  private readonly workers = new Map<number, Promise<WorkProcess>>();
+  private readonly controls = new Map<string, Control>();
+  private readonly isolatedBrowsers = new Set<number>();
+  private readonly open: (
+    botId: number,
+    context: Context,
+  ) => Promise<WorkProcess>;
+
+  constructor(open: (botId: number, context: Context) => Promise<WorkProcess>) {
+    this.open = open;
+  }
+
+  private worker(
+    botId: number,
+    context: Context,
+    service: ComputerService = "browser",
+  ) {
+    const key = service === "desktop" ? 0 : botId;
+    let worker = this.workers.get(key);
+    if (!worker) {
+      worker = this.open(botId, context);
+      this.workers.set(key, worker);
+      void worker
+        .then((process) => process.closed)
+        .catch(() => {})
+        .finally(() => {
+          if (this.workers.get(key) === worker) this.workers.delete(key);
+        });
+    }
+    return worker;
+  }
+
+  private control(botId: number, service: ComputerService) {
+    const key =
+      service === "browser" && this.isolatedBrowsers.has(botId)
+        ? `browser:${botId}`
+        : "desktop";
+    let control = this.controls.get(key);
+    if (!control) {
+      control = { revision: 0, calls: new Set() };
+      this.controls.set(key, control);
+    }
+    return control;
+  }
+
+  async prepare(
+    botId: number,
+    service: ComputerService,
+    context: Context,
+    install = false,
+  ): Promise<ServiceState> {
+    try {
+      const worker = await this.worker(botId, context, service);
+      if (install && service === "browser")
+        await worker.computer({ operation: "install", service });
+      const state = await worker.computer<
+        ServiceState & { sharedDesktop?: boolean }
+      >({
+        operation: "prepare",
+        service,
+      });
+      if (service === "browser" && state.available) {
+        if (state.sharedDesktop === false) this.isolatedBrowsers.add(botId);
+        else this.isolatedBrowsers.delete(botId);
+      }
+      return {
+        available: state.available,
+        error: state.error,
+        ...(state.mode ? { mode: state.mode } : {}),
+      };
+    } catch (error) {
+      return {
+        available: false,
+        error: error instanceof Error ? error.message : "工作电脑服务不可用。",
+      };
+    }
+  }
+
+  async catalog(
+    botId: number,
+    service: ComputerService,
+    context: Context,
+    signal?: AbortSignal,
+  ) {
+    return (await this.worker(botId, context, service)).computer(
+      {
+        operation: "catalog",
+        service,
+      },
+      signal,
+    );
+  }
+
+  async mode(botId: number, mode: "headless" | "headed", context: Context) {
+    const controls = new Set([
+      this.control(botId, "browser"),
+      this.control(botId, "desktop"),
+    ]);
+    for (const control of controls)
+      if (control.owner || control.lease || control.calls.size)
+        throw new Error("请先结束电脑任务并交还控制权，再切换浏览器模式。");
+    const lease = randomUUID();
+    for (const control of controls) control.lease = lease;
+    try {
+      const worker = await this.worker(botId, context);
+      const state = await worker.computer<ServiceState>({
+        operation: "mode",
+        service: "browser",
+        mode,
+      });
+      if (!state.available) {
+        this.isolatedBrowsers.delete(botId);
+        return state;
+      }
+      return await this.prepare(botId, "browser", context);
+    } finally {
+      for (const control of controls) {
+        control.lease = undefined;
+        control.revision++;
+      }
+    }
+  }
+
+  async viewer<T>(
+    botId: number,
+    input: Extract<ComputerRequest, { operation: "view" }>,
+    signal: AbortSignal,
+    context: Context,
+  ) {
+    const worker =
+      input.action === "open"
+        ? await this.worker(botId, context, input.service)
+        : await this.workers.get(input.service === "desktop" ? 0 : botId);
+    if (!worker) {
+      if (input.action === "close") return {} as T;
+      throw new Error("画面连接已失效。请重新连接。");
+    }
+    if (input.action !== "send" || input.message?.type === "ack")
+      return worker.computer<T>(input, signal);
+    const control = this.control(botId, input.service);
+    if (control.releasing) throw new Error("正在交还控制权。请等待。");
+    if (input.message?.type !== "back")
+      await this.settle(botId, input.service, signal);
+    signal.throwIfAborted();
+    if (control.releasing || !control.lease)
+      throw new Error("请先接管，再操作电脑。");
+    const controller = new AbortController();
+    const combined = AbortSignal.any([signal, controller.signal]);
+    const done = worker.computer<T>(input, combined);
+    const call = { botId, controller, signal: combined, done };
+    control.calls.add(call);
+    try {
+      return await done;
+    } finally {
+      control.calls.delete(call);
+    }
+  }
+
+  private async settle(
+    botId: number,
+    service: ComputerService,
+    signal?: AbortSignal,
+  ) {
+    const control = this.control(botId, service);
+    await Promise.all(
+      [...this.workers]
+        .filter(([id]) => this.control(id, "browser") === control)
+        .map(async ([, worker]) =>
+          (await worker).computer(
+            { operation: "settle", service: "browser" },
+            signal,
+          ),
+        ),
+    );
+  }
+
+  viewAccess(botId: number, service: ComputerService, lease?: string) {
+    const control = this.control(botId, service);
+    if (control.lease && control.lease !== lease)
+      throw new Error("用户正在另一窗口接管。请等待交还控制权。");
+    if (lease && control.lease !== lease) throw new Error("这次接管已失效。");
+  }
+
+  async call(
+    botId: number,
+    service: ComputerService,
+    name: string,
+    args: Record<string, unknown>,
+    owner: string,
+    signal: AbortSignal,
+    context: Context,
+    cursorColor?: string,
+  ) {
+    return this.run(botId, service, owner, signal, async (combined) => {
+      const worker = await this.worker(botId, context, service);
+      combined.throwIfAborted();
+      return worker.computer<ProductResult>(
+        { operation: "call", service, name, arguments: args, cursorColor },
+        combined,
+      );
+    });
+  }
+
+  async run<T>(
+    botId: number,
+    service: ComputerService,
+    owner: string,
+    signal: AbortSignal,
+    action: (signal: AbortSignal) => Promise<T>,
+  ) {
+    signal.throwIfAborted();
+    if (service === "desktop") await this.settle(botId, service, signal);
+    signal.throwIfAborted();
+    const control = this.control(botId, service);
+    if ([...control.calls].some((call) => call.signal.aborted))
+      throw new Error("前次电脑操作尚未收束。请等待结果确认后再操作。");
+    if (control.lease) throw new Error("用户正在接管。交还后请重新观察画面。");
+    if (control.owner && control.owner !== owner)
+      throw new Error("其他任务正在操作这台电脑。请等待该任务结束。");
+    control.owner = owner;
+    control.botId = botId;
+    const revision = control.revision;
+    const controller = new AbortController();
+    const combined = AbortSignal.any([signal, controller.signal]);
+    const done = action(combined);
+    const pending = { botId, controller, signal: combined, done };
+    control.calls.add(pending);
+    try {
+      const result = await done;
+      if (combined.aborted || revision !== control.revision)
+        throw new Error("操作结果待核对。请重新观察画面，不要直接重试。");
+      return result;
+    } catch (error) {
+      if (combined.aborted || revision !== control.revision)
+        throw new Error("操作结果待核对。请重新观察画面，不要直接重试。");
+      throw error;
+    } finally {
+      control.calls.delete(pending);
+    }
+  }
+
+  async takeover(
+    botId: number,
+    service: ComputerService,
+    lease: string = randomUUID(),
+  ) {
+    const control = this.control(botId, service);
+    if (control.lease) throw new Error("用户正在接管这台电脑。");
+    control.lease = lease;
+    control.revision++;
+    for (const call of control.calls) call.controller.abort();
+    await Promise.allSettled([...control.calls].map((call) => call.done));
+    try {
+      await this.settle(botId, service);
+      return lease;
+    } catch (error) {
+      control.lease = undefined;
+      throw error;
+    }
+  }
+
+  async release(botId: number, service: ComputerService, lease: string) {
+    const control = this.control(botId, service);
+    if (control.lease !== lease) throw new Error("这次接管已失效。");
+    control.releasing = lease;
+    try {
+      await Promise.allSettled([...control.calls].map((call) => call.done));
+      if (control.lease !== lease) throw new Error("这次接管已失效。");
+      control.lease = undefined;
+      control.revision++;
+    } finally {
+      if (control.releasing === lease) control.releasing = undefined;
+    }
+  }
+
+  async disable(botId: number, service: ComputerService) {
+    const control = this.control(botId, service);
+    const calls = [...control.calls].filter((call) => call.botId === botId);
+    for (const call of calls) call.controller.abort();
+    await Promise.allSettled(calls.map((call) => call.done));
+  }
+
+  finish(owner: string) {
+    for (const control of this.controls.values()) {
+      if (control.owner !== owner) continue;
+      for (const call of control.calls) call.controller.abort();
+      control.owner = undefined;
+    }
+  }
+
+  async close() {
+    for (const control of this.controls.values())
+      for (const call of control.calls) call.controller.abort();
+    await Promise.allSettled(
+      [...this.workers.values()].map(async (worker) => (await worker).close()),
+    );
+    this.workers.clear();
+    this.controls.clear();
+    this.isolatedBrowsers.clear();
+  }
+}

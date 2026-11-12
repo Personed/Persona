@@ -1,0 +1,118 @@
+{
+  "source": "shared-contract-probe:2026-10-29",
+  "nativePolicy": {
+    "source": "task-11030:2026-10-31",
+    "completion": "pass",
+    "elapsedSeconds": 148.724,
+    "modelResponses": 25,
+    "toolCalls": 24,
+    "modelSeconds": 71.13,
+    "toolSeconds": 57.612,
+    "observed": [
+      "The computer boundary required run_steps for single actions while the shared policy delegated tool selection to the native driver.",
+      "A batch used wait_for as a tool name. A second batch lacked an observation target. Neither dispatched input.",
+      "Background clicks did not change playback. Bringing the window forward did not change the next click's delivery mode.",
+      "A smaller tree omitted the intended button. The agent selected a search token while intending to play.",
+      "A native playback button and subsequent screenshot confirmed the requested title and artist."
+    ]
+  },
+  "handoff": {
+    "source": "task-10902:2026-10-31",
+    "observed": [
+      "A rebuilt native session received tool arguments with an earlier process and window identity.",
+      "A historical result stated that an old snapshot token remained valid.",
+      "The agent sent an observation to the stale target before confirming its new identity."
+    ]
+  },
+  "nativeDiscovery": {
+    "source": "task-10789:2026-10-31",
+    "completion": "pass",
+    "elapsedSeconds": 204.543,
+    "toolCalls": 15,
+    "recursiveShellSeconds": 122.5,
+    "observed": [
+      "The app catalog contained 275 records. Nested result searches did not locate the installed player.",
+      "Recursive disk discovery timed out before a registry lookup found the player.",
+      "An empty accessibility tree preceded an ineffective input batch.",
+      "Native set_value and a later playback click completed the task. Delivery alone did not verify the search."
+    ]
+  },
+  "mutations": ["click", "run_steps", "run_script"],
+  "playerDiscovery": {
+    "source": "task-9843:2026-10-30",
+    "completion": "not-completed",
+    "elapsedSeconds": 161.074,
+    "toolCalls": 15,
+    "modelResponses": 15,
+    "imagesDelivered": 6,
+    "shellSeconds": 29.324,
+    "observed": [
+      "An application catalog was cut inside a JSON string. Parsing the saved output failed.",
+      "The agent searched disk roots before launching the player.",
+      "A failed batch included successful end observation, but the next action was blocked.",
+      "A script used background delivery again after its failure. The target track was not verified."
+    ]
+  },
+  "piObservation": {
+    "source": "task-9586:2026-10-30",
+    "completion": "unreviewed",
+    "elapsedSeconds": 79.733,
+    "modelResponses": 9,
+    "toolCalls": 8,
+    "codemodeCalls": 8,
+    "observed": [
+      "A screenshot was serialized by text(result.content). The model received zero image blocks.",
+      "The serialized output exceeded 100000 tokens and was truncated.",
+      "A script failed with ReferenceError: setTimeout is not defined.",
+      "Enter did not specify the input control. The later click used a fresh Send message control."
+    ]
+  },
+  "failures": [
+    "Saved native outputSchema and annotations disappeared from tools/list.",
+    "A script reached the driver while a previous action required observation.",
+    "Native script cursor moved to 954,370; the effect retained the previous click."
+  ],
+  "initialization": {
+    "source": "task-9518:2026-10-30",
+    "completion": "not-completed",
+    "elapsedSeconds": 31.99,
+    "toolCalls": 0,
+    "observed": [
+      "RPC timed out after 30 seconds. The request method was not recorded.",
+      "Configured MCP servers required discovery tools that were not loaded.",
+      "The warning also occurred during successful startup probes. The timeout cause remains unknown."
+    ]
+  },
+  "cancellation": {
+    "source": "task-9410:2026-10-30",
+    "completion": "not-completed",
+    "mcpTimeoutSeconds": 60,
+    "childAbortSeconds": [601.881, 601.421],
+    "parentStopSeconds": 770.535,
+    "observed": [
+      "Search text entered. Target track was not played.",
+      "Cancelled observation and action remained active."
+    ]
+  },
+  "nativeFlow": {
+    "source": "task-10519:2026-10-31",
+    "completion": "not-completed",
+    "elapsedSeconds": 155.762,
+    "modelResponses": 17,
+    "toolCalls": 17,
+    "timedDesktopCalls": 12,
+    "desktopWallSeconds": 39.489,
+    "driverReportedSeconds": 12.566,
+    "observationTimeoutSeconds": 31.497,
+    "observed": [
+      "The host started a session and supplied arguments not present in the Agent request.",
+      "Effects repeatedly queried windows and native cursor state.",
+      "Event projection waited for storage and replaced all turn drafts.",
+      "Foreground input lost focus. The target song was not verified before Stop."
+    ],
+    "limits": [
+      "The wall-time difference includes transport and storage. It does not identify one cause.",
+      "The observation timeout has no native result. Its internal blocking phase is unknown."
+    ]
+  }
+}

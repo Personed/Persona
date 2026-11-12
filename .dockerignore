@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+.git
+.env*
+**/.env*
+data
+references
+coverage
+test-results
+playwright-report
+apps/desktop/runtime
+apps/desktop/release
+deploy/ssh
+deploy/persona.config.json
