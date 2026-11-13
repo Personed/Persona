@@ -68,6 +68,11 @@ O smoke cria também um Bot sintético pelo serviço empacotado, envia uma mensa
 via API autenticada e verifica a resposta e o histórico após reinício. Um Harness
 ACP de teste responde localmente; não são feitas chamadas a modelos reais.
 
+`node --test apps/desktop/tauri-pilot/offline-profile.test.mjs` verifica uma cópia
+offline de dados sintéticos: autenticação, credencial criptografada, Bot e histórico
+continuam acessíveis e a origem não muda. O teste usa o mesmo serviço local, mas
+não abre o Electron ou testa uma migração de perfil real.
+
 Para experimentar persistência local isolada, inicie o piloto com
 `--persistent-local`. Os dados ficam em `target/test-data/pilot-local-v1`, junto
 ao executável portátil ou no diretório do piloto de desenvolvimento. Fechar o

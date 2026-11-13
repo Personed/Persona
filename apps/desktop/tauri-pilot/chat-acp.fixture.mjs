@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
+import { portable } from "./layout.mjs";
 
 const require = createRequire(
-  new URL("./runtime/package.json", import.meta.url),
+  new URL(
+    portable
+      ? "./runtime/package.json"
+      : "../../../packages/agent/package.json",
+    import.meta.url,
+  ),
 );
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
 const {
