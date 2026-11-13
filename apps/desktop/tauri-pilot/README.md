@@ -178,6 +178,13 @@ suas próprias instâncias descartáveis e verificam restauração e retry no Wi
 o fechamento da janela anterior e lê o arquivo persistido. Não verifica cliques no
 menu nativo nem a recuperação visual após falhas.
 
+No Windows, uma segunda execução normal sinaliza a primeira e encerra antes de
+carregar ou alterar a lista de ambientes. A primeira solicita que a janela atual
+ou o setup seja exibido e receba foco; a ativação efetiva depende das regras do
+Windows. Os smokes usam diretórios separados e não participam desse bloqueio.
+O teste automatizado verifica a sinalização entre processos e a liberação do
+bloqueio, não a ativação visual da janela.
+
 `--setup-smoke-test` executa no WebView2 real: lê DOM/CSS, exige `inline-flex` na
 classe `.button` em um host block temporário e token/radius `999px` reais (itens
 grid/flex são blockificados), observa negações de

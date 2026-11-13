@@ -82,8 +82,10 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
             return Err("remote mode mismatch".into());
         }
         // Read the disposable file, not the in-memory list, to verify the next launch's state.
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("target/test-data/desktop/instances.json");
+        let path = app
+            .state::<Arc<crate::desktop::Desktop>>()
+            .directory
+            .join("instances.json");
         let text =
             std::fs::read_to_string(path).map_err(|_| "could not read persisted environments")?;
         let saved: serde_json::Value =

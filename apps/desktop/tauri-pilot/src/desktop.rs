@@ -92,6 +92,16 @@ impl Default for Desktop {
 }
 
 impl Desktop {
+    #[cfg(windows)]
+    pub fn activation_label(&self) -> String {
+        self.current
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|target| target.label.clone())
+            .unwrap_or_else(|| "setup".into())
+    }
+
     /// Reads the disposable instance list. A malformed file is ignored instead of
     /// failing the launch; the pilot never owns real user configuration.
     pub fn load(&self) {

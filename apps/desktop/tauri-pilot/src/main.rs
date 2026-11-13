@@ -15,6 +15,8 @@ mod remote;
 mod remote_smoke;
 mod setup;
 mod setup_smoke;
+#[cfg(windows)]
+mod single_instance;
 mod startup_check;
 mod switch_smoke;
 use process::OwnedProcess;
@@ -526,13 +528,46 @@ fn allows_navigation(internal: &Url, target: &Url) -> bool {
 }
 
 fn main() {
+    #[cfg(windows)]
+    let mut primary = {
+        let isolated = startup_check::enabled()
+            || std::env::args().any(|arg| {
+                arg == "--smoke-test"
+                    || arg.ends_with("-smoke-test")
+                    || arg == "--native-death-test"
+            });
+        if isolated {
+            None
+        } else {
+            match single_instance::Primary::acquire() {
+                Ok(Some(primary)) => Some(primary),
+                Ok(None) => return,
+                Err(error) => {
+                    eprintln!("pilot: single-instance admission failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
     let state = Arc::new(setup::Setup::default());
     let check = startup_check::prepare().expect("failed to prepare disposable startup check");
     let desktop = Arc::new(
         check
             .as_ref()
             .map(|check| check.desktop())
-            .unwrap_or_default(),
+            .unwrap_or_else(|| {
+                let mut desktop = desktop::Desktop::default();
+                if std::env::args().any(|arg| {
+                    arg == "--smoke-test"
+                        || arg.ends_with("-smoke-test")
+                        || arg == "--native-death-test"
+                }) {
+                    desktop.directory = layout::base()
+                        .join("target/test-data")
+                        .join(format!("desktop-smoke-{}", uuid::Uuid::new_v4()));
+                }
+                desktop
+            }),
     );
     let app = tauri::Builder::default()
         .runtime(tauri_runtime_wry::Wry::default())
@@ -591,6 +626,10 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("failed to run the isolated Persona Tauri pilot");
+    #[cfg(windows)]
+    if let Some(primary) = primary.as_mut() {
+        primary.listen(app.handle().clone());
+    }
     app.run(move |_, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
             if let Some(active) = state.request_close() {
