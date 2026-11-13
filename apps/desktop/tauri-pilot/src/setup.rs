@@ -1,8 +1,11 @@
 use crate::{Supervisor, run_supervisor};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    mpsc,
+use std::{
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
 };
 use tauri::{Manager, Url};
 
@@ -10,26 +13,85 @@ use tauri::{Manager, Url};
 pub struct Setup {
     pub active: Mutex<Option<Arc<Supervisor>>>,
     pub closing: AtomicBool,
+    /// A connection is established and showing the app UI.
+    pub connected: AtomicBool,
+    /// The last native failure, so a caller can report why an attempt failed.
+    pub last_error: Mutex<Option<String>>,
     pub accepted: AtomicUsize,
     pub navigation_blocked: AtomicUsize,
     pub failed: AtomicBool,
+    switching: AtomicBool,
+    switch_cancelled: AtomicBool,
+    settled: Condvar,
 }
 
 impl Setup {
+    fn register(&self, supervisor: Arc<Supervisor>, switching: bool) -> Result<(), String> {
+        let mut active = self.active.lock().unwrap();
+        if active.is_some()
+            || self.closing.load(Ordering::SeqCst)
+            || (!switching && self.switching.load(Ordering::SeqCst))
+            || (switching && self.switch_cancelled.load(Ordering::SeqCst))
+        {
+            return Err("Aguarde a operação atual terminar.".into());
+        }
+        *active = Some(supervisor);
+        *self.last_error.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn reserve_switch(&self, connected_only: bool) -> Result<Option<Arc<Supervisor>>, String> {
+        let active = self.active.lock().unwrap();
+        if self.closing.load(Ordering::SeqCst)
+            || self.switching.load(Ordering::SeqCst)
+            || (connected_only && !self.connected.load(Ordering::SeqCst))
+        {
+            return Err("Aguarde a operação atual terminar.".into());
+        }
+        self.switching.store(true, Ordering::SeqCst);
+        self.switch_cancelled.store(false, Ordering::SeqCst);
+        if let Some(active) = active.as_ref() {
+            active.superseded.store(true, Ordering::SeqCst);
+        }
+        Ok(active.clone())
+    }
+
     pub fn request_close(&self) -> Option<Arc<Supervisor>> {
         let active = self.active.lock().unwrap();
         self.closing.store(true, Ordering::SeqCst);
         active.clone()
     }
 
-    pub fn finish_attempt(&self, opened: bool) -> bool {
+    /// Waits until the running attempt settles. The condvar avoids polling.
+    pub fn wait_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
         let mut active = self.active.lock().unwrap();
-        let retry = !opened && !self.closing.load(Ordering::SeqCst);
+        while active.is_some() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (guard, result) = self.settled.wait_timeout(active, remaining).unwrap();
+            active = guard;
+            if result.timed_out() && active.is_some() {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn finish_attempt(&self, opened: bool, supervisor: &Supervisor) -> bool {
+        let mut active = self.active.lock().unwrap();
+        let superseded =
+            supervisor.superseded.load(Ordering::SeqCst) || self.switching.load(Ordering::SeqCst);
+        let retry = (!opened || superseded) && !self.closing.load(Ordering::SeqCst);
         // Closing must either see this worker or observe idle and exit itself.
         *active = None;
-        if !retry {
+        self.connected.store(false, Ordering::SeqCst);
+        if !retry && !superseded {
             self.closing.store(true, Ordering::SeqCst);
         }
+        self.settled.notify_all();
         retry
     }
 }
@@ -54,10 +116,76 @@ fn url() -> Url {
 pub fn setup_state(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, Arc<Setup>>,
+    desktop: tauri::State<'_, Arc<crate::desktop::Desktop>>,
 ) -> Result<serde_json::Value, String> {
     check(&window)?;
     state.accepted.fetch_add(1, Ordering::SeqCst);
-    Ok(serde_json::json!({"instances": [], "prepare": false, "error": ""}))
+    let (instances, _) = desktop.list();
+    Ok(serde_json::json!({
+        "instances": instances.iter().map(crate::desktop::Instance::json).collect::<Vec<_>>(),
+        // The setup page expects the selected instance, not its id.
+        "selected": desktop.selected_instance().map(|item| item.json()),
+        "prepare": false,
+        "error": state.last_error.lock().unwrap().clone().unwrap_or_default()
+    }))
+}
+
+/// Registers one connection attempt and runs it on its own thread.
+fn begin(
+    app: tauri::AppHandle,
+    setup: Arc<Setup>,
+    desktop: Arc<crate::desktop::Desktop>,
+    remote_input: Option<serde_json::Value>,
+    switching: bool,
+) -> Result<mpsc::Receiver<serde_json::Value>, String> {
+    let supervisor = Arc::new(Supervisor::default());
+    setup.register(supervisor.clone(), switching)?;
+    let (send, result) = mpsc::channel();
+    std::thread::spawn(move || {
+        run_supervisor(app, supervisor, setup, desktop, send, remote_input);
+    });
+    Ok(result)
+}
+
+/// Replaces the current connection with another saved environment.
+pub fn switch(app: &tauri::AppHandle, instance: crate::desktop::Instance) {
+    let setup = app.state::<Arc<Setup>>().inner().clone();
+    let desktop = app.state::<Arc<crate::desktop::Desktop>>().inner().clone();
+    let active = match setup.reserve_switch(false) {
+        Ok(active) => active,
+        Err(_) => return,
+    };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Some(active) = active {
+            active.stop();
+        }
+        if !setup.wait_idle(Duration::from_secs(45)) {
+            setup.switching.store(false, Ordering::SeqCst);
+            show_failure(
+                &app,
+                &setup,
+                "O ambiente anterior ainda está encerrando. Aguarde e tente novamente.",
+            );
+            return;
+        }
+        let remote_input = if instance.mode == "existing" {
+            Some(serde_json::json!({
+                "mode": "existing",
+                "url": instance.url,
+                "name": instance.name,
+            }))
+        } else {
+            None
+        };
+        let result = begin(app.clone(), setup.clone(), desktop, remote_input, true);
+        setup.switching.store(false, Ordering::SeqCst);
+        if let Err(error) = result {
+            if !setup.closing.load(Ordering::SeqCst) {
+                show_failure(&app, &setup, &error);
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -73,31 +201,38 @@ pub async fn setup_submit(
             serde_json::json!({"ok": false, "error": "O ambiente local oferece somente execução nativa temporária. Docker não está disponível."}),
         );
     }
-    let supervisor = Arc::new(Supervisor::default());
-    {
-        let mut active = state.active.lock().unwrap();
-        if active.is_some() || state.closing.load(Ordering::SeqCst) {
-            return Ok(
-                serde_json::json!({"ok": false, "error": "Aguarde a operação atual terminar."}),
-            );
-        }
-        *active = Some(supervisor.clone());
-    }
     let app = window.app_handle().clone();
     let setup = state.inner().clone();
     let desktop = app.state::<Arc<crate::desktop::Desktop>>().inner().clone();
-    let (send, result) = mpsc::channel();
-    std::thread::spawn(move || {
-        run_supervisor(
-            app,
-            supervisor,
-            setup,
-            desktop,
-            send,
-            remote.then_some(value),
-        )
-    });
+    let replacement = if setup.connected.load(Ordering::SeqCst) {
+        match setup.reserve_switch(true) {
+            Ok(active) => Some(active),
+            Err(error) => return Ok(serde_json::json!({"ok": false, "error": error})),
+        }
+    } else {
+        None
+    };
     tauri::async_runtime::spawn_blocking(move || {
+        let switching = replacement.is_some();
+        if let Some(active) = replacement {
+            if let Some(active) = active {
+                active.stop();
+            }
+            if !setup.wait_idle(Duration::from_secs(45)) {
+                setup.switching.store(false, Ordering::SeqCst);
+                let error = "O ambiente anterior ainda está encerrando. Aguarde e tente novamente.";
+                show_failure(&app, &setup, error);
+                return Ok(serde_json::json!({"ok": false, "error": error}));
+            }
+        }
+        let result = begin(app, setup.clone(), desktop, remote.then_some(value), switching);
+        if switching {
+            setup.switching.store(false, Ordering::SeqCst);
+        }
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => return Ok(serde_json::json!({"ok": false, "cancelled": setup.switch_cancelled.load(Ordering::SeqCst), "error": error})),
+        };
         result
             .recv()
             .map_err(|_| "Preparação interrompida.".to_string())
@@ -112,7 +247,9 @@ pub fn setup_cancel(
     state: tauri::State<'_, Arc<Setup>>,
 ) -> Result<(), String> {
     check(&window)?;
-    if let Some(active) = state.active.lock().unwrap().as_ref() {
+    let active = state.active.lock().unwrap();
+    state.switch_cancelled.store(true, Ordering::SeqCst);
+    if let Some(active) = active.as_ref() {
         active.cancelled.store(true, Ordering::SeqCst);
         active.stop();
     }
@@ -132,6 +269,15 @@ pub fn progress(app: &tauri::AppHandle, phase: &str, message: &str) {
             "window.dispatchEvent(new CustomEvent('persona-setup-progress', {{detail:{value}}}))"
         ));
     }
+}
+
+pub fn show_failure(app: &tauri::AppHandle, setup: &Setup, message: &str) {
+    *setup.last_error.lock().unwrap() = Some(message.into());
+    if let Some(window) = app.get_webview_window("setup") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    progress(app, "error", message);
 }
 
 pub fn open(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -168,6 +314,10 @@ pub fn open(app: &tauri::AppHandle) -> tauri::Result<()> {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             let _ = closing_window.hide();
+            // A live connection outlives the setup window; only an idle app quits.
+            if state.connected.load(Ordering::SeqCst) {
+                return;
+            }
             if let Some(active) = state.request_close() {
                 active.stop();
             } else {
@@ -182,6 +332,51 @@ pub fn open(app: &tauri::AppHandle) -> tauri::Result<()> {
 mod tests {
     use super::*;
     use std::sync::Barrier;
+
+    #[test]
+    fn connected_submission_reserves_replacement_and_honors_gap_cancellation() {
+        for cancelled in [false, true] {
+            let state = Setup::default();
+            let old = Arc::new(Supervisor::default());
+            state.register(old.clone(), false).unwrap();
+            assert!(state.reserve_switch(true).is_err());
+            state.connected.store(true, Ordering::SeqCst);
+            assert!(state.reserve_switch(true).unwrap().is_some());
+            assert!(state.reserve_switch(true).is_err());
+            assert!(state.finish_attempt(true, &old));
+            assert!(
+                state
+                    .register(Arc::new(Supervisor::default()), false)
+                    .is_err()
+            );
+            state.switch_cancelled.store(cancelled, Ordering::SeqCst);
+            assert_eq!(
+                state
+                    .register(Arc::new(Supervisor::default()), true)
+                    .is_ok(),
+                !cancelled
+            );
+            assert!(!state.closing.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn switching_keeps_app_open_but_explicit_close_wins() {
+        for closing in [false, true] {
+            let state = Setup::default();
+            let supervisor = Arc::new(Supervisor::default());
+            *state.active.lock().unwrap() = Some(supervisor.clone());
+            state.connected.store(true, Ordering::SeqCst);
+            assert!(state.reserve_switch(true).unwrap().is_some());
+            if closing {
+                state.request_close();
+            }
+            assert_eq!(state.finish_attempt(true, &supervisor), !closing);
+            assert_eq!(state.closing.load(Ordering::SeqCst), closing);
+            assert!(!state.connected.load(Ordering::SeqCst));
+            assert!(state.wait_idle(Duration::ZERO));
+        }
+    }
 
     #[test]
     fn close_and_exit_cannot_lose_the_settled_worker() {
@@ -204,7 +399,7 @@ mod tests {
                         if close_first {
                             ordered.wait();
                         }
-                        let retry = state.finish_attempt(false);
+                        let retry = state.finish_attempt(false, &Supervisor::default());
                         if !close_first {
                             ordered.wait();
                         }

@@ -2133,6 +2133,7 @@ dependencies = [
  "tauri-build",
  "tauri-runtime",
  "tauri-runtime-wry",
+ "uuid",
  "windows",
 ]
 

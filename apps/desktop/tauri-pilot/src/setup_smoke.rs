@@ -14,12 +14,11 @@ pub(crate) fn read(
             let _ = send.send(value);
         })
         .map_err(|e| e.to_string())?;
-    serde_json::from_str(
-        &result
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())
+    match result.recv_timeout(Duration::from_secs(10)) {
+        Ok(value) => serde_json::from_str(&value).map_err(|e| e.to_string()),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(format!("window closed: {script}")),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(format!("eval timed out: {script}")),
+    }
 }
 
 pub(crate) fn wait(window: &tauri::WebviewWindow, script: &str) -> Result<(), String> {

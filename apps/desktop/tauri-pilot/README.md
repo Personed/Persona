@@ -5,8 +5,8 @@ e não promete paridade. Abre o setup existente em uma WebView local separada.
 O submit local temporário usa a UI existente de `apps/web/dist`, servida pelo
 runtime Node real com dados descartáveis. O submit remoto abre essa UI em uma
 WebView HTTP separada, depois de validar o servidor. A UI real recebe a ponte
-`window.personaDesktop` (estado do ambiente, tema e menu). Não grava conexões
-nem instala runtimes.
+`window.personaDesktop` (estado do ambiente, tema e menu). Salva conexões apenas
+em dados descartáveis do piloto; não instala runtimes.
 
 ## Executar
 
@@ -28,6 +28,7 @@ cargo build --locked
 ./target/debug/persona-tauri-pilot.exe --smoke-test
 ./target/debug/persona-tauri-pilot.exe --setup-smoke-test
 ./target/debug/persona-tauri-pilot.exe --remote-smoke-test
+./target/debug/persona-tauri-pilot.exe --switch-smoke-test
 ./native-death.test.ps1
 ```
 
@@ -74,8 +75,8 @@ compilação). Não é um pacote distribuível. Bundles/instaladores estão desa
   uma chamada nativa não retornar. Cancelamento bloqueia navegações futuras.
 - A navegação fica restrita ao esquema, host e porta confirmados; novas janelas
   e pedidos de permissão WebView retornam Deny. `about:blank` só é permitido
-  durante bootstrap. Não há plugins ou ACL remota privilegiada. Os comandos de
-  setup não são concedidos à janela HTTP.
+  durante bootstrap. A ACL remota concede somente os comandos de desktop descritos
+  abaixo; os comandos de setup não são concedidos à janela HTTP.
   ACL IPC vazia não substitui a política de permissões do navegador. Na conexão
   remota, popups HTTPS sem userinfo são abertos pelo sistema e negados como
   janelas internas; os demais popups são negados.
@@ -135,8 +136,22 @@ Progresso corresponde a startup real, sessão verificada e janela pronta. O coma
 cancel solicita stop ao supervisor próprio e retorna; submit continua pendente
 até settle dos processos e então entrega o resultado de cancelamento.
 Falhas/cancelamento permitem outra tentativa com novo serviço/diretório temporário.
-Se o worker nativo não terminar após cancelamento, o piloto encerra em vez de
-reusar um label cujo bootstrap ainda possa executar. Fechar o setup solicita stop.
+Se o worker nativo não terminar após cancelamento, o piloto mantém a reserva do
+label até que ele termine ou o usuário encerre o aplicativo. Fechar o setup durante
+uma conexão ativa apenas oculta a janela.
+
+## Ambientes salvos
+
+O piloto mantém a lista e a seleção em `target/test-data/desktop/instances.json`,
+sem ler ou alterar a configuração real do Electron. O menu oferece conexão local,
+conexão a outro servidor e seleção de ambientes salvos. A troca encerra a conexão
+anterior antes de iniciar a próxima; se a nova conexão falhar, a seleção salva é
+preservada, mas a conexão anterior não é reiniciada automaticamente. Os smokes
+reinicializam essa lista descartável ao iniciar.
+
+`--switch-smoke-test` chama o handler do menu para trocar entre ambientes, verifica
+o fechamento da janela anterior e lê o arquivo persistido. Não verifica cliques no
+menu nativo nem a recuperação visual após falhas.
 
 `--setup-smoke-test` executa no WebView2 real: lê DOM/CSS, exige `inline-flex` na
 classe `.button` em um host block temporário e token/radius `999px` reais (itens

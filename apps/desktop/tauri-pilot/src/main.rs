@@ -14,6 +14,7 @@ mod remote;
 mod remote_smoke;
 mod setup;
 mod setup_smoke;
+mod switch_smoke;
 use process::OwnedProcess;
 use tauri::{
     Manager, Url,
@@ -24,6 +25,8 @@ use tauri::{
 struct Supervisor {
     input: Mutex<Option<ChildStdin>>,
     stopping: AtomicBool,
+    /// The attempt was replaced by another environment; it must not end the app.
+    superseded: AtomicBool,
     stop_at: Mutex<Option<Instant>>,
     cancelled: AtomicBool,
 }
@@ -166,6 +169,7 @@ fn run_supervisor(
             let native_app = app.clone();
             let native_state = state.clone();
             let native_desktop = desktop.clone();
+            let native_setup = setup.clone();
             let (complete, bootstrap) = mpsc::channel();
             let bootstrap_done = Arc::new(AtomicBool::new(false));
             let worker_done = bootstrap_done.clone();
@@ -173,6 +177,7 @@ fn run_supervisor(
                 let app = native_app;
                 let state = native_state;
                 let desktop = native_desktop;
+                let setup = native_setup;
                 let result = (|| -> Result<(), Box<dyn std::error::Error>> {
                     let origin = Url::parse(ready["origin"].as_str().ok_or("missing origin")?)?;
                     if !remote
@@ -194,28 +199,40 @@ fn run_supervisor(
                         return Err("startup cancelled".into());
                     }
                     desktop::grant(&app, label, &origin)?;
-                    desktop.set(desktop::Target {
+                    let url = origin.to_string();
+                    let instance = desktop::Instance {
                         id: if remote {
-                            "pilot-remote"
+                            desktop
+                                .by_url(&url)
+                                .map(|item| item.id)
+                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
                         } else {
-                            "pilot-local"
-                        }
-                        .into(),
+                            desktop::LOCAL_ID.into()
+                        },
                         name: if remote {
                             remote_name.clone()
                         } else {
-                            "Este computador (temporário)".into()
+                            desktop::LOCAL_NAME.into()
                         },
                         mode: if remote { "existing" } else { "local" }.into(),
                         runtime: "native".into(),
-                        url: origin.to_string(),
-                        label: label.into(),
-                        origin: origin.clone(),
-                    });
+                        url: url.clone(),
+                    };
                     let mut config = app.config().app.windows[0].clone();
                     config.label = label.into();
                     config.visible = false;
                     config.url = tauri::WebviewUrl::External(Url::parse("about:blank")?);
+                    // A switch reuses the label: the previous window must be gone first.
+                    if let Some(previous) = app.get_webview_window(label) {
+                        let _ = previous.destroy();
+                        let deadline = Instant::now() + Duration::from_secs(2);
+                        while app.get_webview_window(label).is_some() && Instant::now() < deadline {
+                            std::thread::sleep(Duration::from_millis(25));
+                        }
+                        if app.get_webview_window(label).is_some() {
+                            return Err("previous window still alive".into());
+                        }
+                    }
                     let allowed = origin.clone();
                     let initial = Arc::new(AtomicBool::new(true));
                     let initial_navigation = initial.clone();
@@ -252,10 +269,12 @@ fn run_supervisor(
                     let stop = state.clone();
                     let closing_window = window.clone();
                     let closing_desktop = desktop.clone();
+                    let closing_setup = setup.clone();
                     let closing_label = label;
                     window.on_window_event(move |event| {
                         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                             api.prevent_close();
+                            closing_setup.request_close();
                             closing_desktop.clear(closing_label);
                             stop.stop();
                             let _ = closing_window.hide();
@@ -310,14 +329,40 @@ fn run_supervisor(
                         println!("pilot: native cookie verified; opening temporary loopback UI");
                     }
                     initial.store(false, Ordering::SeqCst);
+                    let previous = desktop.replace(desktop::Target {
+                        instance: instance.clone(),
+                        label: label.into(),
+                        origin: origin.clone(),
+                    });
                     window.navigate(if remote {
                         origin
                     } else {
                         origin.join("index.html")?
                     })?;
                     window.show()?;
+                    let active = setup.active.lock().unwrap();
+                    if state.stopping.load(Ordering::SeqCst) || setup.closing.load(Ordering::SeqCst)
+                    {
+                        return Err("startup cancelled before commit".into());
+                    }
+                    // Only a connection that reached the UI is worth remembering.
+                    desktop
+                        .remember(instance)
+                        .map_err(|_| "failed to save environment")?;
+                    setup.connected.store(true, Ordering::SeqCst);
+                    drop(active);
+                    // The product keeps a single window: drop the replaced one.
+                    if let Some(previous) = previous
+                        && previous.label != label
+                        && let Some(window) = app.get_webview_window(&previous.label)
+                    {
+                        let _ = window.destroy();
+                    }
                     Ok(())
                 })();
+                if result.is_err() {
+                    desktop.clear(label);
+                }
                 worker_done.store(true, Ordering::SeqCst);
                 let _ = complete.send(result.is_ok());
             });
@@ -360,12 +405,9 @@ fn run_supervisor(
             false
         };
         state.stop();
-        let hiding_app = app.clone();
-        std::thread::spawn(move || {
-            if let Some(window) = hiding_app.get_webview_window(label) {
-                let _ = window.hide();
-            }
-        });
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.hide();
+        }
         if transport_failed {
             owned.force_stop()?;
         }
@@ -385,13 +427,22 @@ fn run_supervisor(
         Ok(())
     })();
     // A cancelled native worker must settle before another attempt can reuse its label.
-    if pending_bootstrap
-        .is_some_and(|pending| pending.recv_timeout(Duration::from_secs(2)).is_err())
-    {
-        setup.failed.store(true, Ordering::SeqCst);
-        setup.closing.store(true, Ordering::SeqCst);
+    if let Some(pending) = pending_bootstrap {
+        setup::show_failure(
+            &app,
+            &setup,
+            "A janela anterior ainda está encerrando. Aguarde antes de tentar novamente.",
+        );
+        loop {
+            match pending.recv_timeout(Duration::from_millis(100)) {
+                Ok(_) | Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) if setup.closing.load(Ordering::SeqCst) => break,
+                Err(RecvTimeoutError::Timeout) => (),
+            }
+        }
     }
-    if !opened && !setup.closing.load(Ordering::SeqCst) {
+    desktop.clear(label);
+    if !setup.closing.load(Ordering::SeqCst) {
         if let Some(window) = app.get_webview_window(label) {
             let _ = window.destroy();
             let deadline = Instant::now() + Duration::from_secs(2);
@@ -399,16 +450,28 @@ fn run_supervisor(
                 std::thread::sleep(Duration::from_millis(25));
             }
             if app.get_webview_window(label).is_some() {
-                setup.failed.store(true, Ordering::SeqCst);
-                setup.closing.store(true, Ordering::SeqCst);
+                setup::show_failure(
+                    &app,
+                    &setup,
+                    "A janela anterior ainda está encerrando. Aguarde antes de tentar novamente.",
+                );
+                while app.get_webview_window(label).is_some()
+                    && !setup.closing.load(Ordering::SeqCst)
+                {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
             }
         }
     }
-    if setup.finish_attempt(opened) {
+    if setup.finish_attempt(opened, &state) {
+        if !state.superseded.load(Ordering::SeqCst) {
+            setup::show_failure(&app, &setup, &failure_message);
+        }
         let _ = complete.send(serde_json::json!({"ok": false, "cancelled": state.cancelled.load(Ordering::SeqCst), "error": failure_message}));
         return;
     }
     if result.is_err() {
+        *setup.last_error.lock().unwrap() = Some(failure_message.clone());
         eprintln!("pilot: startup or shutdown failed; no reconnect");
     }
     let exit_code = if result.is_ok() && !setup.failed.load(Ordering::SeqCst) {
@@ -473,11 +536,21 @@ fn main() {
             desktop::desktop_menu
         ])
         .on_menu_event(|app, event| {
-            if event.id() == "quit" {
-                app.exit(0);
-            }
+            let id = event.id().as_ref().to_string();
+            desktop::menu_event(app, &id);
         })
         .setup(move |app| {
+            let desktop = app.state::<Arc<desktop::Desktop>>().inner().clone();
+            desktop.load();
+            // The smokes start from a known list: a saved environment must not
+            // rewrite the setup form before the test fills it.
+            if std::env::args()
+                .any(|arg| arg.ends_with("-smoke-test") || arg == "--native-death-test")
+            {
+                desktop
+                    .reset()
+                    .map_err(|_| "failed to reset pilot environments")?;
+            }
             setup::open(app.handle())?;
             if std::env::args().any(|arg| arg == "--setup-smoke-test") {
                 let handle = app.handle().clone();
@@ -488,6 +561,11 @@ fn main() {
                 let handle = app.handle().clone();
                 let state = app.state::<Arc<setup::Setup>>().inner().clone();
                 std::thread::spawn(move || remote_smoke::run(handle, state));
+            }
+            if std::env::args().any(|arg| arg == "--switch-smoke-test") {
+                let handle = app.handle().clone();
+                let state = app.state::<Arc<setup::Setup>>().inner().clone();
+                std::thread::spawn(move || switch_smoke::run(handle, state));
             }
             Ok(())
         })
