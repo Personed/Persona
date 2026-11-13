@@ -32,12 +32,6 @@
             "allow-setup-cancel",
             "allow-setup-docker"
           ]
-        },
-        {
-          "identifier": "pilot-no-permissions",
-          "local": true,
-          "windows": ["pilot"],
-          "permissions": []
         }
       ]
     }

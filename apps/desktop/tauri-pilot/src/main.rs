@@ -8,6 +8,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+mod desktop;
 mod process;
 mod remote;
 mod remote_smoke;
@@ -80,11 +81,20 @@ fn run_supervisor(
     app: tauri::AppHandle,
     state: Arc<Supervisor>,
     setup: Arc<setup::Setup>,
+    desktop: Arc<desktop::Desktop>,
     complete: mpsc::Sender<serde_json::Value>,
     remote_input: Option<serde_json::Value>,
 ) {
     let remote = remote_input.is_some();
     let label = if remote { "remote" } else { "pilot" };
+    let remote_name = remote_input
+        .as_ref()
+        .and_then(|value| value.get("name"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Persona remoto")
+        .to_string();
     let mut failure_message = if remote {
         "Não foi possível conectar ao Persona.".to_string()
     } else {
@@ -155,12 +165,14 @@ fn run_supervisor(
             );
             let native_app = app.clone();
             let native_state = state.clone();
+            let native_desktop = desktop.clone();
             let (complete, bootstrap) = mpsc::channel();
             let bootstrap_done = Arc::new(AtomicBool::new(false));
             let worker_done = bootstrap_done.clone();
             std::thread::spawn(move || {
                 let app = native_app;
                 let state = native_state;
+                let desktop = native_desktop;
                 let result = (|| -> Result<(), Box<dyn std::error::Error>> {
                     let origin = Url::parse(ready["origin"].as_str().ok_or("missing origin")?)?;
                     if !remote
@@ -181,6 +193,25 @@ fn run_supervisor(
                     if state.stopping.load(Ordering::SeqCst) {
                         return Err("startup cancelled".into());
                     }
+                    desktop::grant(&app, label, &origin)?;
+                    desktop.set(desktop::Target {
+                        id: if remote {
+                            "pilot-remote"
+                        } else {
+                            "pilot-local"
+                        }
+                        .into(),
+                        name: if remote {
+                            remote_name.clone()
+                        } else {
+                            "Este computador (temporário)".into()
+                        },
+                        mode: if remote { "existing" } else { "local" }.into(),
+                        runtime: "native".into(),
+                        url: origin.to_string(),
+                        label: label.into(),
+                        origin: origin.clone(),
+                    });
                     let mut config = app.config().app.windows[0].clone();
                     config.label = label.into();
                     config.visible = false;
@@ -202,6 +233,7 @@ fn run_supervisor(
                     NewWindowResponse::Deny
                 })
                 .on_permission_request(|_, _| PermissionResponse::Deny)
+                .initialization_script(desktop::bridge_script())
                 .on_page_load(move |window, payload| {
                     if smoke
                         && payload.event() == tauri::webview::PageLoadEvent::Finished
@@ -219,9 +251,12 @@ fn run_supervisor(
                     }
                     let stop = state.clone();
                     let closing_window = window.clone();
+                    let closing_desktop = desktop.clone();
+                    let closing_label = label;
                     window.on_window_event(move |event| {
                         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                             api.prevent_close();
+                            closing_desktop.clear(closing_label);
                             stop.stop();
                             let _ = closing_window.hide();
                         }
@@ -309,6 +344,7 @@ fn run_supervisor(
             let _ = complete.send(serde_json::json!({"ok": true}));
         }
         if startup.is_err() {
+            desktop.clear(label);
             state.stop();
         }
         // A terminal frame or EOF closes the UI; never reconnect to this port.
@@ -422,15 +458,25 @@ fn allows_navigation(internal: &Url, target: &Url) -> bool {
 
 fn main() {
     let state = Arc::new(setup::Setup::default());
+    let desktop = Arc::new(desktop::Desktop::default());
     let app = tauri::Builder::default()
         .runtime(tauri_runtime_wry::Wry::default())
         .manage(state.clone())
+        .manage(desktop)
         .invoke_handler(tauri::generate_handler![
             setup::setup_state,
             setup::setup_submit,
             setup::setup_cancel,
-            setup::setup_docker
+            setup::setup_docker,
+            desktop::desktop_state,
+            desktop::desktop_appearance,
+            desktop::desktop_menu
         ])
+        .on_menu_event(|app, event| {
+            if event.id() == "quit" {
+                app.exit(0);
+            }
+        })
         .setup(move |app| {
             setup::open(app.handle())?;
             if std::env::args().any(|arg| arg == "--setup-smoke-test") {

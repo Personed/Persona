@@ -1,4 +1,8 @@
-use crate::{Supervisor, process::OwnedProcess, setup_smoke::wait};
+use crate::{
+    Supervisor,
+    process::OwnedProcess,
+    setup_smoke::{read, wait},
+};
 use std::{
     io::{BufReader, Write},
     sync::{Arc, atomic::Ordering, mpsc},
@@ -30,6 +34,8 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
             &setup,
             "document.readyState === 'complete' && !!window.personaSetup",
         )?;
+        setup.eval("window.__desktop='pending';window.__TAURI_INTERNALS__.invoke('desktop_state').then(()=>window.__desktop='allowed',()=>window.__desktop='denied')").map_err(|e| e.to_string())?;
+        wait(&setup, "window.__desktop === 'denied'")?;
 
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut owned = OwnedProcess::spawn(&base.join("remote-server.fixture.mjs"))
@@ -71,6 +77,21 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
             &remote,
             &format!("location.origin === {origin_literal} && document.readyState === 'complete'"),
         )?;
+        wait(&remote, "!!window.personaDesktop")?;
+        remote
+            .eval("window.__desktop='pending';window.personaDesktop.state().then(result=>window.__desktop=JSON.stringify(result),()=>window.__desktop='rejected')")
+            .map_err(|e| e.to_string())?;
+        wait(&remote, "window.__desktop !== 'pending'")?;
+        let desktop = read(&remote, "window.__desktop")?;
+        let desktop: serde_json::Value = serde_json::from_str(desktop.as_str().unwrap_or_default())
+            .map_err(|e| e.to_string())?;
+        if desktop["value"]["mode"] != "existing" {
+            return Err(format!("remote desktop state mismatch: {desktop}"));
+        }
+        remote
+            .eval("window.__prepare='pending';window.__TAURI_INTERNALS__.invoke('desktop_prepare').then(()=>window.__prepare='allowed',()=>window.__prepare='denied')")
+            .map_err(|e| e.to_string())?;
+        wait(&remote, "window.__prepare === 'denied'")?;
 
         let before = state.accepted.load(Ordering::SeqCst);
         remote
@@ -112,7 +133,7 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
         reader.join().map_err(|_| "remote fixture reader failed")?;
         remote.close().map_err(|e| e.to_string())?;
         println!(
-            "pilot: remote UI loaded; setup IPC and external navigation denied; controlled server stopped"
+            "pilot: remote UI loaded; desktop state exposed; setup/local commands and external navigation denied; controlled server stopped"
         );
         Ok(())
     })();

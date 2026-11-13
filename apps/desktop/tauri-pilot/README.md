@@ -4,8 +4,9 @@ Piloto de desenvolvimento isolado. Não substitui Electron, não migra instalaç
 e não promete paridade. Abre o setup existente em uma WebView local separada.
 O submit local temporário usa a UI existente de `apps/web/dist`, servida pelo
 runtime Node real com dados descartáveis. O submit remoto abre essa UI em uma
-WebView HTTP separada, depois de validar o servidor. Não grava conexões nem
-instala runtimes.
+WebView HTTP separada, depois de validar o servidor. A UI real recebe a ponte
+`window.personaDesktop` (estado do ambiente, tema e menu). Não grava conexões
+nem instala runtimes.
 
 ## Executar
 
@@ -114,8 +115,9 @@ insere `setup-bridge.js` e informa que os dados são descartáveis. O bridge man
 erro explícito. A conexão remota usa o mesmo formulário e contrato de submit,
 mas seu probe e sua WebView são separados da janela local de setup.
 
-`AppManifest` enumera quatro comandos. A capability local concede somente esses
-comandos ao label `setup`, sem concessão remota. Cada handler também verifica em
+`AppManifest` enumera sete comandos: quatro de setup e três de desktop. A
+capability local concede somente os quatro de setup ao label `setup`, sem
+concessão remota. Cada handler também verifica em
 Rust o label e a URL nativa exata de `setup.html`. Submit aceita somente o objeto
 `{ mode: "local", runtime: "native" }`, sem campos extras. Navegação para qualquer
 outra URL, novas janelas e permissões são negadas. CSP usa `frame-src 'none'` e
@@ -144,7 +146,10 @@ e cancelamento renderizados pelo `setup.js` original, tenta IPC por outra janela
 local e pela janela HTTP real e confere a rejeição final e que o contador de
 chamadas aceitas pelo validador Rust não mudou. O contador incrementa depois do
 check; não distingue rejeição por ACL de entrada no handler seguida de rejeição.
-Também chama diretamente o validador nativo com essas janelas. Depois faz submit
+Também chama diretamente o validador nativo com essas janelas. Confirma que o
+documento de setup não recebe `window.personaDesktop` e que `desktop_state` é
+recusado por ACL nessa janela, e que `desktop_state`/`appearance` respondem na
+janela local do app. Depois faz submit
 pelo formulário e fecha o serviço próprio. Isso não é teste de input físico nem
 revisão visual de pixels. `--smoke-test` e `--native-death-test` fazem submit
 automático apenas para os checks anteriores; o fluxo normal aguarda o usuário.
@@ -160,6 +165,47 @@ ou o evento encontra o worker e ele assume a saída, ou encontra idle e permite
 saída imediata. Uma regressão com barreiras força as duas ordens após a leitura
 antecipada de closing=false, sem usar sleeps como sincronização.
 
+## Ponte desktop com a UI real
+
+`desktop-bridge.js` é injetado como initialization script nas janelas `pilot` e
+`remote` e define `window.personaDesktop` apenas no frame principal
+(`window.top === window`). Mantém o contrato que `apps/web` já consome:
+`platform`, `state`, `appearance` e `menu`. `prepare` e `maintain` não invocam
+comando privilegiado nenhum: devolvem `ok: false` com erro explícito, porque o
+piloto não gerencia imagens de Docker nem backup/restauração.
+
+Rust implementa `desktop_state`, `desktop_appearance` e `desktop_menu`. Cada
+handler revalida, em Rust, o label da WebView e a origem exata já validada
+antes de responder; window não permitida ou URL fora da origem devolve
+"Origem da requisição inválida.". `desktop_appearance` aplica a cor de frame
+real de `packages/ui` (`themes.light.frame`/`themes.dark.frame`, geradas em
+`build.rs`) e `desktop_menu` abre menu nativo com o ambiente atual, Editar,
+Visualizar/fullscreen e Sair do Persona.
+
+**A ACL é concedida em runtime, por origem exata.** As janelas do piloto
+carregam de `http://127.0.0.1:<porta>` e de origens HTTPS remotas, que o Tauri
+trata como conteúdo remoto — uma capability `local: true` nunca se aplica a
+elas. Por isso, na conexão validada, o piloto chama `Manager::add_capability`
+(com a feature `dynamic-acl`) criando a capability `desktop-ui-<label>` com
+`local: false`, `remote: [<origem validada>]`, `webviews: [<label>]` e apenas as
+permissões `allow-desktop-state`, `allow-desktop-appearance` e
+`allow-desktop-menu`. O padrão de URL é validado antes de ser entregue ao Tauri
+porque um padrão inválido entra em pânico durante a resolução. O documento
+local de setup não recebe essa capability: `desktop_state` é recusado por ACL
+nessa janela, como o smoke confirma.
+
+A validação nativa continua sendo a fronteira real: a capability concede por
+origem, e o handler exige label e origem da conexão ativa. O alvo é apagado
+quando a janela é fechada ou quando o startup falha.
+
+Limitações em relação ao Electron: o Wry do Tauri 3 alpha não expõe
+`windowControlsOverlay`/`setTitleBarOverlay`, então a cor dos símbolos da
+titlebar e o inset das janela nativa não são ajustáveis; o menu popup resolve
+antes de o usuário fechá-lo, e não há callback de fechamento como no Electron;
+"Sair do Persona" encerra o app e o runtime Node local é encerrado pelo Job
+Object como parada forçada, deixando os dados descartáveis em
+`target/test-data`.
+
 ## Conexão remota
 
 `remote-probe.mjs` é um worker Node privado. Ele recebe
@@ -170,15 +216,18 @@ userinfo, query e fragmento são rejeitados. O probe não segue redirects, tem
 timeout de 10 s e pode ser cancelado. URL e nome não entram em argv, ambiente,
 stdout ou logs; somente a origem validada retorna pelo pipe privado.
 
-Rust revalida a origem recebida e cria a WebView `remote` sem capability. A
-navegação fica restrita à origem confirmada e os comandos de setup não ficam
+Rust revalida a origem recebida e cria a WebView `remote` com capability
+apenas para `state`/`appearance`/`menu` e escopada à origem confirmada; os
+comandos de setup e as operações de hospedagem local não ficam
 disponíveis nessa janela. Nenhum cookie de sessão local é instalado: a UI
 remota preserva o fluxo de pareamento do produto. A WebView é incógnita e não
 persiste a sessão do navegador.
 
 `--remote-smoke-test` inicia um serviço Persona descartável, preenche o
-formulário real, abre a UI remota, confirma a negação do IPC de setup e da
-navegação externa e encerra o servidor. O smoke não abre o navegador pessoal;
+formulário real, abre a UI remota, confirma a negação do IPC de setup e de
+`desktop_prepare`, a exposição de `desktop_state`, a negação de `desktop_state`
+no documento de setup e da
+navegação externa, e encerra o servidor. O smoke não abre o navegador pessoal;
 a abertura externa de popup HTTPS é coberta pela política unitária, não por
 uma execução que acione o sistema. HTTPS com certificado público válido
 ainda não foi exercitado contra um servidor real.
@@ -239,8 +288,13 @@ que seus processos terminaram. O encerramento forçado não comprova cleanup.
   aviso `Failed to unregister class Chrome_WidgetWin_0` / erro 1412 no teardown.
   Isso não é inspeção visual nem prova de renderização React ou interação.
 - Smoke remoto Windows executado: formulário real, probe HTTP privado, UI
-  remota carregada, IPC de setup rejeitado, navegação externa bloqueada e
+  remota carregada, `desktop_state` exposto na origem validada, IPC de setup e
+  `desktop_prepare` rejeitados, `desktop_state` recusado no documento de setup,
+  navegação externa bloqueada e
   servidor descartável encerrado, exit 0. Não abriu navegador pessoal.
+- Smoke de setup Windows executado: `desktop_state` e `appearance` respondem na
+  janela local, o documento de setup não recebe `window.personaDesktop` e tem
+  `desktop_state` recusado por ACL, exit 0.
 - `native-death.test.ps1`: exit 0. Após readback nativo do cookie, identifica
   supervisor e filho por parentesco, caminho e proprietário; termina somente
   esse serviço de teste e exige saída terminal Tauri 1 e supervisor encerrado.
@@ -262,6 +316,8 @@ tauri-runtime `3.0.0-alpha.5`, tauri-build `3.0.0-alpha.4`. Cargo.lock fixa o gr
 serde_json `1.0.154` já existente no grafo agora é dependência direta do protocolo.
 Windows `0.62.2` e libc `0.2.191`, já presentes no grafo, são dependências diretas
 para ownership/encerramento nativo dos processos, não comandos expostos à WebView.
+A feature `dynamic-acl` do tauri (sem crate novo) permite conceder a capability da
+interface desktop por origem validada em runtime.
 
 - [Conjunto oficial](https://github.com/tauri-apps/tauri/blob/tauri-v3.0.0-alpha.6/Cargo.toml)
 - [Migração oficial v3](https://v3.tauri.app/start/migrate/from-tauri-2/)

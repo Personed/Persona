@@ -42,6 +42,9 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
             &setup,
             "document.readyState === 'complete' && !!document.querySelector('#continue') && !!window.personaSetup",
         )?;
+        wait(&setup, "typeof window.personaDesktop === 'undefined'")?;
+        setup.eval("window.__desktop='pending';window.__TAURI_INTERNALS__.invoke('desktop_state').then(()=>window.__desktop='allowed',()=>window.__desktop='denied')").map_err(|e| e.to_string())?;
+        wait(&setup, "window.__desktop === 'denied'")?;
         // Grid/flex items are blockified; probe the shared class inside a normal block container.
         let styles = read(
             &setup,
@@ -78,6 +81,8 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
         if state.accepted.load(Ordering::SeqCst) != before {
             return Err("cross-window passed native setup validation".into());
         }
+        probe.eval("window.__desktop='pending';window.__TAURI_INTERNALS__.invoke('desktop_state').then(()=>window.__desktop='allowed',()=>window.__desktop='denied')").map_err(|e| e.to_string())?;
+        wait(&probe, "window.__desktop === 'denied'")?;
         probe.destroy().map_err(|e| e.to_string())?;
         for target in [
             "http://tauri.localhost/other.html",
@@ -134,6 +139,17 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
             &pilot,
             "location.hostname === '127.0.0.1' && document.readyState === 'complete' && !!window.__TAURI_INTERNALS__",
         )?;
+        wait(&pilot, "!!window.personaDesktop")?;
+        pilot.eval("window.__desktop='pending';window.personaDesktop.state().then(result=>window.__desktop=JSON.stringify(result),()=>window.__desktop='rejected')").map_err(|e| e.to_string())?;
+        wait(&pilot, "window.__desktop !== 'pending'")?;
+        let desktop = read(&pilot, "window.__desktop")?;
+        let desktop: serde_json::Value = serde_json::from_str(desktop.as_str().unwrap_or_default())
+            .map_err(|e| e.to_string())?;
+        if desktop["value"]["mode"] != "local" {
+            return Err(format!("desktop state mismatch: {desktop}"));
+        }
+        pilot.eval("window.__appearance='pending';window.personaDesktop.appearance('dark').then(result=>window.__appearance=result.ok?'ok':'error',()=>window.__appearance='denied')").map_err(|e| e.to_string())?;
+        wait(&pilot, "window.__appearance === 'ok'")?;
         let before = state.accepted.load(Ordering::SeqCst);
         if crate::setup::check(&pilot).is_ok() {
             return Err("native validator accepted HTTP window".into());
@@ -144,7 +160,7 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
             return Err("HTTP passed native setup validation".into());
         }
         println!(
-            "pilot: temporary HTTP UI loaded; HTTP cross-window IPC denied; closing owned service"
+            "pilot: temporary HTTP UI loaded; desktop state/theme exposed; setup IPC denied; closing owned service"
         );
         pilot.close().map_err(|e| e.to_string())?;
         Ok(())

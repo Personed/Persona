@@ -14,9 +14,22 @@ fn main() {
         std::fs::copy(source, output.join(name)).unwrap();
     }
     println!("cargo:rerun-if-changed=../../../packages/ui/src/tokens.ts");
-    let theme = std::process::Command::new("node").args(["--input-type=module", "-e", "import {metrics,themes} from '../../../packages/ui/src/tokens.ts'; const vars=(v,p='')=>Object.entries(v).map(([k,v])=>`--${p}${k}:${v};`).join(''); process.stdout.write(`:root{${vars(metrics)}${vars(themes.light,'color-')}}@media(prefers-color-scheme:dark){:root{${vars(themes.dark,'color-')}}}`)"]).output().unwrap();
+    let theme = std::process::Command::new("node").args(["--input-type=module", "-e", "import {metrics,themes} from '../../../packages/ui/src/tokens.ts'; const vars=(v,p='')=>Object.entries(v).map(([k,v])=>`--${p}${k}:${v};`).join(''); process.stdout.write(JSON.stringify({css:`:root{${vars(metrics)}${vars(themes.light,'color-')}}@media(prefers-color-scheme:dark){:root{${vars(themes.dark,'color-')}}`,light:themes.light.frame,dark:themes.dark.frame}))"]).output().unwrap();
     assert!(theme.status.success(), "theme generation failed");
-    std::fs::write(output.join("setup-theme.css"), theme.stdout).unwrap();
+    let theme: serde_json::Value = serde_json::from_slice(&theme.stdout).unwrap();
+    std::fs::write(
+        output.join("setup-theme.css"),
+        theme["css"].as_str().unwrap(),
+    )
+    .unwrap();
+    println!(
+        "cargo:rustc-env=PERSONA_FRAME_LIGHT={}",
+        theme["light"].as_str().unwrap()
+    );
+    println!(
+        "cargo:rustc-env=PERSONA_FRAME_DARK={}",
+        theme["dark"].as_str().unwrap()
+    );
     println!("cargo:rerun-if-changed=../src/setup.html");
     let source = std::fs::read_to_string("../src/setup.html").unwrap();
     assert!(
@@ -51,6 +64,9 @@ fn main() {
             "setup_submit",
             "setup_cancel",
             "setup_docker",
+            "desktop_state",
+            "desktop_appearance",
+            "desktop_menu",
         ]),
     ))
     .unwrap();

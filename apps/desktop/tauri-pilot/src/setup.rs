@@ -85,9 +85,17 @@ pub async fn setup_submit(
     }
     let app = window.app_handle().clone();
     let setup = state.inner().clone();
+    let desktop = app.state::<Arc<crate::desktop::Desktop>>().inner().clone();
     let (send, result) = mpsc::channel();
     std::thread::spawn(move || {
-        run_supervisor(app, supervisor, setup, send, remote.then_some(value))
+        run_supervisor(
+            app,
+            supervisor,
+            setup,
+            desktop,
+            send,
+            remote.then_some(value),
+        )
     });
     tauri::async_runtime::spawn_blocking(move || {
         result
