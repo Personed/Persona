@@ -89,6 +89,22 @@ async function checkCredentialKey(data: string) {
   if (!key.isFile() || key.size !== 32) throw new Error("凭据密钥文件无效。");
 }
 
+async function checkProcessComputerBinding(
+  data: string,
+  message = "该备份包含当前环境不支持的隔离电脑。",
+) {
+  const binding = await readFile(join(data, "computer.json"), "utf8").catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    },
+  );
+  if (binding === undefined) return;
+  const previous = JSON.parse(binding);
+  if (previous.kind !== "process" || previous.deployment === "container")
+    throw new Error(message);
+}
+
 async function archiveTarget(
   directory: string,
   config: RuntimeConfig,
@@ -291,18 +307,10 @@ export async function backupInstallation(
       // The lease settles Persona writers; catalog migrations must touch only the snapshot.
       await cp(root, installation, copy);
       await cp(config.dataDir, join(installation, "data"), copy);
-      const binding = await readFile(
-        join(installation, "data", "computer.json"),
-        "utf8",
-      ).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") throw error;
-        return undefined;
-      });
-      if (binding !== undefined) {
-        const previous = JSON.parse(binding);
-        if (previous.kind !== "process" || previous.deployment === "container")
-          throw new Error("外部数据目录迁移仅支持本机工作电脑。");
-      }
+      await checkProcessComputerBinding(
+        join(installation, "data"),
+        "外部数据目录迁移仅支持本机工作电脑。",
+      );
       await writeConfiguration(join(installation, "persona.config.json"), {
         ...configuration,
         dataDir: "data",
@@ -392,6 +400,7 @@ export async function restoreInstallation(
   archive: string,
   destination: string,
   password: string,
+  options: { requireProcessComputer?: boolean } = {},
 ) {
   const target = resolve(destination);
   try {
@@ -453,13 +462,27 @@ export async function restoreInstallation(
     const filename = join(restored, "persona.config.json");
     const config = JSON.parse(await readFile(filename, "utf8"));
     const sourceConfig = parseConfig(config, filename);
+    if (
+      options.requireProcessComputer &&
+      (sourceConfig.computer.kind !== "process" ||
+        sourceConfig.workComputer ||
+        sourceConfig.deployment !== "native")
+    )
+      throw new Error("该备份包含当前环境不支持的隔离电脑。");
     config.computer ??= sourceConfig.computer;
     config.dataDir = join(target, "data");
     if (config.computer.kind === "controller")
       config.computer.credentialFile = join(target, "controller-token");
     const database = join(restored, "data", "agent.sqlite");
     await checkCredentialKey(join(restored, "data"));
+    if (options.requireProcessComputer)
+      await checkProcessComputerBinding(join(restored, "data"));
     const computers = await storedComputers(database);
+    if (
+      options.requireProcessComputer &&
+      computers.some((item) => item.config.kind !== "process")
+    )
+      throw new Error("该备份包含当前环境不支持的隔离电脑。");
     for (const entry of manifest.computers ?? []) {
       if (!/^computer-[0-9]+[.]tar$/.test(entry.archive))
         throw new Error("电脑备份路径无效。");

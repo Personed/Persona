@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod desktop;
+mod import_backup;
 mod layout;
 mod persistence_acceptance;
 mod process;
@@ -549,6 +550,20 @@ fn persistent_local() -> bool {
 }
 
 fn main() {
+    match import_backup::requested_archive() {
+        Ok(Some(archive)) => {
+            if let Err(error) = import_backup::run(&archive) {
+                eprintln!("pilot: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("pilot: {error}");
+            std::process::exit(1);
+        }
+    }
     #[cfg(windows)]
     let mut primary = {
         let isolated = startup_check::enabled()

@@ -10,12 +10,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { portable, staticDirectory } from "./layout.mjs";
 import { stopOwnedChild } from "./stop-child.mjs";
 
-async function assertNoLinks(path, recursive = false) {
+export async function assertNoLinks(path, recursive = false) {
   const stat = await lstat(path);
   if (stat.isSymbolicLink())
     throw new Error("Test profile contains a symbolic link");
@@ -97,10 +97,18 @@ export async function startTestService() {
   return startService(await freshDirectory(), false);
 }
 
-export async function startPilotService() {
+export const pilotProfileMarker = "persona-tauri-pilot-local-v1\n";
+
+export async function pilotProfilePaths() {
   const base = await testBase();
-  const directory = join(base, "pilot-local-v1");
-  const lock = join(base, "pilot-local-v1.lock");
+  return {
+    base,
+    directory: join(base, "pilot-local-v1"),
+    lock: join(base, "pilot-local-v1.lock"),
+  };
+}
+
+async function startLockedPersistentProfile(directory, lock) {
   // An uncertain shutdown leaves this lock intact. Never guess that its writer died.
   await mkdir(lock);
   // Startup failures retain the lock, rather than guessing whether work was issued.
@@ -114,11 +122,11 @@ export async function startPilotService() {
   await assertNoLinks(directory, true);
   const identity = join(directory, "pilot-profile");
   if (created)
-    await writeFile(identity, "persona-tauri-pilot-local-v1\n", {
+    await writeFile(identity, pilotProfileMarker, {
       flag: "wx",
       mode: 0o600,
     });
-  if ((await readFile(identity, "utf8")) !== "persona-tauri-pilot-local-v1\n")
+  if ((await readFile(identity, "utf8")) !== pilotProfileMarker)
     throw new Error("Not an isolated pilot profile");
   const service = await startService(directory, true);
   const stop = service.stop;
@@ -136,6 +144,60 @@ export async function startPilotService() {
   };
 }
 
+export async function startPilotService() {
+  const paths = await pilotProfilePaths();
+  return startLockedPersistentProfile(paths.directory, paths.lock);
+}
+
+// Internal test affordance: product callers always use startPilotService().
+export async function startPersistentService(directory) {
+  const target = resolve(directory);
+  const lock = join(dirname(target), `${basename(target)}.lock`);
+  return startLockedPersistentProfile(target, lock);
+}
+
+async function reserveLoopbackPort() {
+  for (;;) {
+    // Windows may allocate low dynamic ports that Fetch rejects as unsafe.
+    const port = 49152 + Math.floor(Math.random() * 16384);
+    const reservation = createServer();
+    try {
+      reservation.listen(port, "127.0.0.1");
+      await once(reservation, "listening");
+    } catch (error) {
+      reservation.close(() => undefined);
+      if (error.code === "EADDRINUSE" || error.code === "EACCES") continue;
+      throw error;
+    }
+    await new Promise((resolve, reject) =>
+      reservation.close((error) => (error ? reject(error) : resolve())),
+    );
+    return port;
+  }
+}
+
+async function savedModel(directory) {
+  const filename = join(directory, "persona.config.json");
+  let value;
+  try {
+    value = JSON.parse(await readFile(filename, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  }
+  if (value.model === undefined) return undefined;
+  if (
+    typeof value.model !== "object" ||
+    value.model === null ||
+    typeof value.model.provider !== "string" ||
+    !value.model.provider ||
+    typeof value.model.modelId !== "string" ||
+    !value.model.modelId
+  )
+    throw new Error("Invalid imported model configuration");
+  return value.model;
+}
+
 async function startService(directory, retain) {
   let child;
   let exited;
@@ -151,17 +213,13 @@ async function startService(directory, retain) {
     return stopping;
   };
   try {
-    const reservation = createServer();
-    reservation.listen(0, "127.0.0.1");
-    await once(reservation, "listening");
-    const port = reservation.address().port;
-    await new Promise((resolve, reject) =>
-      reservation.close((error) => (error ? reject(error) : resolve())),
-    );
+    const port = await reserveLoopbackPort();
     const config = join(directory, "config.json");
+    const model = await savedModel(directory);
     await writeFile(
       config,
       JSON.stringify({
+        ...(model ? { model } : {}),
         host: "127.0.0.1",
         port,
         dataDir: join(directory, "data"),

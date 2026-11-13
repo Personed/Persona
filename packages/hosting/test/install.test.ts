@@ -324,3 +324,71 @@ test("external backup inspects stored remote computers only on the isolated snap
   expect(await readFile(database)).toEqual(original);
   await expect(readFile(f.archive)).rejects.toMatchObject({ code: "ENOENT" });
 });
+
+test("process-only restore preserves a compatible backup and rejects isolated computers before publishing", async () => {
+  const directory = await fixture();
+  const root = join(directory, "host");
+  const data = join(root, "data");
+  await mkdir(data, { recursive: true });
+  await writeFile(
+    join(root, "persona.config.json"),
+    JSON.stringify({ dataDir: data, computer: { kind: "process" } }),
+  );
+  await writeFile(join(data, "artifact.txt"), "synthetic work");
+  const archive = join(directory, "backup.persona");
+  const password = crypto.randomUUID();
+  await backupInstallation(root, archive, password);
+
+  const compatible = join(directory, "compatible");
+  await restoreInstallation(archive, compatible, password, {
+    requireProcessComputer: true,
+  });
+  expect(await readFile(join(compatible, "data", "artifact.txt"), "utf8")).toBe(
+    "synthetic work",
+  );
+
+  await writeFile(
+    join(root, "persona.config.json"),
+    JSON.stringify({
+      dataDir: data,
+      computer: { kind: "process" },
+      workComputer: {
+        kind: "docker",
+        id: "fixture",
+        image: "fixture:1",
+        volume: "fixture",
+      },
+    }),
+  );
+  const isolatedArchive = join(directory, "isolated.persona");
+  await backupInstallation(root, isolatedArchive, password);
+  const isolated = join(directory, "isolated");
+  await expect(
+    restoreInstallation(isolatedArchive, isolated, password, {
+      requireProcessComputer: true,
+    }),
+  ).rejects.toThrow("隔离电脑");
+  await expect(
+    readFile(join(isolated, "persona.config.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+
+  await writeFile(
+    join(root, "persona.config.json"),
+    JSON.stringify({ dataDir: data, computer: { kind: "process" } }),
+  );
+  await writeFile(
+    join(data, "computer.json"),
+    JSON.stringify({ kind: "controller", id: "fixture" }),
+  );
+  const legacyArchive = join(directory, "legacy.persona");
+  await backupInstallation(root, legacyArchive, password);
+  const legacy = join(directory, "legacy");
+  await expect(
+    restoreInstallation(legacyArchive, legacy, password, {
+      requireProcessComputer: true,
+    }),
+  ).rejects.toThrow("隔离电脑");
+  await expect(
+    readFile(join(legacy, "persona.config.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});

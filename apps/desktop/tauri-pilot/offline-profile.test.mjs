@@ -1,14 +1,27 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { access, cp, readdir, readFile, rm } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { persistentCredentials } from "../../../packages/hosting/src/credentials.ts";
+import { backupInstallation } from "../../../packages/hosting/src/maintenance.ts";
 import { HostingStore } from "../../../packages/hosting/src/store.ts";
-import { createPersistentTestProfile } from "./service.mjs";
+import { importPilotBackup } from "./import-backup.mjs";
+import {
+  createPersistentTestProfile,
+  startPersistentService,
+} from "./service.mjs";
 
 const require = createRequire(
   new URL("../../api/package.json", import.meta.url),
@@ -33,17 +46,18 @@ async function snapshot(directory) {
   return result;
 }
 
-test("offline synthetic Electron-equivalent profile: copied key, device, Bot and history survive pilot service", {
+test("offline synthetic Electron-equivalent backup: imported key, device, Bot and history survive pilot restart", {
   skip: process.platform !== "win32",
-  timeout: 240_000,
+  timeout: 300_000,
 }, async () => {
-  // Both capabilities allocate fresh pilot-owned roots; no supplied profile paths.
   const source = await createPersistentTestProfile();
-  const copy = await createPersistentTestProfile();
+  const base = fileURLToPath(new URL("./target/test-data/", import.meta.url));
+  await mkdir(base, { recursive: true });
+  const fixtureRoot = await mkdtemp(join(base, "import-backup-"));
   let sourceService;
-  let copyService;
+  let importedService;
   let sourceDirectory;
-  let copyDirectory;
+  let importedDirectory;
   const connect = (service, token) =>
     createORPCClient(
       new RPCLink({
@@ -132,7 +146,7 @@ test("offline synthetic Electron-equivalent profile: copied key, device, Bot and
     );
     await stop(sourceService);
     sourceService = undefined;
-    // Electron and the pilot use this same production hosting store and agent service.
+
     const credential = {
       type: "api_key",
       key: `synthetic-only-${randomUUID()}`,
@@ -146,29 +160,79 @@ test("offline synthetic Electron-equivalent profile: copied key, device, Bot and
     } finally {
       await sourceStore.close();
     }
-    copyService = await copy.start();
-    copyDirectory = copyService.directory;
-    await stop(copyService);
-    copyService = undefined;
+
+    const password = randomUUID();
+    const archive = join(fixtureRoot, "compatible.persona");
+    const compatibleConfig = {
+      dataDir: join(sourceDirectory, "data"),
+      computer: { kind: "process" },
+    };
+    const configFile = join(sourceDirectory, "persona.config.json");
+    await writeFile(configFile, JSON.stringify(compatibleConfig));
+    await backupInstallation(sourceDirectory, archive, password);
+
+    const unsupportedArchive = join(fixtureRoot, "unsupported.persona");
+    await writeFile(
+      configFile,
+      JSON.stringify({
+        ...compatibleConfig,
+        workComputer: {
+          kind: "docker",
+          id: "fixture",
+          image: "fixture:1",
+          volume: "fixture",
+        },
+      }),
+    );
+    await backupInstallation(sourceDirectory, unsupportedArchive, password);
+    await writeFile(configFile, JSON.stringify(compatibleConfig));
     const before = await snapshot(sourceDirectory);
-    // Copy the entire settled directory, not selected SQLite files or a reconstructed marker.
-    await rm(copyDirectory, { recursive: true });
-    await cp(sourceDirectory, copyDirectory, { recursive: true });
-    assert.deepEqual(await snapshot(copyDirectory), before);
-    copyService = await copy.start();
+
+    const wrong = join(fixtureRoot, "wrong");
+    await assert.rejects(
+      importPilotBackup(archive, `${password}-wrong`, wrong),
+    );
+    await assert.rejects(access(wrong), { code: "ENOENT" });
+    await assert.rejects(access(`${wrong}.lock`), { code: "ENOENT" });
+
+    const corruptArchive = join(fixtureRoot, "corrupt.persona");
+    await writeFile(corruptArchive, "not an encrypted Persona backup");
+    const corrupt = join(fixtureRoot, "corrupt");
+    await assert.rejects(importPilotBackup(corruptArchive, password, corrupt));
+    await assert.rejects(access(corrupt), { code: "ENOENT" });
+    await assert.rejects(access(`${corrupt}.lock`), { code: "ENOENT" });
+
+    const unsupported = join(fixtureRoot, "unsupported");
+    await assert.rejects(
+      importPilotBackup(unsupportedArchive, password, unsupported),
+      /隔离电脑|computer/i,
+    );
+    await assert.rejects(access(unsupported), { code: "ENOENT" });
+    await assert.rejects(access(`${unsupported}.lock`), { code: "ENOENT" });
+
+    importedDirectory = join(fixtureRoot, "imported");
+    await importPilotBackup(archive, password, importedDirectory);
+    const importedSnapshot = await snapshot(importedDirectory);
+    await assert.rejects(
+      importPilotBackup(archive, password, importedDirectory),
+      /já existe|exists/i,
+    );
+    assert.deepEqual(await snapshot(importedDirectory), importedSnapshot);
+
+    importedService = await startPersistentService(importedDirectory);
     assert.equal(
-      (await fetch(`${copyService.origin}/hosting/session`)).status,
+      (await fetch(`${importedService.origin}/hosting/session`)).status,
       401,
     );
     const restoredSession = await fetch(
-      `${copyService.origin}/hosting/session`,
+      `${importedService.origin}/hosting/session`,
       {
         headers: { authorization: `Bearer ${token}` },
       },
     );
     assert.equal(restoredSession.status, 200);
     assert.deepEqual((await restoredSession.json()).device, device);
-    const restoredApi = connect(copyService, token);
+    const restoredApi = connect(importedService, token);
     assert.ok(
       (await restoredApi.bots.list()).some(
         (item) => item.id === bot.id && item.name === bot.name,
@@ -178,37 +242,39 @@ test("offline synthetic Electron-equivalent profile: copied key, device, Bot and
       (await restoredApi.get({ botId: bot.id })).messages,
       history.messages,
     );
-    await stop(copyService);
-    copyService = undefined;
-    const copiedStore = await HostingStore.open(join(copyDirectory, "data"));
+    await stop(importedService);
+    importedService = undefined;
+
+    const importedStore = await HostingStore.open(
+      join(importedDirectory, "data"),
+    );
     try {
-      // Do not let an assertion print credentials, even though these are synthetic.
       const restored =
-        await persistentCredentials(copiedStore).read("offline-synthetic");
+        await persistentCredentials(importedStore).read("offline-synthetic");
       assert.ok(
         JSON.stringify(restored) === JSON.stringify(credential),
-        "Copied credential did not decrypt",
+        "Imported credential did not decrypt",
       );
     } finally {
-      await copiedStore.close();
+      await importedStore.close();
     }
+
+    importedService = await startPersistentService(importedDirectory);
     assert.deepEqual(
-      await snapshot(sourceDirectory),
-      before,
-      "Source changed while copy was running",
+      (await connect(importedService, token).get({ botId: bot.id })).messages,
+      history.messages,
     );
-    await copy.cleanup();
-    await assert.rejects(access(copyDirectory), { code: "ENOENT" });
+    await stop(importedService);
+    importedService = undefined;
     assert.deepEqual(
       await snapshot(sourceDirectory),
       before,
-      "Dropping the copy changed source",
+      "Source changed while backup import was running",
     );
   } finally {
-    // Uncertain shutdown retains the affected fixture; cleanup cannot bypass ownership.
-    if (copyService) await stop(copyService);
+    if (importedService) await stop(importedService);
     if (sourceService) await stop(sourceService);
-    await copy.cleanup();
+    await rm(fixtureRoot, { recursive: true, force: true });
     await source.cleanup();
   }
 });

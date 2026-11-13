@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { access, cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildPilotBundle } from "./build-pilot-bundle.mjs";
 import { buildRuntime } from "./build-runtime.mjs";
 
 if (process.platform !== "win32")
@@ -22,6 +23,7 @@ for (const entry of [
   "web/index.html",
   "node_modules/@persona/agent/src/harness/worker.mjs",
   "node_modules/@persona/hosting/src/instance.ts",
+  "node_modules/@persona/hosting/src/maintenance.ts",
   "node_modules/zod/package.json",
 ]) {
   await access(join(runtime, entry)).catch(() => {
@@ -60,6 +62,8 @@ for (const entry of [
 ]) {
   await cp(join(base, entry), join(destination, entry));
 }
+for (const entry of ["import-backup.mjs", "portable-import-smoke.mjs"])
+  await buildPilotBundle(join(base, entry), join(destination, entry));
 await writeFile(
   join(destination, "portable-test.json"),
   JSON.stringify({

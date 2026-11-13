@@ -43,3 +43,4 @@ assert.equal(
   "Packaged remote probe policy and transport smoke failed",
 );
 await import("./portable-chat-smoke.mjs");
+await import("./portable-import-smoke.mjs");

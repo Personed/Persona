@@ -11,6 +11,7 @@ test("real temporary service: private pairing, auth, shutdown and cleanup", {
   try {
     const health = await fetch(`${service.origin}/health`);
     assert.equal(health.status, 200);
+    assert.ok(Number(new URL(service.origin).port) >= 49152);
     assert.deepEqual(await health.json(), { ok: true });
     assert.equal(
       (await fetch(`${service.origin}/hosting/session`)).status,

@@ -1,7 +1,7 @@
 # Persona Tauri pilot — integração temporária
 
-Piloto de desenvolvimento isolado. Não substitui Electron, não migra instalações
-e não promete paridade. Abre o setup existente em uma WebView local separada.
+Piloto de desenvolvimento isolado. Não substitui Electron, não migra perfis
+automaticamente e não promete paridade. Abre o setup existente em uma WebView local separada.
 O submit local temporário usa a UI existente de `apps/web/dist`, servida pelo
 runtime Node real com dados descartáveis. O submit remoto abre essa UI em uma
 WebView HTTP separada, depois de validar o servidor. A UI real recebe a ponte
@@ -37,7 +37,7 @@ cargo build --locked
 Na raiz do repositório:
 
 ```sh
-node --test --test-concurrency=1 apps/desktop/tauri-pilot/local-session.test.mjs apps/desktop/tauri-pilot/stop-child.test.mjs apps/desktop/tauri-pilot/supervisor.test.mjs apps/desktop/tauri-pilot/service.test.mjs apps/desktop/tauri-pilot/service-transport.test.mjs apps/desktop/tauri-pilot/remote-probe.test.mjs
+node --test --test-concurrency=1 apps/desktop/tauri-pilot/local-session.test.mjs apps/desktop/tauri-pilot/stop-child.test.mjs apps/desktop/tauri-pilot/supervisor.test.mjs apps/desktop/tauri-pilot/service.test.mjs apps/desktop/tauri-pilot/service-transport.test.mjs apps/desktop/tauri-pilot/remote-probe.test.mjs apps/desktop/tauri-pilot/offline-profile.test.mjs
 pnpm exec biome check apps/desktop/tauri-pilot/local-session.mjs apps/desktop/tauri-pilot/local-session.fixture.mjs apps/desktop/tauri-pilot/local-session.test.mjs apps/desktop/tauri-pilot/stop-child.mjs apps/desktop/tauri-pilot/stop-child.test.mjs apps/desktop/tauri-pilot/service.mjs apps/desktop/tauri-pilot/supervisor.mjs apps/desktop/tauri-pilot/silent-supervisor.fixture.mjs apps/desktop/tauri-pilot/remote-probe.mjs apps/desktop/tauri-pilot/remote-probe.test.mjs apps/desktop/tauri-pilot/remote-server.fixture.mjs
 ```
 
@@ -68,10 +68,10 @@ O smoke cria também um Bot sintético pelo serviço empacotado, envia uma mensa
 via API autenticada e verifica a resposta e o histórico após reinício. Um Harness
 ACP de teste responde localmente; não são feitas chamadas a modelos reais.
 
-`node --test apps/desktop/tauri-pilot/offline-profile.test.mjs` verifica uma cópia
-offline de dados sintéticos: autenticação, credencial criptografada, Bot e histórico
-continuam acessíveis e a origem não muda. O teste usa o mesmo serviço local, mas
-não abre o Electron ou testa uma migração de perfil real.
+`node --test apps/desktop/tauri-pilot/offline-profile.test.mjs` verifica uma
+importação offline de backup sintético: autenticação, credencial criptografada,
+Bot e histórico continuam acessíveis após reiniciar o serviço e a origem não
+muda. O teste não abre o Electron nem migra um perfil real.
 
 Para experimentar persistência local isolada, inicie o piloto com
 `--persistent-local`. Os dados ficam em `target/test-data/pilot-local-v1`, junto
@@ -81,6 +81,24 @@ perfil Electron e ainda não substitui backup ou uma instalação de produção.
 Uma interrupção incerta mantém um bloqueio para evitar reutilização simultânea;
 não o remova sem confirmar que todos os processos responsáveis terminaram.
 
+Para importar um backup cifrado em um perfil ainda vazio, execute o comando
+explícito:
+
+```powershell
+.\persona-tauri-pilot.exe --import-backup C:\caminho\backup.persona
+```
+
+A senha é lida sem eco pelo console e não entra em argumentos, ambiente ou logs.
+Após a importação bem-sucedida, execute o mesmo executável novamente com
+`--persistent-local` para abrir o perfil importado.
+A origem permanece intacta; a reversão é abrir o Electron original ou remover
+somente a cópia do piloto depois que seus processos terminarem. O importador
+aceita apenas configuração de computador local. Backups com Docker, controlador
+ou computador isolado são recusados antes de publicar o perfil. Em particular,
+o backup padrão do Electron local pode conter `workComputer` Docker e ainda não
+é importável. O importador não copia homes de contas nativas, credenciais da
+CLI ou outros dados fora do backup; ele não abre perfis automaticamente.
+
 ## Fluxo real e fronteiras
 
 - Rust inicia um supervisor Node próprio. stdin e stderr são **pipes privados
@@ -89,7 +107,8 @@ não o remova sem confirmar que todos os processos responsáveis terminaram.
   `supervisor.mjs` manualmente redirecionando o protocolo para um terminal/log.
 - `supervisor.mjs` reutiliza `service.mjs`. Startup e stop são idempotentes.
   O serviço usa uma configuração exclusiva em `target/test-data/service-*`,
-  dados/homes temporários, apenas 127.0.0.1 e porta efêmera. O ambiente do serviço
+  dados/homes temporários, apenas 127.0.0.1 e uma porta loopback alta escolhida
+  dinamicamente. O ambiente do serviço
   não herda configurações Persona, chaves ou homes reais. Rust limpa todo o ambiente
   do supervisor e repassa somente PATH, SystemRoot, WINDIR e SystemDrive quando
   presentes. Não consulta valores de credenciais ou proxies herdados.
@@ -312,18 +331,27 @@ seja aplicada à resposta HTTP do serviço. A UI HTTP usa as políticas do produ
 e o bloqueio de navegação/permissões da WebView. Cookie é HTTP loopback, não TLS.
 
 Identificador próprio `app.persona.tauri-pilot`, WebView incógnita e dados
-descartáveis. Não há leitura/migração/limpeza de perfis Electron/Persona reais.
-Incógnito não garante zero escrita do motor WebView. Isso **não é sandbox do SO**:
-não conecte credenciais, crie Bots nem execute ações de computador em testes de
-produção. O teste não dispara modelos ou ações de computador. Morte abrupta pode
-deixar dados sob `target/test-data`; remova apenas esse diretório após confirmar
-que seus processos terminaram. O encerramento forçado não comprova cleanup.
+descartáveis por padrão. Não há leitura automática, migração ou limpeza de
+perfis Electron/Persona reais. O único acesso ao conteúdo de uma origem é o
+importador explícito de um backup escolhido pelo usuário, que publica somente
+uma cópia isolada e preserva a origem. Incógnito não garante zero escrita do
+motor WebView. Isso **não é sandbox do SO**. O piloto ainda é de teste: não
+conecte credenciais de produção nem execute ações de computador antes de a
+migração real e a migração do `workComputer` Docker serem implementadas e
+validadas. Morte abrupta pode deixar dados sob `target/test-data`; remova apenas
+esse diretório após confirmar que seus processos terminaram. O encerramento
+forçado não comprova cleanup.
 
 ## Evidência e limites dos checks
 
 - Testes Node reais: pairing privado/autorização por cookie, origem externa
   403, stdout vazio, startup/stop repetidos, EOF durante startup sem ready, morte
   do serviço sem restart, shutdown e remoção dos dados temporários.
+- Backup sintético cifrado: exportado pela rotina real, importado pelo CLI do
+  executável empacotado, aberto pelo serviço empacotado e reiniciado; o
+  dispositivo original autenticou, a credencial cifrada foi descriptografada e
+  o histórico permaneceu. Senha errada, computador isolado e destino existente
+  não publicaram um perfil parcial. Nenhum modelo ou perfil real foi usado.
 - Teste do probe remoto: servidor loopback controlado respondeu à rota
   `/hosting/info`; redirect, schema, status e cancelamento foram rejeitados sem
   seguir redirect, e entrada inválida não chegou à rede. stdout permaneceu vazio.
