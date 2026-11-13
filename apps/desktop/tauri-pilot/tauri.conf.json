@@ -1,0 +1,48 @@
+{
+  "productName": "Persona Tauri Pilot",
+  "version": "0.1.0",
+  "identifier": "app.persona.tauri-pilot",
+  "build": {
+    "frontendDist": "target/setup-assets"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "pilot",
+        "create": false,
+        "title": "Persona — Tauri Pilot (offline)",
+        "url": "index.html",
+        "width": 1200,
+        "height": 800,
+        "incognito": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'",
+      "capabilities": [
+        {
+          "identifier": "local-setup",
+          "local": true,
+          "webviews": ["setup"],
+          "permissions": [
+            "allow-setup-state",
+            "allow-setup-submit",
+            "allow-setup-cancel",
+            "allow-setup-docker"
+          ]
+        },
+        {
+          "identifier": "pilot-no-permissions",
+          "local": true,
+          "windows": ["pilot"],
+          "permissions": []
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

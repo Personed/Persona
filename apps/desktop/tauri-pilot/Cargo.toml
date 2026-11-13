@@ -1,0 +1,23 @@
+[package]
+name = "persona-tauri-pilot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "=3.0.0-alpha.4", default-features = false }
+
+[dependencies]
+tauri = { version = "=3.0.0-alpha.6", default-features = false, features = ["custom-protocol"] }
+tauri-runtime-wry = "=3.0.0-alpha.6"
+tauri-runtime = "=3.0.0-alpha.5"
+serde_json = "=1.0.154"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
