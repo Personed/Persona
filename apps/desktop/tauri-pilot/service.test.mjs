@@ -1,8 +1,22 @@
 import assert from "node:assert/strict";
-import { access, symlink, unlink } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createPersistentTestProfile, startTestService } from "./service.mjs";
+import {
+  createPersistentTestProfile,
+  pilotProfileMarker,
+  startPersistentService,
+  startTestService,
+} from "./service.mjs";
 
 test("real temporary service: private pairing, auth, shutdown and cleanup", {
   timeout: 120_000,
@@ -55,6 +69,35 @@ test("real temporary service: private pairing, auth, shutdown and cleanup", {
   console.log(
     "health=200 anonymous=401 desktop-http=404 paired=200 cross-origin=403 shutdown=0 temporary-data=removed",
   );
+});
+
+test("imported Docker work template remains local and configured", {
+  timeout: 120_000,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "persona-pilot-work-"));
+  const workComputer = {
+    kind: "docker",
+    id: "synthetic-template",
+    image: "fixture:1",
+    volume: "synthetic-volume",
+  };
+  await writeFile(
+    join(directory, "persona.config.json"),
+    JSON.stringify({ computer: { kind: "process" }, workComputer }),
+  );
+  await writeFile(join(directory, "pilot-profile"), pilotProfileMarker);
+  const service = await startPersistentService(directory);
+  try {
+    const config = JSON.parse(
+      await readFile(join(service.directory, "config.json"), "utf8"),
+    );
+    assert.deepEqual(config.workComputer, workComputer);
+    assert.deepEqual(config.computer, { kind: "process" });
+  } finally {
+    assert.deepEqual(await service.stop(), { graceful: true, cleanup: false });
+    await service.exited;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("forced service exit reports uncertainty and retains disposable data", {

@@ -31,7 +31,11 @@ import {
   sep,
 } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { DockerComputer, hostCommand } from "@persona/agent/computer/docker";
+import {
+  DockerComputer,
+  hostCommand,
+  sandboxNames,
+} from "@persona/agent/computer/docker";
 import {
   restoreComputers,
   storedComputers,
@@ -160,16 +164,50 @@ async function workArchive(
   return result;
 }
 
+function remapDockerComputer(config: DockerConfig) {
+  const previous = config.volume;
+  do {
+    config.id = randomBytes(6).toString("hex");
+    config.volume = `persona-${config.id}-work`;
+  } while (config.volume === previous);
+  return config;
+}
+
+async function dockerVolumeExists(config: DockerConfig) {
+  const [program, ...args] = hostCommand(config, [
+    "docker",
+    "volume",
+    "ls",
+    "--filter",
+    `name=${config.volume}`,
+    "--format",
+    "{{.Name}}",
+  ]);
+  if (!program) throw new Error("Docker 不可用。");
+  const output = await runCommand(program, args);
+  return output.split(/\r?\n/).includes(config.volume);
+}
+
 async function archiveComputer(
   config: DockerConfig,
   archive: string,
   restore: boolean,
 ) {
   const driver = new DockerComputer(config);
-  if (!restore) await driver.stop();
+  if (!restore) {
+    const state = await driver.inspect();
+    if (state === "running")
+      await driver.command([
+        "docker",
+        "container",
+        "stop",
+        "--time",
+        "10",
+        sandboxNames(config).container,
+      ]);
+  }
   if (restore) {
-    config.id = randomBytes(6).toString("hex");
-    config.volume = `persona-${config.id}-work`;
+    remapDockerComputer(config);
     const [program, ...args] = hostCommand(config, [
       "docker",
       "volume",
@@ -337,6 +375,19 @@ export async function backupInstallation(
       await archiveComputer(target, join(stage, archive), false);
       computerArchives.push({ id: item.id, archive });
     }
+    let workComputerArchive: string | undefined;
+    if (config.workComputer?.kind === "docker") {
+      if (config.workComputer.ssh)
+        throw new Error("远程 Docker 工作电脑模板暂不支持迁移。");
+      if (await dockerVolumeExists(config.workComputer)) {
+        workComputerArchive = "work-computer.tar";
+        await archiveComputer(
+          config.workComputer,
+          join(stage, workComputerArchive),
+          false,
+        );
+      }
+    }
     if (!external) await cp(root, installation, copy);
     if (config.computer.kind === "controller")
       await workArchive(root, join(stage, "work.tar"), false);
@@ -345,6 +396,7 @@ export async function backupInstallation(
       "manifest.json",
       "installation",
       ...computerArchives.map((item) => item.archive),
+      ...(workComputerArchive ? [workComputerArchive] : []),
     ];
     try {
       await stat(join(stage, "work.tar"));
@@ -355,10 +407,14 @@ export async function backupInstallation(
     await writeFile(
       join(stage, "manifest.json"),
       JSON.stringify({
-        version: 1,
+        version: 2,
         created: Date.now(),
         work: entries.includes("work.tar"),
         computers: computerArchives,
+        workComputer:
+          config.workComputer?.kind === "docker"
+            ? { archive: workComputerArchive }
+            : undefined,
       }),
     );
     await create(
@@ -457,7 +513,17 @@ export async function restoreInstallation(
     const manifest = JSON.parse(
       await readFile(join(stage, "manifest.json"), "utf8"),
     );
-    if (manifest.version !== 1) throw new Error("备份版本不兼容。");
+    if (manifest.version !== 1 && manifest.version !== 2)
+      throw new Error("备份版本不兼容。");
+    const workComputerArchive = manifest.workComputer?.archive;
+    if (
+      manifest.workComputer !== undefined &&
+      (typeof manifest.workComputer !== "object" ||
+        manifest.workComputer === null ||
+        (workComputerArchive !== undefined &&
+          workComputerArchive !== "work-computer.tar"))
+    )
+      throw new Error("备份中的工作电脑模板无效。");
     const restored = join(stage, "installation");
     const filename = join(restored, "persona.config.json");
     const config = JSON.parse(await readFile(filename, "utf8"));
@@ -465,10 +531,13 @@ export async function restoreInstallation(
     if (
       options.requireProcessComputer &&
       (sourceConfig.computer.kind !== "process" ||
-        sourceConfig.workComputer ||
+        (sourceConfig.workComputer &&
+          sourceConfig.workComputer.kind !== "docker") ||
         sourceConfig.deployment !== "native")
     )
       throw new Error("该备份包含当前环境不支持的隔离电脑。");
+    if (manifest.workComputer !== undefined && !sourceConfig.workComputer)
+      throw new Error("备份中的工作电脑模板无效。");
     config.computer ??= sourceConfig.computer;
     config.dataDir = join(target, "data");
     if (config.computer.kind === "controller")
@@ -505,6 +574,27 @@ export async function restoreInstallation(
         item.config.kind === "controller"
           ? { ...item.config, id: volume.config.id }
           : volume.config;
+    }
+    if (sourceConfig.workComputer?.kind === "docker") {
+      if (
+        manifest.version !== 2 ||
+        manifest.workComputer === undefined ||
+        sourceConfig.workComputer.ssh
+      )
+        throw new Error("该备份未包含可安全迁移的 Docker 工作电脑模板。");
+      if (workComputerArchive) {
+        const volume = await archiveComputer(
+          { ...sourceConfig.workComputer },
+          join(stage, workComputerArchive),
+          true,
+        );
+        restoredVolumes.push(volume);
+        config.workComputer = volume.config;
+      } else {
+        config.workComputer = remapDockerComputer({
+          ...sourceConfig.workComputer,
+        });
+      }
     }
     if (manifest.work) {
       const controllerFile = join(restored, "controller.json");

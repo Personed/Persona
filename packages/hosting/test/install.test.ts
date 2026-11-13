@@ -353,10 +353,12 @@ test("process-only restore preserves a compatible backup and rejects isolated co
       dataDir: data,
       computer: { kind: "process" },
       workComputer: {
-        kind: "docker",
+        kind: "controller",
         id: "fixture",
-        image: "fixture:1",
-        volume: "fixture",
+        endpoint: "https://fixture.example",
+        credentialFile: "synthetic-token",
+        network: "none",
+        timeoutSeconds: 120,
       },
     }),
   );

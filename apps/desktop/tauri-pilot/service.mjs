@@ -176,26 +176,51 @@ async function reserveLoopbackPort() {
   }
 }
 
-async function savedModel(directory) {
+async function savedProfile(directory) {
   const filename = join(directory, "persona.config.json");
   let value;
   try {
     value = JSON.parse(await readFile(filename, "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") return undefined;
+    if (error.code === "ENOENT") return {};
     throw error;
   }
-  if (value.model === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Invalid imported profile configuration");
+  return value;
+}
+
+function savedModel(profile) {
+  if (profile.model === undefined) return undefined;
   if (
-    typeof value.model !== "object" ||
-    value.model === null ||
-    typeof value.model.provider !== "string" ||
-    !value.model.provider ||
-    typeof value.model.modelId !== "string" ||
-    !value.model.modelId
+    typeof profile.model !== "object" ||
+    profile.model === null ||
+    typeof profile.model.provider !== "string" ||
+    !profile.model.provider ||
+    typeof profile.model.modelId !== "string" ||
+    !profile.model.modelId
   )
     throw new Error("Invalid imported model configuration");
-  return value.model;
+  return profile.model;
+}
+
+function savedWorkComputer(profile) {
+  const value = profile.workComputer;
+  if (value === undefined) return undefined;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    value.kind !== "docker" ||
+    value.ssh !== undefined ||
+    typeof value.id !== "string" ||
+    !/^[a-z0-9][a-z0-9_.-]{0,62}$/.test(value.id) ||
+    typeof value.image !== "string" ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9_./:@-]+$/.test(value.image) ||
+    typeof value.volume !== "string" ||
+    !/^[a-z0-9][a-z0-9_.-]{0,62}$/.test(value.volume)
+  )
+    throw new Error("Invalid imported work computer configuration");
+  return value;
 }
 
 async function startService(directory, retain) {
@@ -215,11 +240,14 @@ async function startService(directory, retain) {
   try {
     const port = await reserveLoopbackPort();
     const config = join(directory, "config.json");
-    const model = await savedModel(directory);
+    const profile = await savedProfile(directory);
+    const model = savedModel(profile);
+    const workComputer = savedWorkComputer(profile);
     await writeFile(
       config,
       JSON.stringify({
         ...(model ? { model } : {}),
+        ...(workComputer ? { workComputer } : {}),
         host: "127.0.0.1",
         port,
         dataDir: join(directory, "data"),

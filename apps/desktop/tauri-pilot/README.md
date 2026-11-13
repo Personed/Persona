@@ -93,11 +93,15 @@ Após a importação bem-sucedida, execute o mesmo executável novamente com
 `--persistent-local` para abrir o perfil importado.
 A origem permanece intacta; a reversão é abrir o Electron original ou remover
 somente a cópia do piloto depois que seus processos terminarem. O importador
-aceita apenas configuração de computador local. Backups com Docker, controlador
-ou computador isolado são recusados antes de publicar o perfil. Em particular,
-o backup padrão do Electron local pode conter `workComputer` Docker e ainda não
-é importável. O importador não copia homes de contas nativas, credenciais da
-CLI ou outros dados fora do backup; ele não abre perfis automaticamente.
+aceita computador principal local e registros de computador locais. Backups com
+computador principal/controller ou registros isolados são recusados antes de
+publicar o perfil. Um template local `workComputer` Docker incluído no formato
+de backup v2 é aceito: o volume da origem é montado somente para leitura e a
+restauração cria um volume novo; a origem não é reutilizada nem alterada. O
+Docker precisa estar disponível ao criar o backup e ao restaurar um volume
+arquivado. Templates Docker remotos ainda são recusados. O importador não copia
+homes de contas nativas, credenciais da CLI ou outros dados fora do backup; ele
+não abre perfis automaticamente.
 
 ## Fluxo real e fronteiras
 
@@ -256,8 +260,8 @@ antecipada de closing=false, sem usar sleeps como sincronização.
 `remote` e define `window.personaDesktop` apenas no frame principal
 (`window.top === window`). Mantém o contrato que `apps/web` já consome:
 `platform`, `state`, `appearance` e `menu`. `prepare` e `maintain` não invocam
-comando privilegiado nenhum: devolvem `ok: false` com erro explícito, porque o
-piloto não gerencia imagens de Docker nem backup/restauração.
+comando privilegiado nenhum: devolvem `ok: false` com erro explícito, porque a
+ponte não gerencia imagens de Docker nem backup/restauração.
 
 Rust implementa `desktop_state`, `desktop_appearance` e `desktop_menu`. Cada
 handler revalida, em Rust, o label da WebView e a origem exata já validada
@@ -337,8 +341,8 @@ importador explícito de um backup escolhido pelo usuário, que publica somente
 uma cópia isolada e preserva a origem. Incógnito não garante zero escrita do
 motor WebView. Isso **não é sandbox do SO**. O piloto ainda é de teste: não
 conecte credenciais de produção nem execute ações de computador antes de a
-migração real e a migração do `workComputer` Docker serem implementadas e
-validadas. Morte abrupta pode deixar dados sob `target/test-data`; remova apenas
+migração real ser validada com Docker real. Morte abrupta pode deixar dados sob
+`target/test-data`; remova apenas
 esse diretório após confirmar que seus processos terminaram. O encerramento
 forçado não comprova cleanup.
 
@@ -352,6 +356,10 @@ forçado não comprova cleanup.
   dispositivo original autenticou, a credencial cifrada foi descriptografada e
   o histórico permaneceu. Senha errada, computador isolado e destino existente
   não publicaram um perfil parcial. Nenhum modelo ou perfil real foi usado.
+- Template local `workComputer` Docker: um teste sintético do comando Docker
+  verificou montagem somente leitura da origem, criação de volume novo na
+  restauração, preservação dos arquivos e não reutilização da origem. O daemon
+  Docker real e volumes do usuário não foram acessados.
 - Teste do probe remoto: servidor loopback controlado respondeu à rota
   `/hosting/info`; redirect, schema, status e cancelamento foram rejeitados sem
   seguir redirect, e entrada inválida não chegou à rede. stdout permaneceu vazio.

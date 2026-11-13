@@ -177,10 +177,12 @@ test("offline synthetic Electron-equivalent backup: imported key, device, Bot an
       JSON.stringify({
         ...compatibleConfig,
         workComputer: {
-          kind: "docker",
+          kind: "controller",
           id: "fixture",
-          image: "fixture:1",
-          volume: "fixture",
+          endpoint: "https://fixture.example",
+          credentialFile: "synthetic-token",
+          network: "none",
+          timeoutSeconds: 120,
         },
       }),
     );
