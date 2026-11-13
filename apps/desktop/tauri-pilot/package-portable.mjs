@@ -55,6 +55,8 @@ for (const entry of [
   "remote-probe.test.mjs",
   "remote-server.fixture.mjs",
   "portable-smoke.mjs",
+  "portable-chat-smoke.mjs",
+  "chat-acp.fixture.mjs",
 ]) {
   await cp(join(base, entry), join(destination, entry));
 }

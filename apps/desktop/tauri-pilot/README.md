@@ -64,6 +64,10 @@ junto ao executável. É somente para testes, não é instalador nem migra dados
 Não conecte credenciais ou dados de produção. O teste do pacote foi feito com Node
 26; compatibilidade de empacotamento com Node 24 ainda não foi verificada.
 
+O smoke cria também um Bot sintético pelo serviço empacotado, envia uma mensagem
+via API autenticada e verifica a resposta e o histórico após reinício. Um Harness
+ACP de teste responde localmente; não são feitas chamadas a modelos reais.
+
 Para experimentar persistência local isolada, inicie o piloto com
 `--persistent-local`. Os dados ficam em `target/test-data/pilot-local-v1`, junto
 ao executável portátil ou no diretório do piloto de desenvolvimento. Fechar o
