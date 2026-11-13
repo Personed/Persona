@@ -46,17 +46,19 @@ e instaladores Tauri continuam desativados.
 
 ### Pacote portátil de teste para Windows
 
-Com Node 24 ou superior, dependências Cargo em cache e um artefato de produção
-`apps/desktop/runtime` já existente, execute na raiz:
+Com Node 24 ou superior, pnpm e as dependências Cargo e pnpm em cache, execute
+na raiz:
 
 ```sh
 node apps/desktop/tauri-pilot/package-portable.mjs
 ```
 
-O script não reconstrói nem altera o runtime Electron. Ele copia o Node usado na
-execução, o runtime existente e os arquivos do piloto para um novo diretório em
-`target/portable-test-*`, e executa um smoke de serviço e probe remoto. O runtime
-copiado pode estar desatualizado; a versão do pacote depende desse artefato. O
+O script não reconstrói nem altera o runtime Electron. Ele compila o executável,
+prepara um runtime e a interface a partir do checkout atual sem downloads, e copia
+o Node usado na execução para um novo diretório em `target/portable-test-*`.
+Requer também os binários Cua correspondentes já instalados no cache local; não
+faz download deles. O empacotamento testa o serviço, o probe remoto, o worker e
+uma tarefa sintética, além da descoberta das ferramentas de computador. O
 pacote pode ser movido, requer WebView2 instalado e mantém dados descartáveis
 junto ao executável. É somente para testes, não é instalador nem migra dados reais.
 Não conecte credenciais ou dados de produção. O teste do pacote foi feito com Node

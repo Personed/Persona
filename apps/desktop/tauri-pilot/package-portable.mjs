@@ -1,15 +1,8 @@
 import { spawnSync } from "node:child_process";
-import {
-  access,
-  cp,
-  mkdir,
-  mkdtemp,
-  readFile,
-  writeFile,
-} from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
+import { access, cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildRuntime } from "./build-runtime.mjs";
 
 if (process.platform !== "win32")
   throw new Error("Portable TEST packaging supports Windows only.");
@@ -18,7 +11,10 @@ if (Number(process.versions.node.split(".")[0]) < 24)
     "Node >=24 is required; run this script with a compatible installed node.exe.",
   );
 const base = fileURLToPath(new URL("./", import.meta.url));
-const runtime = fileURLToPath(new URL("../runtime/", import.meta.url));
+await mkdir(join(base, "target"), { recursive: true });
+const destination = await mkdtemp(join(base, "target", "portable-test-"));
+const runtime = join(destination, "runtime");
+await buildRuntime(runtime);
 for (const entry of [
   "server.mjs",
   "bridge.mjs",
@@ -29,43 +25,24 @@ for (const entry of [
   "node_modules/zod/package.json",
 ]) {
   await access(join(runtime, entry)).catch(() => {
-    throw new Error(
-      `Missing production runtime prerequisite: apps/desktop/runtime/${entry}. Supply an existing production desktop runtime and web build; this script never builds or changes runtime/dist.`,
-    );
+    throw new Error(`Fresh pilot runtime is missing ${entry}.`);
   });
 }
-// Offline Cargo only: never invoke the Electron build or download a toolchain.
-const build = spawnSync("cargo", ["build", "--offline", "--locked"], {
-  cwd: base,
-  stdio: "inherit",
-});
-if (build.error || build.status !== 0)
+// Cargo verifies current sources and regenerates only the pilot's own outputs.
+const nativeBuild = spawnSync(
+  "cargo",
+  ["build", "--offline", "--locked", "--target-dir", join(base, "target")],
+  { cwd: base, stdio: "inherit", windowsHide: true },
+);
+if (nativeBuild.error || nativeBuild.status !== 0)
   throw new Error(
-    "Pilot offline Cargo build failed. Prepare the installed Rust toolchain and cached pilot dependencies first.",
+    "Current pilot shell offline build failed; refusing to package an existing executable.",
   );
-await mkdir(join(base, "target"), { recursive: true });
-const destination = await mkdtemp(join(base, "target", "portable-test-"));
 await cp(
   join(base, "target/debug/persona-tauri-pilot.exe"),
   join(destination, "persona-tauri-pilot.exe"),
 );
 await cp(process.execPath, join(destination, "node.exe"));
-// Copy the existing production artifact, dereferencing its workspace links for relocation.
-await cp(runtime, join(destination, "runtime"), {
-  recursive: true,
-  dereference: true,
-});
-// Node cannot strip TypeScript inside node_modules; compile the artifact's shared policy unchanged.
-await writeFile(
-  join(destination, "runtime/hosting-instance.mjs"),
-  stripTypeScriptTypes(
-    await readFile(
-      join(runtime, "node_modules/@persona/hosting/src/instance.ts"),
-      "utf8",
-    ),
-  ),
-  { flag: "wx" },
-);
 for (const entry of [
   "layout.mjs",
   "supervisor.mjs",
@@ -99,6 +76,15 @@ const smoke = spawnSync(
 if (smoke.error || smoke.status !== 0)
   throw new Error(
     `Bundled runtime compatibility smoke failed; retain TEST evidence at ${destination}.`,
+  );
+const workerSmoke = spawnSync(
+  process.execPath,
+  [join(base, "runtime-worker-smoke.mjs"), destination],
+  { cwd: base, stdio: "inherit", timeout: 120_000 },
+);
+if (workerSmoke.error || workerSmoke.status !== 0)
+  throw new Error(
+    `Packaged worker/harness/computer smoke failed; retain TEST evidence at ${destination}.`,
   );
 console.log(
   `Portable TEST package (requires installed WebView2): ${destination}`,
