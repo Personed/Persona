@@ -1,16 +1,142 @@
 import { fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { portable, staticDirectory } from "./layout.mjs";
 import { stopOwnedChild } from "./stop-child.mjs";
 
-export async function startTestService() {
+async function assertNoLinks(path, recursive = false) {
+  const stat = await lstat(path);
+  if (stat.isSymbolicLink())
+    throw new Error("Test profile contains a symbolic link");
+  if (recursive && stat.isDirectory())
+    for (const name of await readdir(path))
+      await assertNoLinks(join(path, name), true);
+}
+
+async function testBase() {
   const base = fileURLToPath(new URL("./target/test-data/", import.meta.url));
+  for (let path = base; ; path = dirname(path)) {
+    try {
+      await assertNoLinks(path);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (dirname(path) === path) break;
+  }
   await mkdir(base, { recursive: true });
-  const directory = await mkdtemp(join(base, "service-"));
+  return base;
+}
+
+async function freshDirectory() {
+  return mkdtemp(join(await testBase(), "service-"));
+}
+
+// No caller-selected paths: this capability owns only its freshly generated test root.
+export async function createPersistentTestProfile() {
+  const directory = await freshDirectory();
+  let active;
+  let closed = false;
+  const validate = async () => {
+    for (let path = dirname(directory); ; path = dirname(path)) {
+      await assertNoLinks(path);
+      if (dirname(path) === path) break;
+    }
+    await assertNoLinks(directory, true);
+  };
+  return {
+    async start() {
+      if (closed || active)
+        throw new Error("Test profile is closed or still owned");
+      const owner = Symbol();
+      active = owner;
+      try {
+        await validate();
+      } catch (error) {
+        active = undefined;
+        throw error;
+      }
+      // On uncertain startup/shutdown, retain ownership and evidence; never restart.
+      const service = await startService(directory, true);
+      const stop = service.stop;
+      return {
+        ...service,
+        stop: async () => {
+          const result = await stop();
+          if (result.graceful && active === owner) active = undefined;
+          return result;
+        },
+      };
+    },
+    async cleanup() {
+      if (active) throw new Error("Test profile is still owned");
+      if (closed) return;
+      active = Symbol();
+      try {
+        await validate();
+        await rm(directory, { recursive: true });
+        closed = true;
+      } finally {
+        active = undefined;
+      }
+    },
+  };
+}
+
+export async function startTestService() {
+  return startService(await freshDirectory(), false);
+}
+
+export async function startPilotService() {
+  const base = await testBase();
+  const directory = join(base, "pilot-local-v1");
+  const lock = join(base, "pilot-local-v1.lock");
+  // An uncertain shutdown leaves this lock intact. Never guess that its writer died.
+  await mkdir(lock);
+  // Startup failures retain the lock, rather than guessing whether work was issued.
+  let created = false;
+  try {
+    await mkdir(directory, { mode: 0o700 });
+    created = true;
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+  await assertNoLinks(directory, true);
+  const identity = join(directory, "pilot-profile");
+  if (created)
+    await writeFile(identity, "persona-tauri-pilot-local-v1\n", {
+      flag: "wx",
+      mode: 0o600,
+    });
+  if ((await readFile(identity, "utf8")) !== "persona-tauri-pilot-local-v1\n")
+    throw new Error("Not an isolated pilot profile");
+  const service = await startService(directory, true);
+  const stop = service.stop;
+  let stopping;
+  return {
+    ...service,
+    stop: () => {
+      stopping ??= (async () => {
+        const result = await stop();
+        if (result.graceful) await rm(lock, { recursive: true });
+        return result;
+      })();
+      return stopping;
+    },
+  };
+}
+
+async function startService(directory, retain) {
   let child;
   let exited;
   let stopping;
@@ -18,8 +144,9 @@ export async function startTestService() {
     stopping ??= (async () => {
       const graceful = child ? await stopOwnedChild(child, exited) : true;
       // A killed writer cannot attest runtime cleanup; retain its disposable evidence.
-      if (graceful) await rm(directory, { recursive: true, force: true });
-      return { graceful, cleanup: graceful };
+      if (graceful && !retain)
+        await rm(directory, { recursive: true, force: true });
+      return { graceful, cleanup: graceful && !retain };
     })();
     return stopping;
   };
@@ -41,11 +168,11 @@ export async function startTestService() {
         staticDir: fileURLToPath(staticDirectory),
         computer: { kind: "process" },
       }),
-      { flag: "wx" },
+      { flag: retain ? "w" : "wx" },
     );
     // Do not inherit Persona overrides, credentials, model keys or real CLI homes.
     const home = join(directory, "home");
-    await mkdir(home);
+    await mkdir(home, { recursive: retain });
     const env = {
       PERSONA_CONFIG: config,
       HOME: home,

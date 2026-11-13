@@ -10,6 +10,7 @@ use std::{
 };
 mod desktop;
 mod layout;
+mod persistence_acceptance;
 mod process;
 mod remote;
 mod remote_smoke;
@@ -93,6 +94,7 @@ fn run_supervisor(
     remote_input: Option<serde_json::Value>,
 ) {
     let remote = remote_input.is_some();
+    let persistent = !remote && persistent_local();
     let label = if remote { "remote" } else { "pilot" };
     let remote_name = remote_input
         .as_ref()
@@ -105,7 +107,7 @@ fn run_supervisor(
     let mut failure_message = if remote {
         "Não foi possível conectar ao Persona.".to_string()
     } else {
-        "Não foi possível preparar o serviço local temporário.".to_string()
+        "Não foi possível preparar o serviço local isolado do piloto.".to_string()
     };
     let mut opened = false;
     let mut pending_bootstrap = None;
@@ -114,6 +116,8 @@ fn run_supervisor(
         "start",
         if remote {
             "Verificando servidor…"
+        } else if persistent {
+            "Iniciando serviço persistente isolado do piloto…"
         } else {
             "Iniciando serviço local temporário…"
         },
@@ -133,7 +137,7 @@ fn run_supervisor(
             if let Some(value) = remote_input {
                 serde_json::json!({"type": "start", "value": value})
             } else {
-                serde_json::json!({"type": "start"})
+                serde_json::json!({"type": "start", "persistent": persistent})
             }
         )?;
         *state.input.lock().unwrap() = Some(input);
@@ -215,6 +219,8 @@ fn run_supervisor(
                         },
                         name: if remote {
                             remote_name.clone()
+                        } else if persistent {
+                            "Este computador (piloto persistente isolado)".into()
                         } else {
                             desktop::LOCAL_NAME.into()
                         },
@@ -329,6 +335,10 @@ fn run_supervisor(
                     }
                     if remote {
                         println!("pilot: remote probe verified; opening isolated remote UI");
+                    } else if persistent {
+                        println!(
+                            "pilot: native cookie verified; opening persistent isolated loopback UI"
+                        );
                     } else {
                         println!("pilot: native cookie verified; opening temporary loopback UI");
                     }
@@ -383,6 +393,8 @@ fn run_supervisor(
                 "ready",
                 if remote {
                     "Conexão pronta."
+                } else if persistent {
+                    "Piloto persistente isolado pronto. Dados separados do Electron."
                 } else {
                     "Serviço local temporário pronto."
                 },
@@ -403,7 +415,7 @@ fn run_supervisor(
                 .is_ok_and(|frame| {
                     frame["type"] == "stopped"
                         && frame["mode"] == "graceful"
-                        && frame["cleanup"] == true
+                        && frame["cleanup"] == !persistent
                 })
         } else {
             false
@@ -527,10 +539,20 @@ fn allows_navigation(internal: &Url, target: &Url) -> bool {
         && target.password().is_none()
 }
 
+fn persistent_local() -> bool {
+    let args: Vec<_> = std::env::args().collect();
+    args.iter().any(|arg| arg == "--persistent-local")
+        && !startup_check::enabled()
+        && !args.iter().any(|arg| {
+            arg == "--smoke-test" || arg.ends_with("-smoke-test") || arg == "--native-death-test"
+        })
+}
+
 fn main() {
     #[cfg(windows)]
     let mut primary = {
         let isolated = startup_check::enabled()
+            || persistence_acceptance::enabled()
             || std::env::args().any(|arg| {
                 arg == "--smoke-test"
                     || arg.ends_with("-smoke-test")
@@ -621,6 +643,11 @@ fn main() {
                 let handle = app.handle().clone();
                 let state = app.state::<Arc<setup::Setup>>().inner().clone();
                 std::thread::spawn(move || switch_smoke::run(handle, state));
+            }
+            if persistence_acceptance::enabled() {
+                let handle = app.handle().clone();
+                let state = app.state::<Arc<setup::Setup>>().inner().clone();
+                std::thread::spawn(move || persistence_acceptance::run(handle, state));
             }
             Ok(())
         })

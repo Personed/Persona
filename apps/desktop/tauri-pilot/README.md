@@ -62,6 +62,14 @@ junto ao executável. É somente para testes, não é instalador nem migra dados
 Não conecte credenciais ou dados de produção. O teste do pacote foi feito com Node
 26; compatibilidade de empacotamento com Node 24 ainda não foi verificada.
 
+Para experimentar persistência local isolada, inicie o piloto com
+`--persistent-local`. Os dados ficam em `target/test-data/pilot-local-v1`, junto
+ao executável portátil ou no diretório do piloto de desenvolvimento. Fechar o
+serviço normalmente preserva esses dados. Esse perfil não acessa nem migra o
+perfil Electron e ainda não substitui backup ou uma instalação de produção.
+Uma interrupção incerta mantém um bloqueio para evitar reutilização simultânea;
+não o remova sem confirmar que todos os processos responsáveis terminaram.
+
 ## Fluxo real e fronteiras
 
 - Rust inicia um supervisor Node próprio. stdin e stderr são **pipes privados

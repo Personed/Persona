@@ -287,7 +287,11 @@ pub fn open(app: &tauri::AppHandle) -> tauri::Result<()> {
         std::env::args().any(|arg| arg == "--smoke-test" || arg == "--native-death-test");
     let window =
         tauri::WebviewWindowBuilder::new(app, "setup", tauri::WebviewUrl::App("setup.html".into()))
-            .title("Configurar Persona — piloto temporário")
+            .title(if crate::persistent_local() {
+                "Configurar Persona — piloto persistente isolado"
+            } else {
+                "Configurar Persona — piloto temporário"
+            })
             .inner_size(680.0, 760.0)
             .min_inner_size(360.0, 540.0)
             .incognito(true)

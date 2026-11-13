@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
 import { verifyLocalSession } from "./local-session.mjs";
-import { startTestService } from "./service.mjs";
+import { startPilotService, startTestService } from "./service.mjs";
 
 // stderr is exclusively an inherited private protocol pipe, never a log sink.
 const send = (message) => process.stderr.write(`${JSON.stringify(message)}\n`);
@@ -26,8 +26,8 @@ const stop = () => {
   });
   return stopping;
 };
-const start = () => {
-  starting ??= startTestService();
+const start = (persistent) => {
+  starting ??= persistent ? startPilotService() : startTestService();
   return starting;
 };
 let announced = false;
@@ -40,7 +40,12 @@ input.on("line", async (line) => {
     if (message.type !== "start" || closing) throw new Error("Invalid command");
     if (announced) return;
     announced = true;
-    const service = await start();
+    if (
+      message.persistent !== undefined &&
+      typeof message.persistent !== "boolean"
+    )
+      throw new Error("Invalid profile mode");
+    const service = await start(message.persistent === true);
     service.exited.then(() => {
       if (!closing) {
         send({ type: "died" });
