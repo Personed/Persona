@@ -13,6 +13,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  readdir,
   readFile,
   rename,
   rm,
@@ -47,6 +48,46 @@ import { runCommand, writeConfiguration } from "./install.ts";
 
 const magic = Buffer.from("PERSONA001");
 const headerSize = magic.length + 16 + 12;
+
+function contains(parent: string, child: string) {
+  const distance = relative(parent, child);
+  return (
+    !isAbsolute(distance) &&
+    distance !== ".." &&
+    !distance.startsWith(`..${sep}`)
+  );
+}
+
+async function checkPath(path: string, tree = false): Promise<void> {
+  const info = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return undefined;
+  });
+  if (info?.isSymbolicLink() || (info?.isFile() && info.nlink > 1))
+    throw new Error("迁移路径不能包含链接。");
+  if (tree && info?.isDirectory()) {
+    for (const entry of await readdir(path))
+      await checkPath(join(path, entry), true);
+  }
+  if (!tree && dirname(path) !== path) await checkPath(dirname(path));
+}
+
+async function checkCredentialKey(data: string) {
+  try {
+    await stat(join(data, "hosting.sqlite"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const key = await stat(join(data, "credentials.key")).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT")
+        throw new Error("凭据数据库缺少 credentials.key。");
+      throw error;
+    },
+  );
+  if (!key.isFile() || key.size !== 32) throw new Error("凭据密钥文件无效。");
+}
 
 async function archiveTarget(
   directory: string,
@@ -199,16 +240,81 @@ export async function backupInstallation(
   )
     throw new Error("请将备份保存到安装目录之外。");
   const configFile = join(root, "persona.config.json");
-  const config = parseConfig(
-    JSON.parse(await readFile(configFile, "utf8")),
-    configFile,
-  );
+  const configuration = JSON.parse(await readFile(configFile, "utf8"));
+  const config = parseConfig(configuration, configFile);
+  const external = resolve(config.dataDir) !== join(root, "data");
+  if (external) {
+    if (
+      config.computer.kind !== "process" ||
+      config.workComputer ||
+      config.deployment !== "native"
+    )
+      throw new Error("外部数据目录迁移仅支持本机工作电脑。");
+    if (
+      contains(root, config.dataDir) ||
+      contains(config.dataDir, root) ||
+      contains(config.dataDir, target)
+    )
+      throw new Error("迁移路径不能重叠。");
+    await checkPath(root);
+    await checkPath(root, true);
+    await checkPath(config.dataDir);
+    if (!(await stat(config.dataDir)).isDirectory())
+      throw new Error("持久数据目录无效。");
+    await checkPath(config.dataDir, true);
+    await checkPath(target);
+    await checkCredentialKey(config.dataDir);
+    try {
+      await lstat(join(root, "data"));
+      throw new Error("安装目录已包含其他数据目录。");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
   const release = await acquireDataLease(config.dataDir);
-  const stage = await mkdtemp(join(tmpdir(), "persona-backup-"));
+  let stage: string | undefined;
   try {
+    stage = await mkdtemp(join(tmpdir(), "persona-backup-"));
+    if (external && (contains(root, stage) || contains(config.dataDir, stage)))
+      throw new Error("迁移路径不能重叠。");
+    const installation = join(stage, "installation");
+    const copy = {
+      recursive: true,
+      filter: (path: string) =>
+        ![
+          "runtime.sqlite",
+          "runtime.sqlite-wal",
+          "runtime.sqlite-shm",
+        ].includes(basename(path)),
+    };
+    if (external) {
+      // The lease settles Persona writers; catalog migrations must touch only the snapshot.
+      await cp(root, installation, copy);
+      await cp(config.dataDir, join(installation, "data"), copy);
+      const binding = await readFile(
+        join(installation, "data", "computer.json"),
+        "utf8",
+      ).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return undefined;
+      });
+      if (binding !== undefined) {
+        const previous = JSON.parse(binding);
+        if (previous.kind !== "process" || previous.deployment === "container")
+          throw new Error("外部数据目录迁移仅支持本机工作电脑。");
+      }
+      await writeConfiguration(join(installation, "persona.config.json"), {
+        ...configuration,
+        dataDir: "data",
+      });
+    }
     const computers = await storedComputers(
-      join(config.dataDir, "agent.sqlite"),
+      external
+        ? join(installation, "data", "agent.sqlite")
+        : join(config.dataDir, "agent.sqlite"),
     );
+    if (external && computers.some((item) => item.config.kind !== "process"))
+      throw new Error("外部数据目录迁移仅支持本机工作电脑。");
     const computerArchives: { id: string; archive: string }[] = [];
     for (const [index, item] of computers.entries()) {
       if (
@@ -223,17 +329,7 @@ export async function backupInstallation(
       await archiveComputer(target, join(stage, archive), false);
       computerArchives.push({ id: item.id, archive });
     }
-    await cp(root, join(stage, "installation"), {
-      recursive: true,
-      filter: (path) =>
-        ![
-          "runtime.sqlite",
-          "runtime.sqlite-wal",
-          "runtime.sqlite-shm",
-        ].includes(basename(path)),
-    });
-    if (config.dataDir !== join(root, "data"))
-      throw new Error("请先将持久数据迁入托管安装目录。");
+    if (!external) await cp(root, installation, copy);
     if (config.computer.kind === "controller")
       await workArchive(root, join(stage, "work.tar"), false);
     const plaintext = join(stage, "backup.tar.gz");
@@ -284,8 +380,11 @@ export async function backupInstallation(
       throw error;
     }
   } finally {
-    await rm(stage, { recursive: true, force: true });
-    await release();
+    try {
+      if (stage) await rm(stage, { recursive: true, force: true });
+    } finally {
+      await release();
+    }
   }
 }
 
@@ -354,10 +453,12 @@ export async function restoreInstallation(
     const filename = join(restored, "persona.config.json");
     const config = JSON.parse(await readFile(filename, "utf8"));
     const sourceConfig = parseConfig(config, filename);
+    config.computer ??= sourceConfig.computer;
     config.dataDir = join(target, "data");
     if (config.computer.kind === "controller")
       config.computer.credentialFile = join(target, "controller-token");
     const database = join(restored, "data", "agent.sqlite");
+    await checkCredentialKey(join(restored, "data"));
     const computers = await storedComputers(database);
     for (const entry of manifest.computers ?? []) {
       if (!/^computer-[0-9]+[.]tar$/.test(entry.archive))
