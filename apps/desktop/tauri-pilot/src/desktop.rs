@@ -77,7 +77,7 @@ pub struct Desktop {
     current: Mutex<Option<Target>>,
     instances: Mutex<Vec<Instance>>,
     selected: Mutex<Option<String>>,
-    directory: PathBuf,
+    pub(super) directory: PathBuf,
 }
 
 impl Default for Desktop {
@@ -168,6 +168,16 @@ impl Desktop {
         self.find(&selected)
     }
 
+    pub fn startup_remote(&self, args: impl Iterator<Item = String>) -> Option<Instance> {
+        if args.into_iter().any(|arg| {
+            arg == "--smoke-test" || arg.ends_with("-smoke-test") || arg == "--native-death-test"
+        }) {
+            return None;
+        }
+        self.selected_instance()
+            .filter(|item| item.mode == "existing")
+    }
+
     pub fn find(&self, id: &str) -> Option<Instance> {
         self.instances
             .lock()
@@ -218,6 +228,71 @@ impl Desktop {
             return Err("Origem da requisição inválida.".into());
         }
         Ok(current)
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn startup_restores_only_valid_selected_remote_outside_test_modes() {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("target/test-data/startup-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let desktop = Desktop {
+            directory: directory.clone(),
+            ..Desktop::default()
+        };
+        assert!(desktop.startup_remote(std::iter::empty()).is_none());
+        let remote = serde_json::json!({
+            "id": "remote", "name": "Fixture", "mode": "existing", "runtime": "native",
+            "url": "http://127.0.0.1:34567"
+        });
+        let mut invalid = remote.clone();
+        invalid["url"] = serde_json::json!("https://user:password@example.com");
+        for (instance, selected, restores) in [
+            (remote.clone(), "remote", true),
+            (remote.clone(), "missing", false),
+            (invalid, "remote", false),
+            (
+                serde_json::json!({"id": "local", "name": "Local", "mode": "local", "runtime": "native", "url": "http://127.0.0.1:34567"}),
+                "local",
+                false,
+            ),
+        ] {
+            std::fs::write(
+                desktop.path(),
+                serde_json::json!({"instances": [instance], "selected": selected}).to_string(),
+            )
+            .unwrap();
+            desktop.load();
+            assert_eq!(
+                desktop.startup_remote(std::iter::empty()).is_some(),
+                restores
+            );
+            for flag in [
+                "--smoke-test",
+                "--setup-smoke-test",
+                "--remote-smoke-test",
+                "--switch-smoke-test",
+                "--native-death-test",
+            ] {
+                assert!(
+                    desktop
+                        .startup_remote([flag.to_string()].into_iter())
+                        .is_none()
+                );
+            }
+        }
+        std::fs::write(desktop.path(), "invalid JSON").unwrap();
+        let fresh = Desktop {
+            directory: directory.clone(),
+            ..Desktop::default()
+        };
+        fresh.load();
+        assert!(fresh.startup_remote(std::iter::empty()).is_none());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
 

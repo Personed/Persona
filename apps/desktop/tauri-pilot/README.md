@@ -29,6 +29,8 @@ cargo build --locked
 ./target/debug/persona-tauri-pilot.exe --setup-smoke-test
 ./target/debug/persona-tauri-pilot.exe --remote-smoke-test
 ./target/debug/persona-tauri-pilot.exe --switch-smoke-test
+./target/debug/persona-tauri-pilot.exe --startup-check=restore
+./target/debug/persona-tauri-pilot.exe --startup-check=retry
 ./native-death.test.ps1
 ```
 
@@ -148,6 +150,11 @@ conexão a outro servidor e seleção de ambientes salvos. A troca encerra a con
 anterior antes de iniciar a próxima; se a nova conexão falhar, a seleção salva é
 preservada, mas a conexão anterior não é reiniciada automaticamente. Os smokes
 reinicializam essa lista descartável ao iniciar.
+
+Na inicialização normal, uma conexão remota selecionada é novamente verificada e
+aberta. Uma seleção local ou ausente abre o setup. Se a conexão remota falhar, o
+setup mostra o erro e permite tentar novamente. Os checks `--startup-check` usam
+suas próprias instâncias descartáveis e verificam restauração e retry no Windows.
 
 `--switch-smoke-test` chama o handler do menu para trocar entre ambientes, verifica
 o fechamento da janela anterior e lê o arquivo persistido. Não verifica cliques no

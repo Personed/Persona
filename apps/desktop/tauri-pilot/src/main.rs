@@ -14,6 +14,7 @@ mod remote;
 mod remote_smoke;
 mod setup;
 mod setup_smoke;
+mod startup_check;
 mod switch_smoke;
 use process::OwnedProcess;
 use tauri::{
@@ -474,6 +475,10 @@ fn run_supervisor(
         *setup.last_error.lock().unwrap() = Some(failure_message.clone());
         eprintln!("pilot: startup or shutdown failed; no reconnect");
     }
+    // Startup checks confirm fixture cleanup and own their final exit status.
+    if startup_check::enabled() {
+        return;
+    }
     let exit_code = if result.is_ok() && !setup.failed.load(Ordering::SeqCst) {
         0
     } else {
@@ -521,7 +526,13 @@ fn allows_navigation(internal: &Url, target: &Url) -> bool {
 
 fn main() {
     let state = Arc::new(setup::Setup::default());
-    let desktop = Arc::new(desktop::Desktop::default());
+    let check = startup_check::prepare().expect("failed to prepare disposable startup check");
+    let desktop = Arc::new(
+        check
+            .as_ref()
+            .map(|check| check.desktop())
+            .unwrap_or_default(),
+    );
     let app = tauri::Builder::default()
         .runtime(tauri_runtime_wry::Wry::default())
         .manage(state.clone())
@@ -552,6 +563,14 @@ fn main() {
                     .map_err(|_| "failed to reset pilot environments")?;
             }
             setup::open(app.handle())?;
+            if let Some(instance) = desktop.startup_remote(std::env::args()) {
+                setup::switch(app.handle(), instance);
+            }
+            if let Some(check) = check {
+                let handle = app.handle().clone();
+                let state = app.state::<Arc<setup::Setup>>().inner().clone();
+                std::thread::spawn(move || check.run(handle, state));
+            }
             if std::env::args().any(|arg| arg == "--setup-smoke-test") {
                 let handle = app.handle().clone();
                 let state = app.state::<Arc<setup::Setup>>().inner().clone();

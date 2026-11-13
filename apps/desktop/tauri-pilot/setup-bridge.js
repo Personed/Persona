@@ -10,4 +10,10 @@ window.personaSetup = Object.freeze({
 });
 window.addEventListener("persona-setup-progress", (event) => {
   for (const listener of listeners) listener(event.detail);
+  // Restored connections have no form submission awaiting their failure.
+  if (event.detail.phase === "error") {
+    const error = document.querySelector("#error");
+    error.textContent = event.detail.message;
+    error.hidden = false;
+  }
 });
