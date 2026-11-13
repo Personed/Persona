@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod desktop;
+mod layout;
 mod process;
 mod remote;
 mod remote_smoke;
@@ -116,7 +117,7 @@ fn run_supervisor(
         },
     );
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(if remote {
+        let script = layout::base().join(if remote {
             "remote-probe.mjs"
         } else {
             "supervisor.mjs"

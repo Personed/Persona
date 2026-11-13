@@ -16,7 +16,7 @@ pub struct OwnedProcess {
 
 impl OwnedProcess {
     pub fn spawn(script: &Path) -> io::Result<Self> {
-        let mut command = Command::new("node");
+        let mut command = Command::new(crate::layout::node());
         command.env_clear();
         for key in ["PATH", "SystemRoot", "WINDIR", "SystemDrive"] {
             if let Some(value) = std::env::var_os(key) {

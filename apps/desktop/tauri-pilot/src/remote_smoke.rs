@@ -19,7 +19,7 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn start() -> Result<(Self, String), String> {
-        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let base = crate::layout::base();
         let mut owned = OwnedProcess::spawn(&base.join("remote-server.fixture.mjs"))
             .map_err(|e| e.to_string())?;
         let mut output = BufReader::new(

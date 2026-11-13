@@ -41,8 +41,26 @@ node --test --test-concurrency=1 apps/desktop/tauri-pilot/local-session.test.mjs
 pnpm exec biome check apps/desktop/tauri-pilot/local-session.mjs apps/desktop/tauri-pilot/local-session.fixture.mjs apps/desktop/tauri-pilot/local-session.test.mjs apps/desktop/tauri-pilot/stop-child.mjs apps/desktop/tauri-pilot/stop-child.test.mjs apps/desktop/tauri-pilot/service.mjs apps/desktop/tauri-pilot/supervisor.mjs apps/desktop/tauri-pilot/silent-supervisor.fixture.mjs apps/desktop/tauri-pilot/remote-probe.mjs apps/desktop/tauri-pilot/remote-probe.test.mjs apps/desktop/tauri-pilot/remote-server.fixture.mjs
 ```
 
-O executável depende das fontes Node deste checkout (caminho gravado durante a
-compilação). Não é um pacote distribuível. Bundles/instaladores estão desativados.
+O executável de desenvolvimento depende das fontes Node deste checkout. Bundles
+e instaladores Tauri continuam desativados.
+
+### Pacote portátil de teste para Windows
+
+Com Node 24 ou superior, dependências Cargo em cache e um artefato de produção
+`apps/desktop/runtime` já existente, execute na raiz:
+
+```sh
+node apps/desktop/tauri-pilot/package-portable.mjs
+```
+
+O script não reconstrói nem altera o runtime Electron. Ele copia o Node usado na
+execução, o runtime existente e os arquivos do piloto para um novo diretório em
+`target/portable-test-*`, e executa um smoke de serviço e probe remoto. O runtime
+copiado pode estar desatualizado; a versão do pacote depende desse artefato. O
+pacote pode ser movido, requer WebView2 instalado e mantém dados descartáveis
+junto ao executável. É somente para testes, não é instalador nem migra dados reais.
+Não conecte credenciais ou dados de produção. O teste do pacote foi feito com Node
+26; compatibilidade de empacotamento com Node 24 ainda não foi verificada.
 
 ## Fluxo real e fronteiras
 

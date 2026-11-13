@@ -1,6 +1,13 @@
+import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
-import { z } from "zod";
-import { probeInstance } from "../../../packages/hosting/src/instance.ts";
+import { hostingInstance, portable } from "./layout.mjs";
+
+const { z } = createRequire(
+  portable
+    ? new URL("./runtime/package.json", import.meta.url)
+    : import.meta.url,
+)("zod");
+const { probeInstance } = await import(hostingInstance.href);
 
 // stderr is a private pipe. Never log input URLs, names or fetch error objects.
 const send = (value) => process.stderr.write(`${JSON.stringify(value)}\n`);

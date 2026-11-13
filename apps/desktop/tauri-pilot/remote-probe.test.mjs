@@ -5,7 +5,9 @@ import { createServer } from "node:http";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { serverOrigin } from "../../../packages/hosting/src/instance.ts";
+import { hostingInstance, portable } from "./layout.mjs";
+
+const { serverOrigin } = await import(hostingInstance.href);
 
 function worker() {
   const env = {};
@@ -13,7 +15,20 @@ function worker() {
     if (process.env[key]) env[key] = process.env[key];
   const child = spawn(
     process.execPath,
-    [fileURLToPath(new URL("./remote-probe.mjs", import.meta.url))],
+    [
+      // Packaged workers must resolve every dependency without reading the checkout.
+      ...(portable
+        ? [
+            "--permission",
+            "--no-warnings",
+            `--allow-fs-read=${fileURLToPath(new URL("./", import.meta.url))}`,
+            ...(process.allowedNodeEnvironmentFlags.has("--allow-net")
+              ? ["--allow-net"]
+              : []),
+          ]
+        : []),
+      fileURLToPath(new URL("./remote-probe.mjs", import.meta.url)),
+    ],
     {
       env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -127,6 +142,11 @@ test("real private worker probes controlled server, rejects redirects/schema/err
     }
     assert.equal(requests, 5, "redirect must not be followed");
     for (const value of [
+      ...[
+        "http://example.invalid",
+        `${origin}?private`,
+        `${origin}#private`,
+      ].map((url) => ({ mode: "existing", url, name: "Controlled" })),
       {
         mode: "existing",
         url: `http://user:private@127.0.0.1:${server.address().port}`,

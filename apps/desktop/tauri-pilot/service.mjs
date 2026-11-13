@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { portable, staticDirectory } from "./layout.mjs";
 import { stopOwnedChild } from "./stop-child.mjs";
 
 export async function startTestService() {
@@ -37,7 +38,7 @@ export async function startTestService() {
         host: "127.0.0.1",
         port,
         dataDir: join(directory, "data"),
-        staticDir: fileURLToPath(new URL("../../web/dist/", import.meta.url)),
+        staticDir: fileURLToPath(staticDirectory),
         computer: { kind: "process" },
       }),
       { flag: "wx" },
@@ -57,6 +58,17 @@ export async function startTestService() {
       TEMP: directory,
       TMP: directory,
     };
+    if (portable) {
+      env.PERSONA_WORKER_ENTRY = fileURLToPath(
+        new URL(
+          "./runtime/node_modules/@persona/agent/src/harness/worker.mjs",
+          import.meta.url,
+        ),
+      );
+      env.PERSONA_BRIDGE_ENTRY = fileURLToPath(
+        new URL("./runtime/bridge.mjs", import.meta.url),
+      );
+    }
     // OS bootstrap variables only; never enumerate or print the environment.
     for (const key of [
       "SystemRoot",

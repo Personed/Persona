@@ -86,7 +86,7 @@ impl Default for Desktop {
             current: Mutex::new(None),
             instances: Mutex::new(Vec::new()),
             selected: Mutex::new(None),
-            directory: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-data/desktop"),
+            directory: crate::layout::base().join("target/test-data/desktop"),
         }
     }
 }
