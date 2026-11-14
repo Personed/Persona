@@ -14,14 +14,11 @@ código foi feita nesta auditoria.
 
 - Passe 0 concluído em 2026-11-14: CI verde em `9c40e9a`, após corrigir o
   caminho do pnpm, o título do Chromium, o deploy offline e o stage entre drives.
-- `main` local está 20 commits à frente do remoto; o último CI verde foi
-  `c576d48`, antes do HEAD `560e35c`.
-- O working tree tem mudanças não commitadas em Tauri, web, docs e testes;
-  elas não entram no push de AUD-01.
-- Existe um worktree órfão em `.slim/worktrees/native-harness-discovery`
-  (detached, limpo, mesmo HEAD).
-- `README.zh-CN.md` está deletado no working tree, mas continua no HEAD e é
-  referenciado pelo `README.md`.
+- Tarefas escolhidas do Passe 1 concluídas: AUD-07/08 (`1da052f`), AUD-10
+  (`85ff5b9`) e AUD-12 (`38095c5`). AUD-09 e AUD-11 aguardam decisão.
+- O working tree mantém alterações locais preexistentes em Tauri, web, docs e
+  testes; elas não fazem parte dos commits da auditoria.
+- `README.zh-CN.md` foi restaurado e o worktree órfão foi removido.
 - `docs/computer-evals.md` existe; não é link quebrado.
 - `deploy/NOTICE` atribui `apps/desktop/src/local-stack.ts` ao upstream
   `elie222/rakazo`; o arquivo nunca existiu neste repo.
@@ -48,12 +45,12 @@ Tarefas marcadas **decisão** precisam de confirmação antes de remover algo.
 
 | ID | Tarefa | Evidência | Validação | Risco |
 | --- | --- | --- | --- | --- |
-| AUD-07 (M, decisão) | Remover `package-portable.mjs` e o fluxo `portable-*` se o instalador NSIS o substituiu. | É o único `.mjs` sem referência no repo; o README documenta só `pnpm dist`. | `pnpm --filter @persona/desktop test` e CI. | Perder um fluxo manual de pacote portátil. |
-| AUD-08 (M) | Auditar os 49 scripts `.mjs` do `src-tauri` e remover os que não são usados por build, teste, CI ou README. | 15 testes + 34 scripts; `package-portable` já é órfão. | Suíte desktop e CI. | Remover smoke manual ainda útil. |
+| AUD-07 (feito) | Remover `package-portable.mjs` e o fluxo `portable-*` se o instalador NSIS o substituiu. | Removido em `1da052f`; o README documenta só `pnpm dist`. | Suíte desktop e CI. | Fluxo manual de pacote portátil perdido. |
+| AUD-08 (feito) | Auditar os 49 scripts `.mjs` do `src-tauri` e remover os que não são usados por build, teste, CI ou README. | Grafo de referências nos 49 scripts; 7 órfãos removidos em `1da052f`. | Suíte desktop e CI. | Smoke manual ainda útil foi removido. |
 | AUD-09 (S, decisão) | Revisar a dependência direta `proper-lockfile` em `packages/agent`. | Nenhum import direto; `pnpm why` mostra que ela já vem de `@earendil-works/pi-coding-agent` e está fixada em 4.1.2. | `pnpm why`, build e runtime Docker. | Pode ser um pin intencional; remover a declaração não elimina o pacote. |
-| AUD-10 (S) | Remover exports mortos do `@persona/ui`, começando por `toast` (0 usos). Revisar `activity`, `composer`, `context-window`, `markdown` e `model-selector` (1 uso cada). | Contagem de imports em `apps` e `packages`. | `pnpm typecheck`, `pnpm build`. | API compartilhada; confirmar uso interno antes. |
+| AUD-10 (feito) | Remover exports mortos do `@persona/ui`. | `toast` tinha 0 usos e foi removido em `85ff5b9`; os demais subpaths têm ao menos 1 consumidor. | `pnpm typecheck`, `pnpm build`. | API compartilhada; uso interno confirmado antes. |
 | AUD-11 (M, decisão) | Consolidar ícones: `packages/ui/assets/icon.png` (1,47 MB) é a fonte do setup; `src-tauri/icons` (177 KB) serve o instalador. Redimensionar/comprimir a fonte, sem duplicar. | `build.rs` copia `icon.png`; ícones Tauri são separados. | Build desktop, screenshot do setup e instalador. | Ícone errado ou borrado. |
-| AUD-12 (S, decisão) | Mover `docs/browser-use-review.md` para `docs/reports/` (ignorado) ou removê-lo se for histórico. | É um relatório de revisão, não um guia; não é referenciado por outros docs. | Checagem de links. | Perder histórico de revisão. |
+| AUD-12 (feito) | Mover `docs/browser-use-review.md` para `docs/reports/` (ignorado) ou removê-lo se for histórico. | Movido para `docs/reports/browser-use-review-2026-11-12.md` em `38095c5`; não era referenciado. | Checagem de links. | Histórico fora do repositório. |
 
 ### Passe 2 — Atualizações
 
@@ -76,12 +73,13 @@ Tarefas marcadas **decisão** precisam de confirmação antes de remover algo.
 | AUD-22 (M) | Podar os subsets Noto não usados do pacote distribuído (98 arquivos, 4,28 MB). O CSS já usa `unicode-range`; o ganho é no instalador, não no download por página. | `apps/web/dist/assets`; `@fontsource-variable/noto-sans-sc/index.css` tem 101 `unicode-range`. | Build, inspeção visual e teste com texto CJK. | Glifos CJK faltando. |
 | AUD-23 (S) | Comprimir personagens webp (7,54 MB) e `icon.png`. | Tamanhos em `packages/ui/assets`. | Inspeção visual e build. | Perda de qualidade. |
 | AUD-24 (S) | Centralizar listas de exclusão do CI em scripts npm e adicionar cache de pnpm/Cargo. | `checks.yml` repete exclusões; `computer-input.yml` repete a lista. | Rodar CI. | Cobertura de testes se a lista divergir. |
-| AUD-25 (S) | Adicionar checagem de links de docs e de arquivos órfãos no CI. | `package-portable` não é referenciado; não há checagem automática de links. | Rodar o script local e no CI. | Ruído se a heurística for ampla. |
+| AUD-25 (S) | Adicionar checagem de links de docs e de arquivos órfãos no CI. | Não há checagem automática de links nem do grafo de entradas locais; os órfãos conhecidos foram removidos em AUD-07/08. | Rodar o script local e no CI. | Ruído se a heurística for ampla. |
 
 ## Ordem recomendada
 
 1. **Passe 0 concluído:** AUD-01, AUD-02, AUD-03 e AUD-06 feitos; AUD-04 verificado; AUD-05 absorvido por AUD-01.
-2. **Remover o que é claramente morto:** AUD-07, AUD-08, AUD-10, AUD-12.
+2. **Passe 1 — remoções escolhidas concluídas:** AUD-07, AUD-08, AUD-10 e
+   AUD-12; AUD-09 e AUD-11 aguardam decisão.
 3. **Atualizar em blocos revertíveis:** AUD-13, AUD-14, depois AUD-15.
 4. **Organizar sem mudar comportamento:** AUD-17 a AUD-21.
 5. **Otimizar o produto:** AUD-22, AUD-23.
