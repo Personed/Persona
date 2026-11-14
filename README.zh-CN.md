@@ -147,7 +147,7 @@ Linux 上首次安装测试浏览器时，如需系统依赖，可添加 `--with
 pnpm --filter @persona/desktop dist
 ```
 
-产物位于 `apps/desktop/release`。本地构建尚未签名。
+产物位于 `apps/desktop/src-tauri/target/release/bundle/nsis`。本地构建尚未签名。
 
 </details>
 

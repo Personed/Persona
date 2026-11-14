@@ -145,7 +145,7 @@ Build a desktop installer:
 pnpm --filter @persona/desktop dist
 ```
 
-Output goes to `apps/desktop/release`. Local builds are unsigned.
+Output goes to `apps/desktop/src-tauri/target/release/bundle/nsis`. Local builds are unsigned.
 
 </details>
 
