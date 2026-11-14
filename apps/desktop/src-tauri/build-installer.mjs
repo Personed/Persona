@@ -21,7 +21,8 @@ if (
   throw new Error("The pilot installer requires Windows and Node >=24.");
 const base = fileURLToPath(new URL("./", import.meta.url));
 // NSIS cannot open deep dependency paths beneath a long checkout path.
-const temporary = join(tmpdir(), "opencode");
+// Legacy pnpm deploy also breaks when the stage and checkout are on different drives.
+const temporary = join(process.env.RUNNER_TEMP ?? tmpdir(), "opencode");
 await mkdir(temporary, { recursive: true });
 const stage = await mkdtemp(join(temporary, "pi-"));
 await buildRuntime(join(stage, "runtime"));
