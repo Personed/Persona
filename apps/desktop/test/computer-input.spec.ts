@@ -91,7 +91,8 @@ test("native desktop input, cursor and conditions use the driver session", async
     if (!pid) throw new Error("Browser process required");
     const listed = await call("list_windows", { pid });
     const target = listed.structuredContent.windows.find(
-      (item: { title: string }) => item.title === "Persona input target",
+      (item: { title: string }) =>
+        item.title.startsWith("Persona input target"),
     );
     expect(target).toBeTruthy();
     if (!target) throw new Error("Target window required");
