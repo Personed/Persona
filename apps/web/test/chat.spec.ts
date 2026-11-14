@@ -701,6 +701,53 @@ test("workspace separates Bot controls and global settings", async ({
   expect(errors).toEqual([]);
 });
 
+test("Tauri backup settings open native confirmation without sending credentials", async ({
+  page,
+}, testInfo) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "personaDesktop", {
+      configurable: true,
+      value: {
+        platform: "win32",
+        nativeMaintenanceConfirmation: true,
+        state: async () => ({
+          ok: true,
+          value: { instances: [], mode: "local", running: true },
+        }),
+        maintain: (...args: unknown[]) => {
+          document.documentElement.dataset.maintenanceArguments =
+            JSON.stringify(args);
+          return Promise.resolve({
+            ok: true,
+            value: { opened: true, started: false },
+          });
+        },
+        appearance: async () => ({ ok: true }),
+        menu: async () => ({ ok: true }),
+        prepare: async () => ({ ok: true }),
+      },
+    });
+  });
+  await page.goto(url);
+  const settings = await openSettings(page);
+  await settings.getByRole("button", { name: "管理备份" }).click();
+  const backup = page.getByRole("dialog", { name: "数据与备份" });
+  await expect(
+    backup.getByRole("button", { name: "打开备份窗口" }),
+  ).toBeVisible();
+  await backup.screenshot({ path: testInfo.outputPath("backup-dialog.png") });
+  await expect(backup.getByLabel("备份密码")).toHaveCount(0);
+  await expect(backup.locator('input[type="radio"]')).toHaveCount(0);
+  await backup.getByRole("button", { name: "打开备份窗口" }).click();
+  await expect(backup.getByRole("status")).toContainText(
+    "请在新打开的本机窗口中选择操作并完成确认。",
+  );
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-maintenance-arguments",
+    "[]",
+  );
+});
+
 test("contacts keep independent histories, drafts, models, and locations after restart", async ({
   page,
   context,

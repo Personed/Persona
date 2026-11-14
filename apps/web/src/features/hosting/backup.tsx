@@ -14,6 +14,7 @@ export function DataBackup() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const desktop = window.personaDesktop;
+  const nativeMaintenance = desktop?.nativeMaintenanceConfirmation === true;
   useEffect(() => {
     void desktop
       ?.state()
@@ -39,6 +40,23 @@ export function DataBackup() {
       setPassword("");
     }
   }
+  async function openNativeMaintenance() {
+    if (!desktop || busy) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await desktop.maintain();
+      if (!result.ok) throw new Error(result.error);
+      setMessage(t("请在新打开的本机窗口中选择操作并完成确认。"));
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : t("无法打开本机备份窗口。"),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <section
       className="detail-stack"
@@ -48,10 +66,29 @@ export function DataBackup() {
     >
       <p className="detail-note">
         {t(
-          "操作会停止本机后台。完成后，从应用菜单打开本机 Persona。恢复会使用新目录。",
+          "操作会停止本机后台。完成后，从应用菜单打开本机 Persona。恢复会创建新配置文件并保留当前配置文件。",
         )}
       </p>
-      {state?.mode === "local" && (
+      {state?.mode === "local" && nativeMaintenance && (
+        <div className="settings-card">
+          <SettingRow
+            title={t("本机加密备份与恢复")}
+            description={t(
+              "操作会在受信任的本机窗口中确认；恢复会创建新的配置文件并保留当前配置文件。",
+            )}
+          >
+            <Button
+              variant="secondary"
+              size="small"
+              disabled={busy}
+              onClick={() => void openNativeMaintenance()}
+            >
+              {t("打开备份窗口")}
+            </Button>
+          </SettingRow>
+        </div>
+      )}
+      {state?.mode === "local" && !nativeMaintenance && (
         <>
           <TextField
             label={t("备份密码")}

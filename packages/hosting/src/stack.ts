@@ -7,6 +7,7 @@ import {
   type InstallProgress,
   prepareWorkImages,
   type Release,
+  requestLocalJson,
   runCommand,
   waitForService,
   workComputer,
@@ -32,6 +33,7 @@ export class LocalStack {
   private starting?: Promise<{ origin: string; url: string }>;
   private pending: Promise<unknown> = Promise.resolve();
   private active = false;
+  private uncertain = false;
   private origin?: string;
 
   constructor(
@@ -47,7 +49,11 @@ export class LocalStack {
   }
 
   get running() {
-    return this.active;
+    return this.active || this.uncertain;
+  }
+
+  get stateUncertain() {
+    return this.uncertain;
   }
 
   start(progress: (value: InstallProgress) => void, signal: AbortSignal) {
@@ -61,7 +67,11 @@ export class LocalStack {
     progress: (value: InstallProgress) => void,
     signal: AbortSignal,
   ) {
-    await this.pending;
+    await this.pending.catch(() => {});
+    if (this.uncertain)
+      throw new Error(
+        "O estado do ambiente Docker é incerto. Confirme o encerramento antes de tentar novamente.",
+      );
     const image = this.release.serviceImage;
     if (!image)
       throw new Error(
@@ -103,11 +113,11 @@ export class LocalStack {
     }
     progress({ phase: "starting", message: "Iniciando Persona…" });
     try {
+      this.active = true;
       await this.compose(
         ["up", "--detach", "--wait", "--wait-timeout", "120"],
         signal,
       );
-      this.active = true;
       const origin = `http://127.0.0.1:${stack.port}`;
       await this.ready(
         origin,
@@ -117,16 +127,47 @@ export class LocalStack {
       progress({ phase: "ready", message: "Persona iniciado." });
       return { origin, url: origin };
     } catch (error) {
-      await this.compose(["stop", "--timeout", "10"]).catch(() => {});
-      this.active = false;
+      try {
+        await this.stopOwnedStack();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "A inicialização falhou e não foi possível confirmar o encerramento do ambiente Docker.",
+        );
+      }
       throw error;
+    }
+  }
+
+  private async stopOwnedStack() {
+    try {
+      await this.compose(["stop", "--timeout", "30"], undefined, 40_000);
+      const remaining = await this.compose(
+        ["ps", "--format", "json"],
+        undefined,
+        10_000,
+      );
+      if (remaining.trim())
+        throw new Error("O Compose ainda informa contêineres em execução.");
+      this.active = false;
+      this.uncertain = false;
+      this.origin = undefined;
+    } catch (error) {
+      this.uncertain = true;
+      throw new Error(
+        "Não foi possível confirmar que os contêineres do Persona foram encerrados; o perfil deve permanecer bloqueado.",
+        { cause: error },
+      );
     }
   }
 
   private async secret(name: string) {
     const filename = join(this.directory, name);
     try {
-      return (await readFile(filename, "utf8")).trim();
+      const value = (await readFile(filename, "utf8")).trim();
+      if (!/^[a-f0-9]{64}$/.test(value))
+        throw new Error("Credencial local inválida.");
+      return value;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const value = randomBytes(32).toString("hex");
@@ -139,9 +180,11 @@ export class LocalStack {
     await mkdir(join(this.directory, "data"), { recursive: true, mode: 0o700 });
     const filename = join(this.directory, "stack.json");
     let stack: z.infer<typeof stackSchema>;
+    let relocated = false;
     try {
       stack = stackSchema.parse(JSON.parse(await readFile(filename, "utf8")));
       if (stack.directory !== this.directory) {
+        relocated = true;
         stack = {
           id: `persona-${randomBytes(6).toString("hex")}`,
           port: await allocatePort(),
@@ -189,6 +232,10 @@ export class LocalStack {
         credentialFile: "controller-token",
         computer: template,
       });
+      await writeConfiguration(configFile, config);
+    }
+    if (relocated) {
+      config.port = stack.port;
       await writeConfiguration(configFile, config);
     }
     await writeConfiguration(join(this.directory, "service.json"), {
@@ -280,11 +327,36 @@ export class LocalStack {
     };
   }
 
-  private compose(args: string[], signal?: AbortSignal) {
+  private compose(
+    args: string[],
+    signal?: AbortSignal,
+    timeout = operationTimeout,
+  ) {
     return this.execute(
       "docker",
       ["compose", "--file", join(this.directory, "compose.json"), ...args],
-      { signal, timeout: operationTimeout },
+      { signal, timeout },
+    );
+  }
+
+  async containersRunning() {
+    const output = await this.compose(
+      ["ps", "--all", "--format", "json"],
+      undefined,
+      10_000,
+    );
+    const containers = output
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    return (
+      containers.length === 2 &&
+      ["app", "controller"].every((service) =>
+        containers.some(
+          (container) =>
+            container.Service === service && container.State === "running",
+        ),
+      )
     );
   }
 
@@ -292,17 +364,16 @@ export class LocalStack {
     if (!this.origin || !this.active)
       throw new Error("Inicie o Persona primeiro.");
     const token = await this.secret("desktop-token");
-    const response = await fetch(new URL("/hosting/desktop", this.origin), {
+    const response = await requestLocalJson(this.origin, "/hosting/desktop", {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      token,
       signal: AbortSignal.timeout(10_000),
-      redirect: "error",
     });
-    if (!response.ok)
+    if (response.status < 200 || response.status >= 300)
       throw new Error(
         "Conexão com a área de trabalho não concluída. Tente novamente.",
       );
-    return sessionSchema.parse(await response.json());
+    return sessionSchema.parse(response.body);
   }
 
   stop() {
@@ -311,9 +382,7 @@ export class LocalStack {
       .catch(() => {})
       .then(async () => {
         await starting?.catch(() => {});
-        if (this.active) await this.compose(["stop", "--timeout", "30"]);
-        this.active = false;
-        this.origin = undefined;
+        if (this.active || this.uncertain) await this.stopOwnedStack();
       });
     return this.pending;
   }

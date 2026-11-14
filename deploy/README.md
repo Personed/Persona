@@ -114,7 +114,7 @@ sudo /usr/local/sbin/persona-computer-egress --check
 
 ## 备份与更新
 
-桌面维护入口先停止托管，再备份配置、会话、凭据、附件和工作文件。Persona 管理的引擎账号及会话随服务数据目录或工作卷一并保存。工作电脑的已有 CLI 配置须单独备份。备份使用认证加密。密码至少 12 个字符。请单独保存密码。恢复使用新目录和新工作卷。
+桌面维护入口先停止托管，再备份配置、会话、凭据、附件和工作文件。Persona 管理的引擎账号及会话随服务数据目录或工作卷一并保存。工作电脑的已有 CLI 配置须单独备份。备份使用认证加密。密码至少 12 个字符。请单独保存密码。恢复使用新目录和新工作卷。本地 Docker `workComputer` 模板卷在备份时只读归档，恢复时映射到新卷名，不复用原卷；远程 Docker 模板暂不迁移。
 
 ```sh
 pnpm host backup --directory /srv/persona --file /backup/persona.persona --password-file /secure/backup-password

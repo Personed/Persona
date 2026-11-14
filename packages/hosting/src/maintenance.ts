@@ -13,6 +13,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  readdir,
   readFile,
   rename,
   rm,
@@ -30,7 +31,11 @@ import {
   sep,
 } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { DockerComputer, hostCommand } from "@persona/agent/computer/docker";
+import {
+  DockerComputer,
+  hostCommand,
+  sandboxNames,
+} from "@persona/agent/computer/docker";
 import {
   restoreComputers,
   storedComputers,
@@ -47,6 +52,62 @@ import { runCommand, writeConfiguration } from "./install.ts";
 
 const magic = Buffer.from("PERSONA001");
 const headerSize = magic.length + 16 + 12;
+
+function contains(parent: string, child: string) {
+  const distance = relative(parent, child);
+  return (
+    !isAbsolute(distance) &&
+    distance !== ".." &&
+    !distance.startsWith(`..${sep}`)
+  );
+}
+
+async function checkPath(path: string, tree = false): Promise<void> {
+  const info = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return undefined;
+  });
+  if (info?.isSymbolicLink() || (info?.isFile() && info.nlink > 1))
+    throw new Error("迁移路径不能包含链接。");
+  if (tree && info?.isDirectory()) {
+    for (const entry of await readdir(path))
+      await checkPath(join(path, entry), true);
+  }
+  if (!tree && dirname(path) !== path) await checkPath(dirname(path));
+}
+
+async function checkCredentialKey(data: string) {
+  try {
+    await stat(join(data, "hosting.sqlite"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const key = await stat(join(data, "credentials.key")).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT")
+        throw new Error("凭据数据库缺少 credentials.key。");
+      throw error;
+    },
+  );
+  if (!key.isFile() || key.size !== 32) throw new Error("凭据密钥文件无效。");
+}
+
+async function checkProcessComputerBinding(
+  data: string,
+  message = "该备份包含当前环境不支持的隔离电脑。",
+) {
+  const binding = await readFile(join(data, "computer.json"), "utf8").catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    },
+  );
+  if (binding === undefined) return;
+  const previous = JSON.parse(binding);
+  if (previous.kind !== "process" || previous.deployment === "container")
+    throw new Error(message);
+}
 
 async function archiveTarget(
   directory: string,
@@ -103,16 +164,50 @@ async function workArchive(
   return result;
 }
 
+function remapDockerComputer(config: DockerConfig) {
+  const previous = config.volume;
+  do {
+    config.id = randomBytes(6).toString("hex");
+    config.volume = `persona-${config.id}-work`;
+  } while (config.volume === previous);
+  return config;
+}
+
+async function dockerVolumeExists(config: DockerConfig) {
+  const [program, ...args] = hostCommand(config, [
+    "docker",
+    "volume",
+    "ls",
+    "--filter",
+    `name=${config.volume}`,
+    "--format",
+    "{{.Name}}",
+  ]);
+  if (!program) throw new Error("Docker 不可用。");
+  const output = await runCommand(program, args);
+  return output.split(/\r?\n/).includes(config.volume);
+}
+
 async function archiveComputer(
   config: DockerConfig,
   archive: string,
   restore: boolean,
 ) {
   const driver = new DockerComputer(config);
-  if (!restore) await driver.stop();
+  if (!restore) {
+    const state = await driver.inspect();
+    if (state === "running")
+      await driver.command([
+        "docker",
+        "container",
+        "stop",
+        "--time",
+        "10",
+        sandboxNames(config).container,
+      ]);
+  }
   if (restore) {
-    config.id = randomBytes(6).toString("hex");
-    config.volume = `persona-${config.id}-work`;
+    remapDockerComputer(config);
     const [program, ...args] = hostCommand(config, [
       "docker",
       "volume",
@@ -187,6 +282,13 @@ export async function backupInstallation(
   directory: string,
   output: string,
   password: string,
+  options: {
+    includeControllerTemplate?: boolean;
+    validateComputers?: (
+      config: RuntimeConfig,
+      computers: Awaited<ReturnType<typeof storedComputers>>,
+    ) => Promise<void>;
+  } = {},
 ) {
   if (password.length < 12) throw new Error("备份密码至少需要 12 个字符。");
   const root = resolve(directory);
@@ -199,16 +301,74 @@ export async function backupInstallation(
   )
     throw new Error("请将备份保存到安装目录之外。");
   const configFile = join(root, "persona.config.json");
-  const config = parseConfig(
-    JSON.parse(await readFile(configFile, "utf8")),
-    configFile,
-  );
+  const configuration = JSON.parse(await readFile(configFile, "utf8"));
+  const config = parseConfig(configuration, configFile);
+  const external = resolve(config.dataDir) !== join(root, "data");
+  if (external) {
+    if (
+      config.computer.kind !== "process" ||
+      config.workComputer ||
+      config.deployment !== "native"
+    )
+      throw new Error("外部数据目录迁移仅支持本机工作电脑。");
+    if (
+      contains(root, config.dataDir) ||
+      contains(config.dataDir, root) ||
+      contains(config.dataDir, target)
+    )
+      throw new Error("迁移路径不能重叠。");
+    await checkPath(root);
+    await checkPath(root, true);
+    await checkPath(config.dataDir);
+    if (!(await stat(config.dataDir)).isDirectory())
+      throw new Error("持久数据目录无效。");
+    await checkPath(config.dataDir, true);
+    await checkPath(target);
+    await checkCredentialKey(config.dataDir);
+    try {
+      await lstat(join(root, "data"));
+      throw new Error("安装目录已包含其他数据目录。");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
   const release = await acquireDataLease(config.dataDir);
-  const stage = await mkdtemp(join(tmpdir(), "persona-backup-"));
+  let stage: string | undefined;
   try {
+    stage = await mkdtemp(join(tmpdir(), "persona-backup-"));
+    if (external && (contains(root, stage) || contains(config.dataDir, stage)))
+      throw new Error("迁移路径不能重叠。");
+    const installation = join(stage, "installation");
+    const copy = {
+      recursive: true,
+      filter: (path: string) =>
+        ![
+          "runtime.sqlite",
+          "runtime.sqlite-wal",
+          "runtime.sqlite-shm",
+        ].includes(basename(path)),
+    };
+    if (external) {
+      // The lease settles Persona writers; catalog migrations must touch only the snapshot.
+      await cp(root, installation, copy);
+      await cp(config.dataDir, join(installation, "data"), copy);
+      await checkProcessComputerBinding(
+        join(installation, "data"),
+        "外部数据目录迁移仅支持本机工作电脑。",
+      );
+      await writeConfiguration(join(installation, "persona.config.json"), {
+        ...configuration,
+        dataDir: "data",
+      });
+    }
     const computers = await storedComputers(
-      join(config.dataDir, "agent.sqlite"),
+      external
+        ? join(installation, "data", "agent.sqlite")
+        : join(config.dataDir, "agent.sqlite"),
     );
+    await options.validateComputers?.(config, computers);
+    if (external && computers.some((item) => item.config.kind !== "process"))
+      throw new Error("外部数据目录迁移仅支持本机工作电脑。");
     const computerArchives: { id: string; archive: string }[] = [];
     for (const [index, item] of computers.entries()) {
       if (
@@ -223,17 +383,40 @@ export async function backupInstallation(
       await archiveComputer(target, join(stage, archive), false);
       computerArchives.push({ id: item.id, archive });
     }
-    await cp(root, join(stage, "installation"), {
-      recursive: true,
-      filter: (path) =>
-        ![
-          "runtime.sqlite",
-          "runtime.sqlite-wal",
-          "runtime.sqlite-shm",
-        ].includes(basename(path)),
-    });
-    if (config.dataDir !== join(root, "data"))
-      throw new Error("请先将持久数据迁入托管安装目录。");
+    let workComputerArchive: string | undefined;
+    if (config.workComputer?.kind === "docker") {
+      if (config.workComputer.ssh)
+        throw new Error("远程 Docker 工作电脑模板暂不支持迁移。");
+      if (await dockerVolumeExists(config.workComputer)) {
+        workComputerArchive = "work-computer.tar";
+        await archiveComputer(
+          config.workComputer,
+          join(stage, workComputerArchive),
+          false,
+        );
+      }
+    } else if (
+      options.includeControllerTemplate &&
+      config.workComputer?.kind === "controller"
+    ) {
+      const controllerFile = join(root, "controller.json");
+      const controller = JSON.parse(await readFile(controllerFile, "utf8"));
+      const template = parseConfig(
+        { computer: controller.computer },
+        controllerFile,
+      ).computer;
+      if (template.kind !== "docker" || template.ssh)
+        throw new Error("工作电脑模板不兼容 Docker 备份。");
+      if (await dockerVolumeExists(template)) {
+        workComputerArchive = "work-computer.tar";
+        await archiveComputer(
+          template,
+          join(stage, workComputerArchive),
+          false,
+        );
+      }
+    }
+    if (!external) await cp(root, installation, copy);
     if (config.computer.kind === "controller")
       await workArchive(root, join(stage, "work.tar"), false);
     const plaintext = join(stage, "backup.tar.gz");
@@ -241,6 +424,7 @@ export async function backupInstallation(
       "manifest.json",
       "installation",
       ...computerArchives.map((item) => item.archive),
+      ...(workComputerArchive ? [workComputerArchive] : []),
     ];
     try {
       await stat(join(stage, "work.tar"));
@@ -251,10 +435,16 @@ export async function backupInstallation(
     await writeFile(
       join(stage, "manifest.json"),
       JSON.stringify({
-        version: 1,
+        version: 2,
         created: Date.now(),
         work: entries.includes("work.tar"),
         computers: computerArchives,
+        workComputer:
+          config.workComputer?.kind === "docker" ||
+          (options.includeControllerTemplate &&
+            config.workComputer?.kind === "controller")
+            ? { archive: workComputerArchive }
+            : undefined,
       }),
     );
     await create(
@@ -284,8 +474,11 @@ export async function backupInstallation(
       throw error;
     }
   } finally {
-    await rm(stage, { recursive: true, force: true });
-    await release();
+    try {
+      if (stage) await rm(stage, { recursive: true, force: true });
+    } finally {
+      await release();
+    }
   }
 }
 
@@ -293,7 +486,21 @@ export async function restoreInstallation(
   archive: string,
   destination: string,
   password: string,
+  options: {
+    requireProcessComputer?: boolean;
+    requirePilotDockerProfile?: boolean;
+    validateInstallation?: (
+      directory: string,
+      config: RuntimeConfig,
+      computers: Awaited<ReturnType<typeof storedComputers>>,
+      manifest: Record<string, unknown>,
+    ) => Promise<void>;
+  } = {},
 ) {
+  if (options.requirePilotDockerProfile && !options.validateInstallation)
+    throw new Error(
+      "Docker piloto exige validação do perfil antes da restauração.",
+    );
   const target = resolve(destination);
   try {
     await lstat(target);
@@ -349,20 +556,85 @@ export async function restoreInstallation(
     const manifest = JSON.parse(
       await readFile(join(stage, "manifest.json"), "utf8"),
     );
-    if (manifest.version !== 1) throw new Error("备份版本不兼容。");
+    if (manifest.version !== 1 && manifest.version !== 2)
+      throw new Error("备份版本不兼容。");
+    if (
+      options.requirePilotDockerProfile &&
+      (manifest.version !== 2 || !Array.isArray(manifest.computers))
+    )
+      throw new Error("Docker piloto exige um backup compatível versão 2.");
+    const workComputerArchive = manifest.workComputer?.archive;
+    if (
+      manifest.workComputer !== undefined &&
+      (typeof manifest.workComputer !== "object" ||
+        manifest.workComputer === null ||
+        (workComputerArchive !== undefined &&
+          workComputerArchive !== "work-computer.tar"))
+    )
+      throw new Error("备份中的工作电脑模板无效。");
     const restored = join(stage, "installation");
     const filename = join(restored, "persona.config.json");
     const config = JSON.parse(await readFile(filename, "utf8"));
     const sourceConfig = parseConfig(config, filename);
+    if (
+      options.requireProcessComputer &&
+      (sourceConfig.computer.kind !== "process" ||
+        (sourceConfig.workComputer &&
+          sourceConfig.workComputer.kind !== "docker") ||
+        (sourceConfig.workComputer?.kind === "docker" &&
+          sourceConfig.workComputer.ssh !== undefined) ||
+        sourceConfig.publicUrl !== undefined ||
+        sourceConfig.desktopCredentialFile !== undefined ||
+        !["127.0.0.1", "localhost", "::1"].includes(sourceConfig.host) ||
+        sourceConfig.deployment !== "native")
+    )
+      throw new Error("该备份包含当前环境不支持的隔离电脑。");
+    if (manifest.workComputer !== undefined && !sourceConfig.workComputer)
+      throw new Error("备份中的工作电脑模板无效。");
+    config.computer ??= sourceConfig.computer;
     config.dataDir = join(target, "data");
     if (config.computer.kind === "controller")
       config.computer.credentialFile = join(target, "controller-token");
+    await writeConfiguration(filename, config);
     const database = join(restored, "data", "agent.sqlite");
+    await checkCredentialKey(join(restored, "data"));
+    if (options.requireProcessComputer)
+      await checkProcessComputerBinding(join(restored, "data"));
     const computers = await storedComputers(database);
-    for (const entry of manifest.computers ?? []) {
-      if (!/^computer-[0-9]+[.]tar$/.test(entry.archive))
-        throw new Error("电脑备份路径无效。");
-      const item = computers.find((item) => item.id === entry.id);
+    if (
+      options.requireProcessComputer &&
+      computers.some((item) => item.config.kind !== "process")
+    )
+      throw new Error("该备份包含当前环境不支持的隔离电脑。");
+    // Validate consumer-specific files before creating volumes or publishing the profile.
+    await options.validateInstallation?.(
+      restored,
+      sourceConfig,
+      computers,
+      manifest,
+    );
+    const entries = manifest.computers ?? [];
+    if (!Array.isArray(entries)) throw new Error("电脑备份清单无效。");
+    const seenIds = new Set<string>();
+    const seenArchives = new Set<string>();
+    const computerArchives: {
+      item: (typeof computers)[number];
+      targetConfig: DockerConfig;
+      archivePath: string;
+    }[] = [];
+    for (const entry of entries) {
+      if (
+        !entry ||
+        typeof entry !== "object" ||
+        typeof entry.id !== "string" ||
+        !/^computer-[0-9]+[.]tar$/.test(entry.archive) ||
+        seenIds.has(entry.id) ||
+        seenArchives.has(entry.archive)
+      )
+        throw new Error("电脑备份清单无效。");
+      seenIds.add(entry.id);
+      seenArchives.add(entry.archive);
+      const item = computers.find((computer) => computer.id === entry.id);
       if (!item || item.config.kind === "process")
         throw new Error("电脑备份配置不完整。");
       const targetConfig = await archiveTarget(
@@ -371,16 +643,73 @@ export async function restoreInstallation(
         item.config,
       );
       if (!targetConfig) throw new Error("电脑备份配置不完整。");
-      const volume = await archiveComputer(
-        targetConfig,
-        join(stage, entry.archive),
-        true,
-      );
+      const archivePath = join(stage, entry.archive);
+      const archived = await lstat(archivePath);
+      if (!archived.isFile() || archived.isSymbolicLink() || archived.nlink > 1)
+        throw new Error("电脑备份文件无效。");
+      computerArchives.push({ item, targetConfig, archivePath });
+    }
+    if (workComputerArchive) {
+      const archivePath = join(stage, workComputerArchive);
+      const archived = await lstat(archivePath);
+      if (!archived.isFile() || archived.isSymbolicLink() || archived.nlink > 1)
+        throw new Error("模板备份文件无效。");
+    }
+    for (const { item, targetConfig, archivePath } of computerArchives) {
+      const volume = await archiveComputer(targetConfig, archivePath, true);
       restoredVolumes.push(volume);
       item.config =
         item.config.kind === "controller"
           ? { ...item.config, id: volume.config.id }
           : volume.config;
+    }
+    if (sourceConfig.workComputer?.kind === "docker") {
+      if (
+        manifest.version !== 2 ||
+        manifest.workComputer === undefined ||
+        sourceConfig.workComputer.ssh
+      )
+        throw new Error("该备份未包含可安全迁移的 Docker 工作电脑模板。");
+      if (workComputerArchive) {
+        const volume = await archiveComputer(
+          { ...sourceConfig.workComputer },
+          join(stage, workComputerArchive),
+          true,
+        );
+        restoredVolumes.push(volume);
+        config.workComputer = volume.config;
+      } else {
+        config.workComputer = remapDockerComputer({
+          ...sourceConfig.workComputer,
+        });
+      }
+    }
+    if (options.requirePilotDockerProfile) {
+      const controllerFile = join(restored, "controller.json");
+      const controller = JSON.parse(await readFile(controllerFile, "utf8"));
+      const template = parseConfig(
+        { computer: controller.computer },
+        controllerFile,
+      ).computer;
+      if (template.kind !== "docker" || template.ssh)
+        throw new Error("Docker piloto contém template incompatível.");
+      const volume = manifest.workComputer?.archive
+        ? await archiveComputer(
+            template,
+            join(stage, manifest.workComputer.archive),
+            true,
+          )
+        : {
+            config: remapDockerComputer(template),
+            removeVolume: async () => {},
+          };
+      if (manifest.workComputer?.archive) restoredVolumes.push(volume);
+      controller.computer = volume.config;
+      await writeConfiguration(controllerFile, controller);
+      config.workComputer = {
+        ...config.workComputer,
+        id: volume.config.id,
+      };
     }
     if (manifest.work) {
       const controllerFile = join(restored, "controller.json");

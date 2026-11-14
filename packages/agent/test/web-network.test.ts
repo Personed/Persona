@@ -1,6 +1,25 @@
 import { expect, test } from "vitest";
+import { sandboxNames } from "../src/computer/docker.ts";
 import { WebNetwork } from "../src/computer/web-network.ts";
 import { type DockerConfig, parseConfig } from "../src/runtime/config.ts";
+
+test("restricted bridge names fit Linux interfaces and the firewall prefix", () => {
+  const config = parseConfig(
+    {
+      computer: {
+        kind: "docker",
+        id: "test",
+        image: "work:test",
+        volume: "work-test",
+        network: "restricted",
+      },
+    },
+    "config.json",
+  ).computer as DockerConfig;
+  const bridge = sandboxNames(config).bridge;
+  expect(bridge).toMatch(/^persona-c[0-9a-f]{6}$/);
+  expect(bridge.length).toBeLessThanOrEqual(15);
+});
 
 test("HTTP egress refuses a changed isolation boundary and requires a healthy proxy", async () => {
   const config = parseConfig(

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { Agent, request } from "node:http";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { ensureDockerPath } from "@persona/agent/computer/docker-path";
@@ -278,15 +279,94 @@ export async function prepareInstallation(
   return { configFile, controllerFile, config };
 }
 
+export async function requestLocalJson(
+  origin: string,
+  path: string,
+  {
+    method = "GET",
+    token,
+    signal = AbortSignal.timeout(10_000),
+  }: {
+    method?: string;
+    token?: string;
+    signal?: AbortSignal;
+  } = {},
+) {
+  const url = new URL(origin);
+  if (
+    url.protocol !== "http:" ||
+    url.hostname !== "127.0.0.1" ||
+    !url.port ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash ||
+    url.username ||
+    url.password ||
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    path.includes("?") ||
+    path.includes("#")
+  )
+    throw new Error("Invalid loopback request");
+  const agent = new Agent({ proxyEnv: {} });
+  try {
+    return await new Promise<{ status: number; body: unknown }>(
+      (resolve, reject) => {
+        const req = request(
+          new URL(path, url),
+          {
+            agent,
+            method,
+            signal,
+            headers: token ? { authorization: `Bearer ${token}` } : undefined,
+          },
+          (response) => {
+            let size = 0;
+            const chunks: Buffer[] = [];
+            response.on("error", reject);
+            response.on("data", (chunk: Buffer) => {
+              size += chunk.length;
+              if (size > 64 * 1024) {
+                response.destroy();
+                reject(new Error("Invalid loopback response"));
+              } else chunks.push(chunk);
+            });
+            response.on("end", () => {
+              try {
+                resolve({
+                  status: response.statusCode ?? 0,
+                  body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+                });
+              } catch {
+                reject(new Error("Invalid loopback response"));
+              }
+            });
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      },
+    );
+  } finally {
+    agent.destroy();
+  }
+}
+
 export async function waitForService(origin: string, signal: AbortSignal) {
   while (!signal.aborted) {
     try {
-      const response = await fetch(new URL("/hosting/info", origin), {
+      const response = await requestLocalJson(origin, "/hosting/info", {
         signal: AbortSignal.any([signal, AbortSignal.timeout(1500)]),
-        redirect: "error",
       });
-      const info = await response.json();
-      if (response.ok && info.product === "persona") return;
+      if (
+        response.status >= 200 &&
+        response.status < 300 &&
+        typeof response.body === "object" &&
+        response.body !== null &&
+        "product" in response.body &&
+        response.body.product === "persona"
+      )
+        return;
     } catch {
       signal.throwIfAborted();
     }

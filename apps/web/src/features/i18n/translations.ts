@@ -600,8 +600,8 @@ export const translations: Record<Language, Record<string, string>> = {
       "Não foi possível carregar o status do serviço local.",
     "操作已取消。": "Operação cancelada.",
     "备份操作未完成。": "Operação de backup não concluída.",
-    "操作会停止本机后台。完成后，从应用菜单打开本机 Persona。恢复会使用新目录。":
-      "A operação interromperá o serviço local. Ao concluir, abra o Persona pelo menu de aplicativos. A restauração usará uma nova pasta.",
+    "操作会停止本机后台。完成后，从应用菜单打开本机 Persona。恢复会创建新配置文件并保留当前配置文件。":
+      "A operação interromperá o serviço local. Ao concluir, abra o Persona pelo menu de aplicativos. A restauração cria um novo perfil e preserva o atual.",
     备份密码: "Senha de backup",
     "至少 12 个字符": "Pelo menos 12 caracteres",
     加密备份: "Backup criptografado",
@@ -615,6 +615,14 @@ export const translations: Record<Language, Record<string, string>> = {
     "请在运行此 Persona 的电脑上管理备份。":
       "Gerencie backups no computador onde este Persona está sendo executado.",
     "正在读取本机后台状态…": "Carregando status do serviço local…",
+    本机加密备份与恢复: "Backup criptografado e restauração local",
+    "操作会在受信任的本机窗口中确认；恢复会创建新的配置文件并保留当前配置文件。":
+      "Confirme a operação na janela local confiável. A restauração cria um novo perfil e preserva o atual.",
+    打开备份窗口: "Abrir janela de backup",
+    "请在新打开的本机窗口中选择操作并完成确认。":
+      "Escolha a operação e confirme na nova janela local.",
+    "无法打开本机备份窗口。":
+      "Não foi possível abrir a janela de backup local.",
     访问授权: "Autorização de acesso",
     连接其他设备: "Conectar outros dispositivos",
     设备权限: "Permissões do dispositivo",
@@ -675,6 +683,15 @@ export const translations: Record<Language, Record<string, string>> = {
     "创建加密备份，或从备份恢复。":
       "Create encrypted backup or restore from backup.",
     管理备份: "Manage backups",
+    "操作会停止本机后台。完成后，从应用菜单打开本机 Persona。恢复会创建新配置文件并保留当前配置文件。":
+      "The operation stops the local service. When it finishes, reopen local Persona from the app menu. Restore creates a new profile and preserves the current one.",
+    本机加密备份与恢复: "Local encrypted backup and restore",
+    "操作会在受信任的本机窗口中确认；恢复会创建新的配置文件并保留当前配置文件。":
+      "Confirm the operation in the trusted local window. Restore creates a new profile and preserves the current one.",
+    打开备份窗口: "Open backup window",
+    "请在新打开的本机窗口中选择操作并完成确认。":
+      "Choose the operation and confirm it in the new local window.",
+    "无法打开本机备份窗口。": "Could not open the local backup window.",
     打开: "Open",
     完成: "Done",
     返回: "Back",

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>Backup e restauração · Persona</title>
+    <link rel="stylesheet" href="maintenance.css">
+    <script src="maintenance-bridge.js"></script>
+    <script src="maintenance.js" defer></script>
+  </head>
+  <body>
+    <main class="maintenance" aria-labelledby="title">
+      <div class="eyebrow"><span class="eyebrow-mark" aria-hidden="true"></span> PERSONA · MANUTENÇÃO</div>
+      <h1 id="title">Backup ou restauração</h1>
+      <p class="intro">Proteja os dados desta instalação ou restaure-os a partir de um backup.</p>
+
+      <fieldset class="choices" id="choices">
+        <legend>O que você deseja fazer?</legend>
+        <label class="choice"><input type="radio" name="action" value="backup" checked><span><strong>Criar backup</strong><small>Escolha onde salvar o arquivo de backup.</small></span></label>
+        <label class="choice"><input type="radio" name="action" value="restore"><span><strong>Restaurar backup</strong><small>Restaure em um novo perfil; o perfil atual será preservado.</small></span></label>
+      </fieldset>
+
+      <div class="field">
+        <label for="password">Senha de criptografia</label>
+        <input id="password" name="password" type="password" minlength="12" autocomplete="new-password" required aria-describedby="password-help">
+        <small id="password-help">Digite a senha usada para proteger o backup. Mínimo de 12 caracteres.</small>
+      </div>
+
+      <section class="notice" aria-label="Importante">
+        <span class="notice-mark" aria-hidden="true">!</span>
+        <p>O serviço será parado durante a operação. Depois que ela começar, não há garantia de que poderá ser cancelada. A senha é usada somente nesta janela e não é salva.</p>
+      </section>
+
+      <label class="confirm"><input id="confirmation" type="checkbox"><span>Entendo que o serviço será parado e que talvez não seja possível cancelar depois do início.</span></label>
+
+      <section class="progress-card" aria-label="Estado da operação">
+        <div class="status-line"><span class="status-indicator" id="indicator" aria-hidden="true"></span><p id="status" role="status" aria-live="polite" aria-atomic="true">Verificando o estado…</p></div>
+        <div class="progress-track" id="progress-track" hidden aria-hidden="true"><span></span></div>
+      </section>
+
+      <div class="actions">
+        <button class="button button-primary" id="start" type="button" disabled>Continuar</button>
+        <button class="button button-secondary" id="cancel" type="button" hidden>Solicitar cancelamento</button>
+      </div>
+      <p class="error" id="error" role="alert" aria-live="assertive" hidden></p>
+      <p class="footnote">A escolha do arquivo acontece em um diálogo nativo. Arquivos e caminhos não são aceitos pela web.</p>
+    </main>
+  </body>
+</html>

@@ -25,6 +25,7 @@ Pi Durable 1.4.0 stores Bot tasks. Native Harness processes own model loops. Per
 | `apps/api` | HTTP and RPC boundaries, request handling, and service composition. |
 | `apps/web` | Browser UI, client state, and user interactions. |
 | `apps/desktop` | Electron lifecycle, preload boundary, desktop setup, and packaging. |
+| `apps/desktop/tauri-pilot` | Isolated Tauri 3 migration pilot. Temporary; it is not the launcher and does not own the shipped desktop app. |
 | `apps/controller` | Authenticated control service for remote work sandboxes. |
 | `apps/cli` | Command-line entry points, hosting, and eval commands. |
 | `packages/agent` | Bots, durable tasks, chats, memory, files, and work environments. |

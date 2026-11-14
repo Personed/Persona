@@ -24,10 +24,12 @@ declare global {
       menu(scope?: "environment"): Promise<Result>;
       prepare(): Promise<Result<{ image: string; proxyImage?: string }>>;
       state(): Promise<Result<DesktopState>>;
+      nativeMaintenanceConfirmation?: true;
+      maintain(): Promise<Result<{ opened: boolean; started: boolean }>>;
       maintain(
         action: "backup" | "restore",
         password: string,
-      ): Promise<Result<{ message: string }>>;
+      ): Promise<Result<{ message?: string }>>;
     };
   }
 }

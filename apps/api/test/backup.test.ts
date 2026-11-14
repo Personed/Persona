@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -55,6 +55,10 @@ test("encrypted backups preserve computer permissions, bindings and native works
     await runtime.close();
   }
   const records = await storedComputers(join(root, "data", "agent.sqlite"));
+  await writeFile(
+    installation.configFile,
+    JSON.stringify({ ...installation.config, workComputer: undefined }),
+  );
   const archive = join(directory, "backup.persona");
   const password = crypto.randomUUID();
   await backupInstallation(root, archive, password);

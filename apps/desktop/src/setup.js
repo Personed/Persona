@@ -62,7 +62,17 @@ bridge.progress((value) => {
   phase.textContent = errorTranslations[value.message] || value.message;
 });
 cancel.addEventListener("click", () => bridge.cancel());
-docker.addEventListener("click", () => bridge.docker());
+docker.addEventListener("click", async () => {
+  try {
+    await bridge.docker();
+  } catch (cause) {
+    error.textContent =
+      (typeof cause === "string" ? cause : cause?.message) ||
+      "Não foi possível abrir as instruções do Docker.";
+    error.hidden = false;
+    error.focus();
+  }
+});
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (next.disabled) return;

@@ -33,6 +33,18 @@ async function captureWindow(
   await writeFile(path, Buffer.from(png, "base64"));
 }
 
+async function openConnectionSetup(desktop: ElectronApplication) {
+  const opened = desktop.waitForEvent("window");
+  await desktop.evaluate(({ Menu }) =>
+    Menu.getApplicationMenu()
+      ?.items[0]?.submenu?.items.find(
+        (item) => item.label === "Conectar a outro Persona…",
+      )
+      ?.click(),
+  );
+  return opened;
+}
+
 test("native setup starts and resumes with Docker unavailable", async ({
   playwright,
 }, testInfo) => {
@@ -57,10 +69,15 @@ test("native setup starts and resumes with Docker unavailable", async ({
     env,
   });
   try {
-    const setup = await desktop.firstWindow();
+    const localOpened = desktop.waitForEvent("window", {
+      predicate: (window) => window.url().startsWith("http://127.0.0.1:"),
+    });
+    const initialSetup = await desktop.firstWindow();
     await expect(
-      setup.getByRole("heading", { name: "欢迎使用 Persona" }),
+      initialSetup.getByRole("heading", { name: "Bem-vindo ao Persona" }),
     ).toBeVisible();
+    await localOpened;
+    const setup = await openConnectionSetup(desktop);
     await desktop.evaluate(({ nativeTheme }) => {
       nativeTheme.themeSource = "dark";
     });
@@ -97,7 +114,7 @@ test("native setup starts and resumes with Docker unavailable", async ({
           .evaluate((main) => main.scrollWidth <= main.clientWidth),
       )
       .toBe(true);
-    const next = setup.getByRole("button", { name: "继续", exact: true });
+    const next = setup.getByRole("button", { name: "Continuar", exact: true });
     await next.scrollIntoViewIfNeeded();
     await expect(next).toBeInViewport({ ratio: 1 });
     await captureWindow(
@@ -110,15 +127,15 @@ test("native setup starts and resumes with Docker unavailable", async ({
       window?.setSize(680, 760);
       window?.webContents.setZoomFactor(1);
     });
-    await setup.getByLabel("在 Docker 中运行", { exact: false }).check();
-    await setup.getByRole("button", { name: "继续", exact: true }).click();
+    await setup.getByLabel("Executar em Docker", { exact: false }).check();
+    await setup.getByRole("button", { name: "Continuar", exact: true }).click();
     await expect(setup.getByRole("alert")).toContainText("Docker Desktop");
-    await setup.getByLabel("直接运行", { exact: false }).check();
+    await setup.getByLabel("Execução direta", { exact: false }).check();
     const opened = desktop.waitForEvent("window");
-    await setup.getByRole("button", { name: "继续", exact: true }).click();
+    await setup.getByRole("button", { name: "Continuar", exact: true }).click();
     const page = await opened;
     await expect(
-      page.getByRole("heading", { name: "Bot 在哪里工作？" }),
+      page.getByRole("heading", { name: "Onde o Bot irá trabalhar?" }),
     ).toBeVisible();
     await desktop.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows().find((window) =>
@@ -134,7 +151,7 @@ test("native setup starts and resumes with Docker unavailable", async ({
         .evaluate((main) => main.scrollWidth <= main.clientWidth),
     ).toBe(true);
     const continueSetup = page.getByRole("button", {
-      name: "授权并继续",
+      name: "Autorizar e Continuar",
       exact: true,
     });
     await continueSetup.scrollIntoViewIfNeeded();
@@ -151,7 +168,7 @@ test("native setup starts and resumes with Docker unavailable", async ({
       predicate: (window) => window.url().startsWith(origin),
     });
     await expect(
-      resumed.getByRole("heading", { name: "Bot 在哪里工作？" }),
+      resumed.getByRole("heading", { name: "Onde o Bot irá trabalhar?" }),
     ).toBeVisible();
   } finally {
     await desktop.close();
@@ -196,23 +213,32 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
     env,
   });
   try {
-    const setup = await desktop.firstWindow();
+    const localOpened = desktop.waitForEvent("window", {
+      predicate: (window) => window.url().startsWith("http://127.0.0.1:"),
+    });
+    const initialSetup = await desktop.firstWindow();
     await expect(
-      setup.getByRole("heading", { name: "欢迎使用 Persona" }),
+      initialSetup.getByRole("heading", { name: "Bem-vindo ao Persona" }),
     ).toBeVisible();
-    await setup.getByLabel("连接已有 Persona", { exact: false }).check();
+    await localOpened;
+    const setup = await openConnectionSetup(desktop);
     await setup
-      .getByLabel("Persona 地址")
+      .getByLabel("Conectar a um Persona existente", { exact: false })
+      .check();
+    await setup
+      .getByLabel("Endereço do Persona")
       .fill(`http://127.0.0.1:${ready.port}`);
     const opened = desktop.waitForEvent("window");
-    await setup.getByRole("button", { name: "继续", exact: true }).click();
+    await setup.getByRole("button", { name: "Continuar", exact: true }).click();
     const page = await opened;
     await expect(
-      page.getByRole("heading", { name: "连接这个 Persona" }),
+      page.getByRole("heading", { name: "Conectar a este Persona" }),
     ).toBeVisible();
-    await page.getByLabel("配对码", { exact: true }).fill(ready.pairing);
-    await page.getByRole("button", { name: "连接", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Bot详情" })).toBeVisible();
+    await page.getByLabel("Código", { exact: true }).fill(ready.pairing);
+    await page.getByRole("button", { name: "Conectar", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "Persona", exact: true }),
+    ).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator(".app-titlebar, .app-rail")).toHaveCount(0);
     await expect(page.locator("#bot-details")).toBeVisible();
     await expect(page.locator(".chat-identity .bot-avatar")).toBeVisible();
@@ -221,12 +247,12 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
       page,
       testInfo.outputPath("workspace-native.png"),
     );
-    await page.getByRole("combobox", { name: "模型", exact: true }).click();
+    await page.getByRole("combobox", { name: "Modelos", exact: true }).click();
     const selector = page.locator(".model-selector-popup");
     await expect(selector.getByRole("tab")).toHaveCount(5);
     await selector.getByRole("tab", { name: "OpenCode", exact: true }).click();
     await expect(
-      selector.getByRole("button", { name: "配置连接", exact: true }),
+      selector.getByRole("button", { name: "Configurar conexão", exact: true }),
     ).toBeVisible();
     await expect(page.locator(".context-ring .engine-mark")).toHaveAttribute(
       "data-provider",
@@ -238,18 +264,17 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
       testInfo.outputPath("model-provider-native.png"),
     );
     await selector
-      .getByRole("button", { name: "关闭模型选择", exact: true })
+      .getByRole("button", { name: "Fechar seleção de modelo", exact: true })
       .click();
     const original = await desktop.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0]?.getBounds(),
     );
-    await page.getByRole("button", { name: "Bot详情", exact: true }).click();
     await page.getByRole("tab", { name: "Browser", exact: true }).click();
-    await page.getByRole("button", { name: "启用浏览器", exact: true }).click();
-    await expect(page.getByRole("img", { name: "工作电脑画面" })).toBeVisible({
-      timeout: 30_000,
-    });
-    await page.getByRole("button", { name: "全屏", exact: true }).click();
+    await page.getByRole("button", { name: /Ativar\s*Navegador/ }).click();
+    await expect(
+      page.getByRole("img", { name: "Tela do computador de trabalho" }),
+    ).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Tela cheia", exact: true }).click();
     await expect
       .poll(() =>
         desktop.evaluate(({ BrowserWindow }) =>
@@ -281,20 +306,21 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
     ).toHaveAttribute("aria-selected", "true");
     await page
       .locator("#bot-details")
-      .getByRole("button", { name: "关闭", exact: true })
+      .getByRole("button", { name: "Fechar", exact: true })
       .click();
     const environment = page.getByRole("button", {
-      name: "切换 Persona 环境：我的 Persona",
-      exact: true,
+      name: /Selecionar ambiente[:：]\s*Meu Persona/,
     });
     await expect(environment).toBeVisible();
     const left = (await environment.boundingBox())?.x;
-    const resize = page.getByRole("separator", { name: "调整联系人宽度" });
+    const resize = page.getByRole("separator", {
+      name: "Ajustar largura dos contatos",
+    });
     await resize.focus();
     await resize.press("End");
     expect((await environment.boundingBox())?.x).toBe(left);
     const plus = await page
-      .getByRole("button", { name: "新建 Bot", exact: true })
+      .getByRole("button", { name: "Novo Bot", exact: true })
       .boundingBox();
     const environmentBox = await environment.boundingBox();
     expect(environmentBox && plus && plus.y < environmentBox.y).toBe(true);
@@ -352,16 +378,21 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
       window.personaDesktop?.prepare(),
     );
     expect(restricted?.ok).toBe(false);
-    await page.getByRole("button", { name: "设置", exact: true }).click();
-    const settings = page.getByRole("main", { name: "设置", exact: true });
+    await page
+      .getByRole("button", { name: "Configurações", exact: true })
+      .click();
+    const settings = page.getByRole("main", {
+      name: "Configurações",
+      exact: true,
+    });
     await expect(settings.getByRole("tab")).toHaveText([
-      "通用",
-      "Providers",
-      "Models",
+      "Geral",
+      "Provedores",
+      "Modelos",
     ]);
-    for (const label of ["深色", "浅色"]) {
+    for (const label of ["Escuro", "Claro"]) {
       await settings
-        .getByRole("combobox", { name: "外观", exact: true })
+        .getByRole("combobox", { name: "Aparência", exact: true })
         .click();
       await page.getByRole("option", { name: label, exact: true }).click();
       const background = await desktop.evaluate(({ BrowserWindow }) =>
@@ -381,7 +412,7 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
         (item) => item.label,
       ),
     );
-    expect(nativeMenu).toContain("连接其他 Persona…");
+    expect(nativeMenu).toContain("Conectar a outro Persona…");
     await desktop.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0]?.webContents.setZoomFactor(2),
     );
@@ -403,19 +434,19 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
     desktop = await playwright._electron.launch({ executablePath, args, env });
     const reopened = await desktop.firstWindow();
     await expect(
-      reopened.getByRole("button", { name: "Bot详情" }),
+      reopened.getByRole("button", { name: "Persona", exact: true }),
     ).toBeVisible();
     expect(reopened.url()).toBe(`http://127.0.0.1:${ready.port}/`);
     await desktop.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0]?.webContents.setZoomFactor(1),
     );
-    await reopened.getByRole("button", { name: "用量", exact: true }).click();
+    await reopened.getByRole("button", { name: "Uso", exact: true }).click();
     await expect(
-      reopened.getByRole("main", { name: "用量", exact: true }),
-    ).toContainText("此范围还没有用量记录。");
-    await reopened.getByRole("button", { name: "用量", exact: true }).click();
+      reopened.getByRole("main", { name: "Uso", exact: true }),
+    ).toContainText("Nenhum registro de uso neste período.");
+    await reopened.getByRole("button", { name: "Uso", exact: true }).click();
     await expect(
-      reopened.getByRole("button", { name: "Bot详情" }),
+      reopened.getByRole("button", { name: "Persona", exact: true }),
     ).toBeVisible();
     await reopened.locator('input[type="file"]').setInputFiles({
       name: "photo.png",
@@ -428,11 +459,11 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
     await expect(
       reopened.locator(".composer-attachments .attachment"),
     ).toHaveCount(1);
-    await reopened.getByLabel("消息", { exact: true }).fill("图片查看");
-    await reopened.getByRole("button", { name: "发送", exact: true }).click();
+    await reopened.getByLabel("Mensagem", { exact: true }).fill("图片查看");
+    await reopened.getByRole("button", { name: "Enviar", exact: true }).click();
     await reopened
-      .getByLabel("你的消息", { exact: true })
-      .getByRole("button", { name: "查看图片 photo.png", exact: true })
+      .getByLabel("Sua mensagem", { exact: true })
+      .getByRole("button", { name: "Ver imagem photo.png", exact: true })
       .click();
     const viewer = reopened.getByRole("dialog", { name: "photo.png" });
     await expect(viewer).toBeVisible();
@@ -444,23 +475,17 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
       testInfo.outputPath("image-viewer-titlebar.png"),
     );
     await reopened.keyboard.press("Escape");
-    const choosing = desktop.waitForEvent("window");
-    await desktop.evaluate(({ Menu }) =>
-      Menu.getApplicationMenu()
-        ?.items[0]?.submenu?.items.find(
-          (item) => item.label === "连接其他 Persona…",
-        )
-        ?.click(),
-    );
-    const chooser = await choosing;
+    const chooser = await openConnectionSetup(desktop);
     await expect(
-      chooser.getByRole("heading", { name: "欢迎使用 Persona" }),
+      chooser.getByRole("heading", { name: "Bem-vindo ao Persona" }),
     ).toBeVisible();
-    await chooser.getByLabel("连接已有 Persona", { exact: false }).check();
     await chooser
-      .getByRole("button", { name: "我的 Persona", exact: true })
+      .getByLabel("Conectar a um Persona existente", { exact: false })
+      .check();
+    await chooser
+      .getByRole("button", { name: "Meu Persona", exact: true })
       .click();
-    await expect(chooser.getByLabel("Persona 地址")).toHaveValue(
+    await expect(chooser.getByLabel("Endereço do Persona")).toHaveValue(
       `http://127.0.0.1:${ready.port}`,
     );
   } finally {
