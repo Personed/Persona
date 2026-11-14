@@ -28,7 +28,8 @@ export async function buildRuntime(runtime) {
       "--filter",
       "@persona/api",
       "deploy",
-      "--offline",
+      // Legacy deploy re-resolves direct dependencies; frozen CI installs have no metadata cache.
+      "--prefer-offline",
       "--legacy",
       "--prod",
       runtime,
