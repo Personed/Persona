@@ -12,6 +12,8 @@ código foi feita nesta auditoria.
 
 ## Estado atual
 
+- Passe 0 concluído em 2026-11-14: CI verde em `9c40e9a`, após corrigir o
+  caminho do pnpm, o título do Chromium, o deploy offline e o stage entre drives.
 - `main` local está 20 commits à frente do remoto; o último CI verde foi
   `c576d48`, antes do HEAD `560e35c`.
 - O working tree tem mudanças não commitadas em Tauri, web, docs e testes;
@@ -35,12 +37,12 @@ Tarefas marcadas **decisão** precisam de confirmação antes de remover algo.
 
 | ID | Tarefa | Evidência | Validação | Risco |
 | --- | --- | --- | --- | --- |
-| AUD-01 (S) | Publicar a `main` local e rodar o CI no HEAD `560e35c`. | `main` 20 à frente; último CI verde em `c576d48`; há mudanças não commitadas no working tree. | `git push origin main`; `gh run watch`. | Publica a migração Tauri; decidir antes o destino das mudanças não commitadas. |
-| AUD-02 (S) | Remover o worktree órfão `native-harness-discovery`. | `git worktree list` mostra detached em `560e35c`; status limpo. | `git worktree remove`, `git worktree prune`, `git worktree list`. | Nenhum trabalho não commitado foi encontrado; confirmar antes. |
-| AUD-03 (S) | Decidir `README.zh-CN.md`: restaurar ou commitar a remoção e ajustar o link do `README.md`. | `git status` mostra `D`; `README.md:3` aponta para o arquivo. | `git status` limpo; checagem de links. | Remover a tradução reduz cobertura de docs. |
+| AUD-01 (feito) | Publicar a `main` local e rodar o CI no HEAD `560e35c`. | Publicado; CI verde em `9c40e9a` após corrigir pnpm, título do Chromium, deploy offline e stage entre drives. | `git push origin main`; `gh run watch`. | Publica a migração Tauri. |
+| AUD-02 (feito) | Remover o worktree órfão `native-harness-discovery`. | Removido; `git worktree list` mostra só a `main`. | `git worktree list`. | Nenhum. |
+| AUD-03 (feito) | Decidir `README.zh-CN.md`: restaurar ou commitar a remoção e ajustar o link do `README.md`. | Restaurado; o link do `README.md:3` funciona. | `git status` limpo; checagem de links. | Remover a tradução reduz cobertura de docs. |
 | AUD-04 (feito) | Confirmar a atribuição do `deploy/NOTICE`. | `apps/desktop/src/local-stack.ts` existe no upstream `elie222/rakazo`; nunca existiu neste repo. | Revisão manual; sem alteração necessária. | Nenhum. |
 | AUD-05 (absorvido) | Confirmar as falhas antigas de `desktop` e `sandbox` no CI da `main`. | Absorvido por AUD-01: o CI no HEAD atual cobre os mesmos jobs. | Ver AUD-01. | Nenhum. |
-| AUD-06 (S) | Limpar artefatos locais ignorados: `apps/desktop/dist`, `release`, `runtime`, `tauri-pilot`, `test-results`. | São builds reproduzíveis; `tauri-pilot` contém só `gen` e `target`. | `git clean -ndX` antes; remover só os caminhos listados. | Apagar build local (recuperável). |
+| AUD-06 (feito) | Limpar artefatos locais ignorados: `apps/desktop/dist`, `release`, `runtime`, `tauri-pilot`, `test-results`. | Removidos (~34 GB); `tauri-pilot` continha só `gen` e `target`. | `git status`; rebuild pelo CI. | Build local apagado (recuperável). |
 
 ### Passe 1 — Remoções
 
@@ -78,7 +80,7 @@ Tarefas marcadas **decisão** precisam de confirmação antes de remover algo.
 
 ## Ordem recomendada
 
-1. **Fechar a verdade do repo:** AUD-01, AUD-02, AUD-03, AUD-06 (AUD-04 verificado; AUD-05 absorvido por AUD-01).
+1. **Passe 0 concluído:** AUD-01, AUD-02, AUD-03 e AUD-06 feitos; AUD-04 verificado; AUD-05 absorvido por AUD-01.
 2. **Remover o que é claramente morto:** AUD-07, AUD-08, AUD-10, AUD-12.
 3. **Atualizar em blocos revertíveis:** AUD-13, AUD-14, depois AUD-15.
 4. **Organizar sem mudar comportamento:** AUD-17 a AUD-21.
