@@ -16,21 +16,14 @@ const { build: buildWeb } = await import(
 );
 
 export async function buildRuntime(runtime) {
-  const located = spawnSync("where.exe", ["pnpm.cmd"], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  if (located.error || located.status !== 0)
-    throw new Error("Installed pnpm.cmd was not found");
-  const pnpm = join(
-    dirname(located.stdout.trim().split(/\r?\n/)[0]),
-    "node_modules/pnpm/bin/pnpm.cjs",
-  );
+  const pnpm = process.env.npm_execpath;
+  if (!pnpm) throw new Error("Run this build through pnpm.");
   await access(pnpm);
+  const javascript = /\.(c|m)?js$/i.test(pnpm);
   const deployed = spawnSync(
-    process.execPath,
+    javascript ? process.execPath : pnpm,
     [
-      pnpm,
+      ...(javascript ? [pnpm] : []),
       "--config.node-linker=hoisted",
       "--filter",
       "@persona/api",
