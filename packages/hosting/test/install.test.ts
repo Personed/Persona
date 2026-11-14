@@ -2,6 +2,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -21,7 +22,9 @@ import { backupInstallation, restoreInstallation } from "../src/maintenance.ts";
 import { HostingStore } from "../src/store.ts";
 
 async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), "persona-install-test-"));
+  const directory = await mkdtemp(
+    join(await realpath(tmpdir()), "persona-install-test-"),
+  );
   onTestFinished(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }

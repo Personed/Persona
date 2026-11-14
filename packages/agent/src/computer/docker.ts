@@ -35,7 +35,8 @@ export function sandboxNames(config: DockerConfig) {
   return {
     container: `persona-${config.id}`,
     network: `persona-${config.id}`,
-    bridge: `persona-c${createHash("sha256").update(config.id).digest("hex").slice(0, 7)}`,
+    // Linux interface names allow 15 visible characters; "persona-c" uses 9.
+    bridge: `persona-c${createHash("sha256").update(config.id).digest("hex").slice(0, 6)}`,
   };
 }
 
