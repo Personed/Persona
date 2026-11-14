@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { acquirePilotDockerProfile } from "./docker-profile.mjs";
 import {
   loadPilotDockerRuntime,
   startPilotDockerService,
 } from "./docker-service.mjs";
+import { runtimeDirectory } from "./layout.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "persona-docker-service-"));
@@ -23,7 +24,10 @@ test("the Docker backend loads the fixed release and shared LocalStack without s
   const { LocalStack, release } = await loadPilotDockerRuntime();
   assert.equal(typeof LocalStack, "function");
   assert.equal(typeof release.workImage, "string");
-  assert.ok(release.workBuild?.context.startsWith(process.cwd()));
+  assert.equal(
+    resolve(release.workBuild?.context ?? ""),
+    resolve(runtimeDirectory),
+  );
 });
 
 test("Docker supervisor service retains its isolated profile until verified stop", async (t) => {
