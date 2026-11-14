@@ -69,7 +69,9 @@ test("native setup starts and resumes with Docker unavailable", async ({
     env,
   });
   try {
-    const localOpened = desktop.waitForEvent("window");
+    const localOpened = desktop.waitForEvent("window", {
+      predicate: (window) => window.url().startsWith("http://127.0.0.1:"),
+    });
     const initialSetup = await desktop.firstWindow();
     await expect(
       initialSetup.getByRole("heading", { name: "Bem-vindo ao Persona" }),
@@ -211,7 +213,9 @@ test("desktop opens setup, pairs a remote Persona and restores the connection", 
     env,
   });
   try {
-    const localOpened = desktop.waitForEvent("window");
+    const localOpened = desktop.waitForEvent("window", {
+      predicate: (window) => window.url().startsWith("http://127.0.0.1:"),
+    });
     const initialSetup = await desktop.firstWindow();
     await expect(
       initialSetup.getByRole("heading", { name: "Bem-vindo ao Persona" }),
