@@ -9,7 +9,7 @@ use tauri::{
 
 /// The local environment is a singleton in the pilot, so its id is stable.
 pub const LOCAL_ID: &str = "00000000-0000-4000-8000-000000000000";
-pub const LOCAL_NAME: &str = "Este computador (temporário)";
+pub const LOCAL_NAME: &str = "Este computador";
 pub const LOCAL_DOCKER_NAME: &str = "Este computador (Docker)";
 
 #[derive(Clone, PartialEq, Debug)]
@@ -188,9 +188,7 @@ impl Desktop {
         }) {
             return None;
         }
-        self.selected_instance().filter(|item| {
-            item.mode == "existing" || (item.mode == "local" && item.runtime == "docker")
-        })
+        self.selected_instance()
     }
 
     pub fn find(&self, id: &str) -> Option<Instance> {
@@ -251,7 +249,7 @@ mod startup_tests {
     use super::*;
 
     #[test]
-    fn startup_restores_selected_remote_or_docker_outside_test_modes() {
+    fn startup_restores_selected_environment_outside_test_modes() {
         let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(format!("target/test-data/startup-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
@@ -273,7 +271,7 @@ mod startup_tests {
             (
                 serde_json::json!({"id": "local", "name": "Local", "mode": "local", "runtime": "native", "url": "http://127.0.0.1:34567"}),
                 "local",
-                false,
+                true,
             ),
             (
                 serde_json::json!({"id": "docker", "name": "Docker", "mode": "local", "runtime": "docker", "url": "http://127.0.0.1:34567"}),

@@ -24,8 +24,8 @@ Pi Durable 1.4.0 stores Bot tasks. Native Harness processes own model loops. Per
 | --- | --- |
 | `apps/api` | HTTP and RPC boundaries, request handling, and service composition. |
 | `apps/web` | Browser UI, client state, and user interactions. |
-| `apps/desktop` | Electron lifecycle, preload boundary, desktop setup, and packaging. |
-| `apps/desktop/tauri-pilot` | Isolated Tauri 3 migration pilot. Temporary; it is not the launcher and does not own the shipped desktop app. |
+| `apps/desktop` | Tauri desktop lifecycle, native IPC boundary, setup, and packaging. |
+| `apps/desktop/src-tauri` | Tauri 3 shell, Node supervisor, native dialogs, persistent profiles, and Windows installer. |
 | `apps/controller` | Authenticated control service for remote work sandboxes. |
 | `apps/cli` | Command-line entry points, hosting, and eval commands. |
 | `packages/agent` | Bots, durable tasks, chats, memory, files, and work environments. |
@@ -107,8 +107,8 @@ Pi Durable 1.4.0 stores Bot tasks. Native Harness processes own model loops. Per
 
 ## Data and local processes
 
-- Preserve user data and existing public contracts. Keep authentication, authorization, IPC validation, Electron sandboxing, and context isolation at their boundaries.
-- Restart only identified Persona processes. Check PID, executable path, and ownership before stopping them. Do not kill all Electron processes or an entire tree that may contain user applications.
+- Preserve user data and existing public contracts. Keep authentication, authorization, native IPC validation, and WebView origin permissions at their boundaries.
+- Restart only identified Persona processes. Check PID, executable path, and ownership before stopping them. Do not kill an entire tree that may contain user applications.
 - Use a small test window for desktop checks when possible. Use the user's requested application only within the authorized task.
 
 ## Git workflow

@@ -17,7 +17,11 @@ pub struct OwnedProcess {
 impl OwnedProcess {
     pub fn spawn(script: &Path) -> io::Result<Self> {
         let mut command = Command::new(crate::layout::node());
-        command.env_clear();
+        if crate::tray::enabled() {
+            command.env("PERSONA_NATIVE_ACCOUNTS", "1");
+        } else {
+            command.env_clear();
+        }
         for key in [
             "PATH",
             "SystemRoot",

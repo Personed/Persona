@@ -327,20 +327,28 @@ async function startService(directory, retain) {
       }),
       { flag: retain ? "w" : "wx" },
     );
-    // Do not inherit Persona overrides, credentials, model keys or real CLI homes.
+    // Smokes keep synthetic homes; normal desktop execution uses the OS user's CLI accounts.
     const home = join(directory, "home");
     await mkdir(home, { recursive: retain });
     const env = {
+      ...(process.env.PERSONA_NATIVE_ACCOUNTS === "1"
+        ? Object.fromEntries(
+            Object.entries(process.env).filter(
+              ([key]) => !/^(PERSONA_|SERVICE_)|^DATABASE_URL$/i.test(key),
+            ),
+          )
+        : {
+            HOME: home,
+            USERPROFILE: home,
+            APPDATA: home,
+            LOCALAPPDATA: home,
+            XDG_CONFIG_HOME: home,
+            XDG_DATA_HOME: home,
+            XDG_CACHE_HOME: home,
+            TEMP: directory,
+            TMP: directory,
+          }),
       PERSONA_CONFIG: config,
-      HOME: home,
-      USERPROFILE: home,
-      APPDATA: home,
-      LOCALAPPDATA: home,
-      XDG_CONFIG_HOME: home,
-      XDG_DATA_HOME: home,
-      XDG_CACHE_HOME: home,
-      TEMP: directory,
-      TMP: directory,
     };
     if (portable) {
       env.PERSONA_WORKER_ENTRY = fileURLToPath(

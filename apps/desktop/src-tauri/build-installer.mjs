@@ -1,5 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { access, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildPilotBundle } from "./build-pilot-bundle.mjs";
@@ -11,10 +20,10 @@ if (
 )
   throw new Error("The pilot installer requires Windows and Node >=24.");
 const base = fileURLToPath(new URL("./", import.meta.url));
-const stage = join(base, "target", "installer-resources");
-// This generated directory contains no profiles or user data.
-await rm(stage, { recursive: true, force: true });
-await mkdir(stage, { recursive: true });
+// NSIS cannot open deep dependency paths beneath a long checkout path.
+const temporary = join(tmpdir(), "opencode");
+await mkdir(temporary, { recursive: true });
+const stage = await mkdtemp(join(temporary, "pi-"));
 await buildRuntime(join(stage, "runtime"));
 for (const entry of [
   "runtime/release.json",
@@ -66,6 +75,13 @@ await writeFile(
 const cli = fileURLToPath(
   new URL("../../../node_modules/@tauri-apps/cli/tauri.js", import.meta.url),
 );
+const config = JSON.parse(
+  await readFile(join(base, "tauri.installer.conf.json"), "utf8"),
+);
+config.bundle.resources = { [`${stage}/`]: "./" };
+await mkdir(join(base, "target"), { recursive: true });
+const configPath = join(base, "target", "installer-config.json");
+await writeFile(configPath, JSON.stringify(config));
 const result = spawnSync(
   process.execPath,
   [
@@ -74,7 +90,7 @@ const result = spawnSync(
     "--bundles",
     "nsis",
     "--config",
-    join(base, "tauri.installer.conf.json"),
+    configPath,
     "--",
     "--locked",
     "--offline",
@@ -84,12 +100,9 @@ const result = spawnSync(
 if (result.error || result.status !== 0)
   throw result.error ?? new Error("Pilot installer build failed.");
 
-const executable = join(stage, "persona-tauri-pilot.exe");
+const executable = join(stage, "persona.exe");
 const appData = await mkdtemp(join(base, "target", "installer-smoke-data-"));
-await cp(
-  join(base, "target", "release", "persona-tauri-pilot.exe"),
-  executable,
-);
+await cp(join(base, "target", "release", "persona.exe"), executable);
 const env = Object.fromEntries(
   ["PATH", "SystemRoot", "WINDIR", "SystemDrive"]
     .filter((key) => process.env[key])
@@ -110,6 +123,7 @@ if (smoke.error || smoke.status !== 0)
   );
 await rm(executable, { force: true });
 await rm(appData, { recursive: true, force: true });
+await rm(stage, { recursive: true, force: true });
 console.log(
   "Installed-resource lifecycle smoke passed with isolated LocalAppData.",
 );

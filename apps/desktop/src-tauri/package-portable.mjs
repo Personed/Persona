@@ -47,8 +47,8 @@ if (nativeBuild.error || nativeBuild.status !== 0)
     "Current pilot shell offline build failed; refusing to package an existing executable.",
   );
 await cp(
-  join(base, "target/debug/persona-tauri-pilot.exe"),
-  join(destination, "persona-tauri-pilot.exe"),
+  join(base, "target/debug/persona.exe"),
+  join(destination, "persona.exe"),
 );
 await cp(process.execPath, join(destination, "node.exe"));
 for (const entry of [

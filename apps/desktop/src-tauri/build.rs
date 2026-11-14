@@ -55,7 +55,6 @@ fn main() {
     );
     let html = source
         .replace("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src ipc: http://ipc.localhost; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'")
-        .replace("Seus Bots e dados ficam salvos aqui.", "Piloto descartável: não use credenciais reais. Falhas podem reter dados de teste.")
         .replace("<script src=\"setup.js\"></script>", "<script src=\"setup-bridge.js\"></script><script src=\"setup.js\"></script>");
     std::fs::write(output.join("setup.html"), html).unwrap();
     let platform = match std::env::var("CARGO_CFG_TARGET_OS").unwrap().as_str() {

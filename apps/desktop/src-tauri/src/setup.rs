@@ -96,9 +96,7 @@ impl Setup {
             .ok_or("Serviço local indisponível.")?
             .clone();
         if !supervisor.maintenance_supported.load(Ordering::SeqCst) {
-            return Err(
-                "Esta manutenção exige um perfil local persistente isolado do piloto.".into(),
-            );
+            return Err("Esta manutenção exige um perfil local persistente.".into());
         }
         *operation = true;
         self.maintenance.store(true, Ordering::SeqCst);
@@ -377,7 +375,7 @@ pub fn setup_cancel(
 #[tauri::command]
 pub fn setup_docker(window: tauri::WebviewWindow) -> Result<(), String> {
     check(&window)?;
-    Err("O piloto não instala Docker Desktop. Instale e inicie o Docker manualmente e tente novamente.".into())
+    Err("Instale e inicie o Docker Desktop e tente novamente.".into())
 }
 
 pub fn progress(app: &tauri::AppHandle, phase: &str, message: &str) {
@@ -405,11 +403,7 @@ pub fn open(app: &tauri::AppHandle) -> tauri::Result<()> {
         std::env::args().any(|arg| arg == "--smoke-test" || arg == "--native-death-test");
     let window =
         tauri::WebviewWindowBuilder::new(app, "setup", tauri::WebviewUrl::App("setup.html".into()))
-            .title(if crate::persistent_local() {
-                "Configurar Persona — piloto persistente isolado"
-            } else {
-                "Configurar Persona — piloto temporário"
-            })
+            .title("Configurar Persona")
             .inner_size(680.0, 760.0)
             .min_inner_size(360.0, 540.0)
             .incognito(true)

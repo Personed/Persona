@@ -14,7 +14,7 @@
   "exclude": [
     "apps/desktop/runtime",
     "apps/desktop/release",
-    "apps/desktop/tauri-pilot/target",
+    "apps/desktop/src-tauri/target",
     "**/dist",
     "**/node_modules"
   ],

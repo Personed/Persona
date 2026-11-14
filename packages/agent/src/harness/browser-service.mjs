@@ -134,7 +134,6 @@ export async function openBrowserService(directory, home) {
   );
   Object.assign(env, {
     HOME: home,
-    ELECTRON_RUN_AS_NODE: "1",
     AGENT_BROWSER_CONFIG: config,
     AGENT_BROWSER_SESSION: session,
     AGENT_BROWSER_SOCKET_DIR: socket,

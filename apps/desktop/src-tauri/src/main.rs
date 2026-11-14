@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::{
     io::{BufRead, BufReader, Read, Write},
     process::ChildStdin,
@@ -142,13 +144,7 @@ fn run_supervisor(
         Ordering::SeqCst,
     );
     if !remote && let Some(window) = app.get_webview_window("setup") {
-        let title = if local_runtime == "docker" {
-            "Configurar Persona — piloto Docker persistente isolado"
-        } else if persistent {
-            "Configurar Persona — piloto persistente isolado"
-        } else {
-            "Configurar Persona — piloto temporário"
-        };
+        let title = "Configurar Persona";
         let _ = window.set_title(title);
     }
     let label = if remote { "remote" } else { "pilot" };
@@ -163,7 +159,7 @@ fn run_supervisor(
     let mut failure_message = if remote {
         "Não foi possível conectar ao Persona.".to_string()
     } else {
-        "Não foi possível preparar o serviço local isolado do piloto.".to_string()
+        "Não foi possível iniciar o serviço local do Persona.".to_string()
     };
     let mut opened = false;
     let mut pending_bootstrap = None;
@@ -173,9 +169,9 @@ fn run_supervisor(
         if remote {
             "Verificando servidor…"
         } else if local_runtime == "docker" {
-            "Preparando perfil Docker persistente e isolado do piloto…"
+            "Preparando ambiente Docker…"
         } else if persistent {
-            "Iniciando serviço persistente isolado do piloto…"
+            "Iniciando serviço local…"
         } else {
             "Iniciando serviço local temporário…"
         },
@@ -294,8 +290,6 @@ fn run_supervisor(
                             remote_name.clone()
                         } else if docker {
                             desktop::LOCAL_DOCKER_NAME.into()
-                        } else if persistent {
-                            "Este computador (piloto persistente isolado)".into()
                         } else {
                             desktop::LOCAL_NAME.into()
                         },
@@ -335,7 +329,7 @@ fn run_supervisor(
                             && target.as_str() == "about:blank"))
                 })
                 .on_new_window(move |url, _| {
-                    if remote { remote::open_external(url); }
+                    remote::open_external(url);
                     NewWindowResponse::Deny
                 })
                 .on_permission_request(|_, _| PermissionResponse::Deny)
@@ -477,9 +471,9 @@ fn run_supervisor(
                 if remote {
                     "Conexão pronta."
                 } else if docker {
-                    "Piloto Docker persistente isolado pronto. Dados separados do Electron."
+                    "Ambiente Docker pronto."
                 } else if persistent {
-                    "Piloto persistente isolado pronto. Dados separados do Electron."
+                    "Serviço local pronto."
                 } else {
                     "Serviço local temporário pronto."
                 },
@@ -627,8 +621,7 @@ fn allows_navigation(internal: &Url, target: &Url) -> bool {
 
 fn persistent_local() -> bool {
     let args: Vec<_> = std::env::args().collect();
-    args.iter().any(|arg| arg == "--persistent-local")
-        && !startup_check::enabled()
+    !startup_check::enabled()
         && !args.iter().any(|arg| {
             arg == "--smoke-test" || arg.ends_with("-smoke-test") || arg == "--native-death-test"
         })
@@ -787,7 +780,7 @@ fn main() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("failed to run the isolated Persona Tauri pilot");
+        .expect("failed to run Persona");
     #[cfg(windows)]
     if let Some(primary) = primary.as_mut() {
         primary.listen(app.handle().clone());

@@ -13,13 +13,6 @@ import type {
   ProductTool,
 } from "../../../packages/agent/src/harness/types.ts";
 
-const electronEnv = Object.fromEntries(
-  Object.entries(process.env).filter(
-    (entry): entry is [string, string] =>
-      entry[1] !== undefined && entry[0] !== "ELECTRON_RUN_AS_NODE",
-  ),
-);
-
 test("native desktop input, cursor and conditions use the driver session", async ({
   playwright,
 }) => {
@@ -27,14 +20,16 @@ test("native desktop input, cursor and conditions use the driver session", async
     process.platform !== "win32",
     "Native input needs an interactive desktop and OS permissions",
   );
-  const application = await playwright._electron.launch({
-    args: [fileURLToPath(new URL("./input-entry.mjs", import.meta.url))],
-    env: electronEnv,
+  const application = await playwright.chromium.launch({
+    headless: false,
+    args: [
+      "--force-renderer-accessibility",
+      "--window-position=20,250",
+      "--window-size=600,400",
+    ],
   });
   const directory = await mkdtemp(join(tmpdir(), "persona-input-"));
-  const executable = createRequire(new URL("../package.json", import.meta.url))(
-    "electron",
-  );
+  const executable = process.execPath;
   const worker = new WorkProcess(
     [
       executable,
@@ -62,6 +57,7 @@ test("native desktop input, cursor and conditions use the driver session", async
           bounds: { width: number; height: number };
         }>;
         screenshot_width: number;
+        window_bounds: { x: number; y: number; width: number; height: number };
         elements: Array<{
           label: string;
           element_token: string;
@@ -80,9 +76,19 @@ test("native desktop input, cursor and conditions use the driver session", async
     )),
   });
   try {
-    const page = await application.firstWindow();
+    const page = await application.newPage({
+      viewport: { width: 600, height: 400 },
+    });
+    await page.setContent(
+      "<title>Persona input target</title><input aria-label=\"Song\" autofocus><button onclick=\"document.querySelector('output').textContent=document.querySelector('input').value\">Play</button><output></output>",
+    );
     await expect(page.getByRole("button", { name: "Play" })).toBeVisible();
-    const pid = await application.evaluate(() => process.pid);
+    const browserSession = await application.newBrowserCDPSession();
+    const processes = await browserSession.send("SystemInfo.getProcessInfo");
+    const pid = processes.processInfo.find(
+      (item) => item.type === "browser",
+    )?.id;
+    if (!pid) throw new Error("Browser process required");
     const listed = await call("list_windows", { pid });
     const target = listed.structuredContent.windows.find(
       (item: { title: string }) => item.title === "Persona input target",
@@ -214,9 +220,6 @@ test("native desktop input, cursor and conditions use the driver session", async
       full_output: true,
     });
     expect(observed.isError, JSON.stringify(observed.content)).toBe(false);
-    const field = await page.locator("input").boundingBox();
-    expect(field).toBeTruthy();
-    if (!field) throw new Error("Input bounds required");
     const button = observed.structuredContent.elements.find(
       (item) => item.label === "Play",
     );
@@ -280,26 +283,34 @@ test("native desktop input, cursor and conditions use the driver session", async
     });
     await expect(page.locator("input")).toHaveValue("Checkpoint");
     await call("get_window_state", { ...identity, include_screenshot: false });
-    const scale =
-      observed.structuredContent.screenshot_width /
-      (await page.evaluate(() => innerWidth));
-    await application.evaluate(async ({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]?.minimize();
-      const other = new BrowserWindow({ width: 900, height: 700 });
-      await other.loadURL("data:text/html,<title>Persona other window</title>");
-      other.focus();
+    const pageSession = await page.context().newCDPSession(page);
+    const { windowId } = await pageSession.send("Browser.getWindowForTarget");
+    await pageSession.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: { windowState: "minimized" },
     });
+    const other = await application.newPage();
+    await other.setContent("<title>Persona other window</title>");
+    await other.bringToFront();
     await call("list_windows", {});
     await call("bring_to_front", identity);
-    await call("get_window_state", identity);
+    const foreground = await call("get_window_state", {
+      ...identity,
+      tree_format: "elements",
+      full_output: true,
+    });
+    const field = foreground.structuredContent.elements.find(
+      (item) => item.label === "Song",
+    )?.frame;
+    if (!field) throw new Error("Native input bounds required");
+    const bounds = foreground.structuredContent.window_bounds;
+    const scale = foreground.structuredContent.screenshot_width / bounds.width;
+    const point = {
+      x: (field.x + field.w / 2 - bounds.x) * scale,
+      y: (field.y + field.h / 2 - bounds.y) * scale,
+    };
     for (const [name, args] of [
-      [
-        "click",
-        {
-          x: (field.x + field.width / 2) * scale,
-          y: (field.y + field.height / 2) * scale,
-        },
-      ],
+      ["click", point],
       ["hotkey", { keys: ["ctrl", "a"] }],
       ["type_text", { text: "我这样爱你" }],
       ["press_key", { key: "tab" }],
@@ -313,11 +324,7 @@ test("native desktop input, cursor and conditions use the driver session", async
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
       if (name === "type_text")
         await expect(page.locator("input")).toHaveValue("我这样爱你");
-      expect(
-        await application.evaluate(({ BrowserWindow }) =>
-          BrowserWindow.getFocusedWindow()?.getTitle(),
-        ),
-      ).toBe("Persona input target");
+      expect(await page.evaluate(() => document.hasFocus())).toBe(true);
       const captured = await call("get_window_state", {
         ...identity,
         include_accessibility_tree: false,
@@ -350,10 +357,7 @@ test("native desktop input, cursor and conditions use the driver session", async
       observe: { include_screenshot: true },
       steps: [
         {
-          click: {
-            x: (field.x + field.width / 2) * scale,
-            y: (field.y + field.height / 2) * scale,
-          },
+          click: point,
         },
         { hotkey: { keys: ["ctrl", "a"] } },
         { type_text: { text: "Batch input" } },

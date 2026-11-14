@@ -62,7 +62,6 @@ export async function accountEnvironment(spec, home, source) {
   );
   env.HOME ||= env.USERPROFILE || homedir();
   env.USERPROFILE ||= env.HOME;
-  delete env.ELECTRON_RUN_AS_NODE;
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
   const pathKey =

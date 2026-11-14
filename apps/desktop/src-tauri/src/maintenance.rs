@@ -196,7 +196,7 @@ pub fn validated_profile() -> Result<std::path::PathBuf, String> {
         std::path::PathBuf::from(
             std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA indisponível.")?,
         )
-        .join("app.persona.tauri-pilot")
+        .join("app.persona.desktop")
     } else {
         base.join("target/test-data")
     };
@@ -209,7 +209,7 @@ pub fn validated_docker_profile() -> Result<std::path::PathBuf, String> {
         std::path::PathBuf::from(
             std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA indisponível.")?,
         )
-        .join("app.persona.tauri-pilot")
+        .join("app.persona.desktop")
     } else {
         base.join("target/test-data")
     };

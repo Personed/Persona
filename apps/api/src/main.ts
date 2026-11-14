@@ -3,7 +3,6 @@ import { getRequestListener } from "@hono/node-server";
 import { openHostedRuntime } from "./hosting/runtime.ts";
 
 async function main() {
-  if (process.versions.electron) process.env.ELECTRON_RUN_AS_NODE = "1";
   const runtime = await openHostedRuntime();
   const { config } = runtime;
   const server = createServer(getRequestListener(runtime.app.fetch));

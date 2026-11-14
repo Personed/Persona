@@ -44,7 +44,7 @@ try {
   archive = join(testData, `portable-import-archive-${randomUUID()}.persona`);
   await backupInstallation(source, archive, password);
   const imported = spawnSync(
-    join(base, "persona-tauri-pilot.exe"),
+    join(base, "persona.exe"),
     ["--import-backup", archive],
     {
       cwd: base,

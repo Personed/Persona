@@ -122,7 +122,7 @@ See the [deployment guide](deploy/README.md) for networking, HTTPS, work compute
 [![Node](https://img.shields.io/badge/Node.js-%3E%3D24-brightgreen)](package.json)
 [![pnpm](https://img.shields.io/badge/pnpm-10.20.0-orange)](package.json)
 
-Persona uses TypeScript, React 19, Vite, and Electron. See [AGENTS.md](AGENTS.md) for module ownership and the development workflow.
+Persona uses TypeScript, React 19, Vite, and Tauri 3. See [AGENTS.md](AGENTS.md) for module ownership and the development workflow.
 
 <details>
 <summary>Development and test commands</summary>

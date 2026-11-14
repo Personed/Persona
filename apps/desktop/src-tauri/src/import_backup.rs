@@ -91,6 +91,11 @@ fn read_hidden(password: &mut String) -> io::Result<()> {
 }
 
 pub fn run(archive: &PathBuf) -> Result<(), String> {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
     let script = crate::layout::base().join("import-backup.mjs");
     if !script.is_file() {
         return Err("O importador do piloto não está disponível.".into());

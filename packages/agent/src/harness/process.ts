@@ -58,7 +58,6 @@ export class WorkProcess implements EngineProcess {
     this.child = spawn(program, args, {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
     }) as ChildProcessWithoutNullStreams;
     this.input = new Writable({
       write: (data, _encoding, callback) => {

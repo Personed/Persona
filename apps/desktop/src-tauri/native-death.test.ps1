@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$exe = (Resolve-Path (Join-Path $PSScriptRoot 'target/debug/persona-tauri-pilot.exe')).Path
+$exe = (Resolve-Path (Join-Path $PSScriptRoot 'target/debug/persona.exe')).Path
 $app = [System.Diagnostics.Process]::new()
 $app.StartInfo.FileName = $exe
 $app.StartInfo.Arguments = '--native-death-test'
@@ -15,11 +15,11 @@ try {
         throw 'Native cookie verification did not complete'
     }
     $supervisor = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($app.Id)" | Where-Object {
-        $_.Name -eq 'node.exe' -and $_.CommandLine -like '*tauri-pilot*supervisor.mjs*'
+        $_.Name -eq 'node.exe' -and $_.CommandLine -like '*src-tauri*supervisor.mjs*'
     })
     if ($supervisor.Count -ne 1) { throw 'Expected exactly one owned supervisor' }
     $service = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($supervisor[0].ProcessId)" | Where-Object {
-        $_.Name -eq 'node.exe' -and $_.CommandLine -like '*tauri-pilot*service-child.mjs*'
+        $_.Name -eq 'node.exe' -and $_.CommandLine -like '*src-tauri*service-child.mjs*'
     })
     if ($service.Count -ne 1) { throw 'Expected exactly one owned service' }
     $owner = Invoke-CimMethod -InputObject $service[0] -MethodName GetOwner

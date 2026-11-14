@@ -17,7 +17,6 @@ import { closeMcpClients, mcpOperation } from "./mcp-client.mjs";
 import { nativeCheckpoint, nativeHistory } from "./native-history.mjs";
 import { nativeMcp } from "./native-mcp.mjs";
 
-delete process.env.ELECTRON_RUN_AS_NODE;
 const accountEnv = { ...process.env };
 
 let child;

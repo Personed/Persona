@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import {
   chmod,
@@ -10,7 +9,6 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:http";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -458,41 +456,23 @@ test("a work computer discovers desktop tools from its own runtime", async () =>
 });
 
 test.runIf(globalThis.process.platform === "win32")(
-  "desktop launches an Electron application in its GUI runtime",
+  "desktop launches an installed program",
   async () => {
     const { process, directory } = await worker();
     const entry = join(directory, "application.cjs");
     const ready = join(directory, "application-ready.txt");
     await writeFile(
       entry,
-      `const { app } = require("electron");
-app.whenReady().then(() => {
-  require("node:fs").writeFileSync(${JSON.stringify(ready)}, "ready");
-  app.quit();
-});`,
+      `require("node:fs").writeFileSync(${JSON.stringify(ready)}, "ready");`,
     );
-    const electron = createRequire(
-      new URL("../../../apps/desktop/package.json", import.meta.url),
-    )("electron") as string;
-    const elevated =
-      execFileSync(
-        "powershell.exe",
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
-        ],
-        { encoding: "utf8", windowsHide: true },
-      ).trim() === "True";
     const launched = await process.computer<ProductResult>({
       operation: "call",
       service: "desktop",
       name: "launch_app",
       arguments: {
-        path: electron,
+        path: globalThis.process.execPath,
         additional_arguments: [entry],
-        start_minimized: elevated,
+        start_minimized: true,
       },
     });
     expect(launched.isError, JSON.stringify(launched.content)).not.toBe(true);

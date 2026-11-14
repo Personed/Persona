@@ -11,7 +11,7 @@ export const dataDirectory = installed
         (() => {
           throw new Error("LOCALAPPDATA unavailable");
         })(),
-      "app.persona.tauri-pilot",
+      "app.persona.desktop",
     )
   : fileURLToPath(new URL("./target/test-data/", import.meta.url));
 

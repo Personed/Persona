@@ -124,7 +124,7 @@ sh deploy/install.sh
 [![Node](https://img.shields.io/badge/Node.js-%3E%3D24-brightgreen)](package.json)
 [![pnpm](https://img.shields.io/badge/pnpm-10.20.0-orange)](package.json)
 
-Persona 使用 TypeScript、React 19、Vite 和 Electron。模块职责与开发流程见 [AGENTS.md](AGENTS.md)。
+Persona 使用 TypeScript、React 19、Vite 和 Tauri 3。模块职责与开发流程见 [AGENTS.md](AGENTS.md)。
 
 <details>
 <summary>开发与测试命令</summary>

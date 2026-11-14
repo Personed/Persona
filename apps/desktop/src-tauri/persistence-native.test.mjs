@@ -60,8 +60,8 @@ test("native persistent pilot: synthetic application record survives complete ex
     ])
       await copyFile(new URL(name, import.meta.url), join(directory, name));
     await copyFile(
-      new URL("./target/debug/persona-tauri-pilot.exe", import.meta.url),
-      join(directory, "persona-tauri-pilot.exe"),
+      new URL("./target/debug/persona.exe", import.meta.url),
+      join(directory, "persona.exe"),
     );
     await copyFile(process.execPath, join(directory, "node.exe"));
     await writeFile(join(directory, "portable-test.json"), "{}\n", {
@@ -75,7 +75,7 @@ test("native persistent pilot: synthetic application record survives complete ex
     await writeFixtureLayout(directory);
     for (const phase of ["write", "read"]) {
       const child = spawn(
-        join(directory, "persona-tauri-pilot.exe"),
+        join(directory, "persona.exe"),
         ["--persistent-local", `--persistence-${phase}-test`],
         { cwd: directory, stdio: ["ignore", "pipe", "pipe"] },
       );

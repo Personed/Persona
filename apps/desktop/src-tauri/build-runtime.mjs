@@ -4,6 +4,7 @@ import { createRequire, stripTypeScriptTypes } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { desktopBinary } from "../../../packages/agent/src/harness/desktop-driver.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const require = createRequire(join(root, "apps/desktop/package.json"));
@@ -163,20 +164,9 @@ export async function buildRuntime(runtime) {
     "node_modules/@persona/agent/src/harness/cua-driver",
   );
   await mkdir(driver, { recursive: true });
-  // Only use already installed native binaries; never trigger desktopBinary's download fallback.
-  const version = JSON.parse(
-    await readFile(
-      join(root, "packages/agent/node_modules/@trycua/cua-driver/package.json"),
-      "utf8",
-    ),
-  ).version;
+  const binary = await desktopBinary(homedir());
   for (const name of ["cua-driver.exe", "cua-cursor-theme.exe"]) {
-    const source = join(
-      homedir(),
-      ".persona/runtimes/cua-driver",
-      version,
-      name,
-    );
+    const source = join(dirname(binary), name);
     await access(source);
     await cp(source, join(driver, name));
   }

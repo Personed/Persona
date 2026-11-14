@@ -52,7 +52,7 @@ pub fn configure() -> Result<(), String> {
         resources.join("target/test-data")
     } else if installed {
         PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA unavailable")?)
-            .join("app.persona.tauri-pilot")
+            .join("app.persona.desktop")
     } else {
         development_data()
     };

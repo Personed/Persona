@@ -80,7 +80,7 @@ export async function readPassword(input = process.stdin) {
 
 async function main() {
   if (process.argv.length !== 3)
-    throw new Error("Use: persona-tauri-pilot.exe --import-backup <arquivo>");
+    throw new Error("Use: persona.exe --import-backup <arquivo>");
   const password = await readPassword();
   await importPilotBackup(process.argv[2], password);
   console.log("Backup importado no perfil isolado do piloto.");

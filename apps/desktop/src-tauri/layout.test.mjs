@@ -43,7 +43,7 @@ test("installed resources and pilot-owned data remain separate; portable stays a
     const installed = inspect();
     assert.equal(
       installed.dataDirectory,
-      join(root, "synthetic-appdata", "app.persona.tauri-pilot"),
+      join(root, "synthetic-appdata", "app.persona.desktop"),
     );
     assert.equal(installed.portable, true);
     assert.equal(
