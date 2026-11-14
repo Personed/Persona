@@ -32,6 +32,26 @@
             "allow-setup-cancel",
             "allow-setup-docker"
           ]
+        },
+        {
+          "identifier": "local-maintenance",
+          "local": true,
+          "webviews": ["maintenance"],
+          "permissions": [
+            "allow-maintenance-state",
+            "allow-maintenance-start",
+            "allow-maintenance-cancel"
+          ]
+        },
+        {
+          "identifier": "local-preparation",
+          "local": true,
+          "webviews": ["preparation"],
+          "permissions": [
+            "allow-preparation-state",
+            "allow-preparation-start",
+            "allow-preparation-cancel"
+          ]
         }
       ]
     }

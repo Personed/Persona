@@ -189,6 +189,36 @@ test("Docker work template backup archives read-only and restores into a new vol
   }
 });
 
+test("staging validation fails before Docker volume creation or publication", async () => {
+  const f = await fixture("source-volume");
+  mocks.volumes.add("source-volume");
+  try {
+    const archive = join(f.directory, "backup.persona");
+    await backupInstallation(f.root, archive, "synthetic-password");
+    mocks.calls.length = 0;
+    const restored = join(f.directory, "restored");
+    await expect(
+      restoreInstallation(archive, restored, "synthetic-password", {
+        requireProcessComputer: true,
+        async validateInstallation(staged) {
+          expect(
+            await readFile(join(staged, "data", "artifact.txt"), "utf8"),
+          ).toBe("synthetic work");
+          throw new Error("invalid pilot marker");
+        },
+      }),
+    ).rejects.toThrow("invalid pilot marker");
+    expect(mocks.calls).toEqual([]);
+    expect([...mocks.volumes]).toEqual(["source-volume"]);
+    await expect(
+      readFile(join(restored, "persona.config.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+    await rm(f.tarDirectory, { recursive: true, force: true });
+  }
+});
+
 test("remote Docker work template backup is rejected", async () => {
   const f = await fixture("remote-volume");
   const archive = join(f.directory, "backup.persona");
@@ -245,5 +275,110 @@ test("Docker work template without a source volume restores a fresh unmapped vol
   } finally {
     await rm(f.directory, { recursive: true, force: true });
     await rm(f.tarDirectory, { recursive: true, force: true });
+  }
+});
+
+test("Docker controller-template backup is validated before volume creation and restores to a new volume", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "persona-controller-template-backup-"),
+  );
+  const root = join(directory, "profile");
+  await mkdir(join(root, "data"), { recursive: true });
+  const id = "team-0123456789ab";
+  const workComputer = {
+    kind: "controller",
+    id,
+    endpoint: "http://controller:4311",
+    credentialFile: "/control/controller-token",
+    network: "none",
+    timeoutSeconds: 120,
+  };
+  const template = {
+    kind: "docker",
+    id,
+    image: "fixture:1",
+    volume: `persona-${id}-work`,
+    network: "none",
+    cpus: 2,
+    memoryMiB: 1024,
+    pids: 256,
+    timeoutSeconds: 120,
+  };
+  await writeFile(
+    join(root, "persona.config.json"),
+    JSON.stringify({
+      host: "127.0.0.1",
+      port: 4310,
+      dataDir: "data",
+      deployment: "container",
+      computer: { kind: "process" },
+      workComputer,
+    }),
+  );
+  await writeFile(
+    join(root, "controller.json"),
+    JSON.stringify({
+      host: "0.0.0.0",
+      port: 4311,
+      credentialFile: "controller-token",
+      computer: template,
+    }),
+  );
+  mocks.volumes.add(template.volume);
+  const archive = join(directory, "backup.persona");
+  try {
+    await backupInstallation(root, archive, "synthetic-password", {
+      includeControllerTemplate: true,
+    });
+    expect(
+      mocks.calls.some(
+        (call) =>
+          call.args[0] === "run" &&
+          call.args.includes("cf") &&
+          call.args.includes(
+            `type=volume,source=${template.volume},target=/home/persona,readonly`,
+          ),
+      ),
+    ).toBe(true);
+
+    mocks.calls.length = 0;
+    const restored = join(directory, "restored");
+    await expect(
+      restoreInstallation(archive, restored, "synthetic-password", {
+        requirePilotDockerProfile: true,
+        async validateInstallation(staged, _config, computers, manifest) {
+          expect(computers).toEqual([]);
+          expect(
+            JSON.parse(
+              await readFile(join(staged, "persona.config.json"), "utf8"),
+            ).dataDir,
+          ).toBe(join(restored, "data"));
+          expect(manifest).toMatchObject({
+            workComputer: { archive: "work-computer.tar" },
+          });
+          throw new Error("synthetic incompatible image");
+        },
+      }),
+    ).rejects.toThrow("synthetic incompatible image");
+    expect(mocks.calls).toEqual([]);
+    expect([...mocks.volumes]).toEqual([template.volume]);
+
+    await restoreInstallation(archive, restored, "synthetic-password", {
+      requirePilotDockerProfile: true,
+      async validateInstallation() {},
+    });
+    const config = JSON.parse(
+      await readFile(join(restored, "persona.config.json"), "utf8"),
+    );
+    const controller = JSON.parse(
+      await readFile(join(restored, "controller.json"), "utf8"),
+    );
+    expect(config.workComputer.id).not.toBe(id);
+    expect(controller.computer.id).toBe(config.workComputer.id);
+    expect(controller.computer.volume).not.toBe(template.volume);
+    expect(mocks.volumes.has(template.volume)).toBe(true);
+    expect(mocks.volumes.has(controller.computer.volume)).toBe(true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });

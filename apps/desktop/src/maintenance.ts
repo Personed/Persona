@@ -14,7 +14,7 @@ export async function maintain(
   const { action, password } = z
     .object({
       action: z.enum(["backup", "restore"]),
-      password: z.string().min(12).max(1024),
+      password: z.string().min(12),
     })
     .parse(input);
   const file =

@@ -23,8 +23,14 @@ for (const entry of [
   "web/index.html",
   "node_modules/@persona/agent/src/harness/worker.mjs",
   "node_modules/@persona/hosting/src/instance.ts",
+  "node_modules/@persona/hosting/src/stack.ts",
+  "node_modules/@persona/hosting/src/install.ts",
   "node_modules/@persona/hosting/src/maintenance.ts",
   "node_modules/zod/package.json",
+  "release.json",
+  "work/deploy/workspace.Dockerfile",
+  "work/deploy/proxy.Dockerfile",
+  "work/packages/agent/src/harness/worker.mjs",
 ]) {
   await access(join(runtime, entry)).catch(() => {
     throw new Error(`Fresh pilot runtime is missing ${entry}.`);
@@ -48,6 +54,8 @@ await cp(process.execPath, join(destination, "node.exe"));
 for (const entry of [
   "layout.mjs",
   "supervisor.mjs",
+  "docker-profile.mjs",
+  "docker-service.mjs",
   "service.mjs",
   "service-child.mjs",
   "service-transport.mjs",
@@ -64,6 +72,22 @@ for (const entry of [
 }
 for (const entry of ["import-backup.mjs", "portable-import-smoke.mjs"])
   await buildPilotBundle(join(base, entry), join(destination, entry));
+await buildPilotBundle(
+  join(base, "prepare-docker.mjs"),
+  join(destination, "prepare-docker.mjs"),
+);
+await cp(
+  join(base, "maintenance-worker.mjs"),
+  join(destination, "maintenance-worker.mjs"),
+);
+await cp(
+  join(base, "maintenance-protocol.mjs"),
+  join(destination, "maintenance-protocol.mjs"),
+);
+await buildPilotBundle(
+  join(base, "maintenance-operation.mjs"),
+  join(destination, "maintenance-operation.mjs"),
+);
 await writeFile(
   join(destination, "portable-test.json"),
   JSON.stringify({

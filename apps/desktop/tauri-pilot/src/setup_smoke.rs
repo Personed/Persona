@@ -102,13 +102,13 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
         }
         setup.eval("window.__frameBlocked=false; window.addEventListener('securitypolicyviolation',e=>{if(e.effectiveDirective==='frame-src')window.__frameBlocked=true}); const frame=document.createElement('iframe');frame.src='setup.html';document.body.append(frame)").map_err(|e| e.to_string())?;
         wait(&setup, "window.__frameBlocked === true")?;
-        setup.eval("document.querySelector('iframe').remove(); document.querySelector('[name=runtime][value=docker]').checked=true; document.querySelector('#setup').requestSubmit()").map_err(|e| e.to_string())?;
+        setup.eval("document.querySelector('iframe').remove(); const runtime=document.querySelector('[name=runtime][value=docker]'); runtime.value='unsupported'; runtime.checked=true; document.querySelector('#setup').requestSubmit()").map_err(|e| e.to_string())?;
         wait(
             &setup,
-            "!document.querySelector('#error').hidden && document.querySelector('#error').textContent.includes('somente execução nativa') && !document.querySelector('#continue').disabled",
+            "!document.querySelector('#error').hidden && document.querySelector('#error').textContent.includes('Escolha execução nativa ou Docker') && !document.querySelector('#continue').disabled",
         )?;
         if state.active.lock().unwrap().is_some() {
-            return Err("unsupported runtime started service".into());
+            return Err("invalid runtime started service".into());
         }
         setup.eval("window.__cancelOnce=true; personaSetup.progress(p=>{if(p.phase==='session' && window.__cancelOnce){window.__cancelOnce=false;document.querySelector('#cancel').click()}}); document.querySelector('[name=runtime][value=native]').checked=true; document.querySelector('#setup').requestSubmit()").map_err(|e| e.to_string())?;
         wait(
@@ -119,7 +119,7 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
             return Err("cancel returned before process settle".into());
         }
         println!(
-            "pilot: setup DOM/CSS loaded; navigation/frame CSP/cross-window denied; argument error and cancellation rendered; process settled"
+            "pilot: setup DOM/CSS loaded; navigation/frame CSP/cross-window denied; invalid runtime and cancellation rendered; process settled"
         );
         setup
             .eval("document.querySelector('#setup').requestSubmit()")
@@ -147,6 +147,42 @@ pub fn run(app: tauri::AppHandle, state: Arc<crate::setup::Setup>) {
         if desktop["value"]["mode"] != "local" {
             return Err(format!("desktop state mismatch: {desktop}"));
         }
+        pilot.eval("window.__probe='pending'; window.__TAURI_INTERNALS__.invoke('preparation_start').then(()=>window.__probe='allowed',()=>window.__probe='denied')").map_err(|e| e.to_string())?;
+        wait(&pilot, "window.__probe === 'denied'")?;
+        pilot.eval("window.__prepare='pending'; window.personaDesktop.prepare().then(result=>window.__prepare=JSON.stringify(result),error=>window.__prepare='rejected:'+String(error))").map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let preparation = loop {
+            if let Some(window) = app.get_webview_window("preparation") {
+                break window;
+            }
+            if Instant::now() >= deadline {
+                return Err("missing native preparation window".into());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        wait(
+            &preparation,
+            "document.readyState === 'complete' && !!window.personaPreparation",
+        )?;
+        preparation.eval("window.__state='pending';window.personaPreparation.state().then(result=>window.__state=JSON.stringify(result),()=>window.__state='denied')").map_err(|e| e.to_string())?;
+        wait(&preparation, "window.__state !== 'pending'")?;
+        let preparation_state = read(&preparation, "window.__state")?;
+        let preparation_state: serde_json::Value =
+            serde_json::from_str(preparation_state.as_str().unwrap_or_default())
+                .map_err(|e| e.to_string())?;
+        if preparation_state["value"]["status"] != "idle" {
+            return Err(format!("preparation state mismatch: {preparation_state}"));
+        }
+        preparation.eval("window.__cancel='pending';window.personaPreparation.cancel().then(result=>window.__cancel=JSON.stringify(result),()=>window.__cancel='denied')").map_err(|e| e.to_string())?;
+        wait(&preparation, "window.__cancel !== 'pending'")?;
+        wait(&pilot, "window.__prepare !== 'pending'")?;
+        let prepare = read(&pilot, "window.__prepare")?;
+        let prepare: serde_json::Value = serde_json::from_str(prepare.as_str().unwrap_or_default())
+            .map_err(|e| e.to_string())?;
+        if prepare["ok"] != false || prepare["cancelled"] != true {
+            return Err(format!("preparation cancellation mismatch: {prepare}"));
+        }
+        preparation.close().map_err(|e| e.to_string())?;
         pilot.eval("window.__appearance='pending';window.personaDesktop.appearance('dark').then(result=>window.__appearance=result.ok?'ok':'error',()=>window.__appearance='denied')").map_err(|e| e.to_string())?;
         wait(&pilot, "window.__appearance === 'ok'")?;
         let before = state.accepted.load(Ordering::SeqCst);

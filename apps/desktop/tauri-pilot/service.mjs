@@ -1,4 +1,5 @@
 import { fork } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
   lstat,
@@ -6,26 +7,27 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { portable, staticDirectory } from "./layout.mjs";
+import { dataDirectory, portable, staticDirectory } from "./layout.mjs";
 import { stopOwnedChild } from "./stop-child.mjs";
 
 export async function assertNoLinks(path, recursive = false) {
   const stat = await lstat(path);
-  if (stat.isSymbolicLink())
-    throw new Error("Test profile contains a symbolic link");
+  if (stat.isSymbolicLink() || (stat.isFile() && stat.nlink > 1))
+    throw new Error("Test profile contains a symbolic link or hard link");
   if (recursive && stat.isDirectory())
     for (const name of await readdir(path))
       await assertNoLinks(join(path, name), true);
 }
 
-async function testBase() {
-  const base = fileURLToPath(new URL("./target/test-data/", import.meta.url));
+async function testBase(directory = dataDirectory) {
+  const base = directory;
   for (let path = base; ; path = dirname(path)) {
     try {
       await assertNoLinks(path);
@@ -99,13 +101,73 @@ export async function startTestService() {
 
 export const pilotProfileMarker = "persona-tauri-pilot-local-v1\n";
 
-export async function pilotProfilePaths() {
-  const base = await testBase();
+const profileName =
+  /^pilot-local-(?:v1|restore-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+
+export async function pilotProfilePaths(directory = dataDirectory) {
+  const base = await testBase(directory);
+  let name = "pilot-local-v1";
+  const selectionPath = join(base, "pilot-local-current.json");
+  try {
+    await assertNoLinks(selectionPath);
+    const selection = JSON.parse(await readFile(selectionPath, "utf8"));
+    if (
+      typeof selection.profile !== "string" ||
+      !profileName.test(selection.profile)
+    )
+      throw new Error("The selected pilot profile is invalid");
+    name = selection.profile;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  return profilePaths(base, name);
+}
+
+export async function newPilotProfilePaths(directory = dataDirectory) {
+  const base = await testBase(directory);
+  return profilePaths(base, `pilot-local-restore-${randomUUID()}`);
+}
+
+function profilePaths(base, name) {
   return {
     base,
-    directory: join(base, "pilot-local-v1"),
-    lock: join(base, "pilot-local-v1.lock"),
+    directory: join(base, name),
+    lock: join(base, `${name}.lock`),
   };
+}
+
+export async function selectPilotProfile(
+  directory,
+  baseDirectory = dataDirectory,
+) {
+  const base = await testBase(baseDirectory);
+  const target = resolve(directory);
+  const name = basename(target);
+  if (dirname(target) !== resolve(base) || !profileName.test(name))
+    throw new Error("Invalid pilot profile selection");
+  await assertNoLinks(target, true);
+  if (
+    (await readFile(join(target, "pilot-profile"), "utf8")) !==
+    pilotProfileMarker
+  )
+    throw new Error("Not an isolated pilot profile");
+  const selection = join(base, "pilot-local-current.json");
+  try {
+    await assertNoLinks(selection);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const pending = `${selection}.${randomUUID()}.pending`;
+  try {
+    await writeFile(pending, JSON.stringify({ profile: name }), {
+      flag: "wx",
+      mode: 0o600,
+    });
+    await rename(pending, selection);
+  } finally {
+    await rm(pending, { force: true });
+  }
+  return profilePaths(base, name);
 }
 
 async function startLockedPersistentProfile(directory, lock) {
@@ -187,6 +249,15 @@ async function savedProfile(directory) {
   }
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Invalid imported profile configuration");
+  if (
+    (value.computer !== undefined && value.computer?.kind !== "process") ||
+    (value.deployment !== undefined && value.deployment !== "native") ||
+    value.publicUrl !== undefined ||
+    value.desktopCredentialFile !== undefined ||
+    (value.host !== undefined &&
+      !["127.0.0.1", "localhost", "::1"].includes(value.host))
+  )
+    throw new Error("Imported profile is incompatible with the local pilot");
   return value;
 }
 
@@ -246,13 +317,13 @@ async function startService(directory, retain) {
     await writeFile(
       config,
       JSON.stringify({
+        ...profile,
         ...(model ? { model } : {}),
         ...(workComputer ? { workComputer } : {}),
         host: "127.0.0.1",
         port,
         dataDir: join(directory, "data"),
         staticDir: fileURLToPath(staticDirectory),
-        computer: { kind: "process" },
       }),
       { flag: retain ? "w" : "wx" },
     );

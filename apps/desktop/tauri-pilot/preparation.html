@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src ipc: http://ipc.localhost; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>Preparar imagens</title>
+    <link rel="stylesheet" href="preparation.css">
+    <script src="preparation-bridge.js"></script>
+    <script src="preparation.js" defer></script>
+  </head>
+  <body>
+    <main class="preparation" aria-labelledby="title">
+      <div class="eyebrow"><span class="eyebrow-mark" aria-hidden="true"></span> PERSONA · CONFIGURAÇÃO</div>
+      <h1 id="title">Preparar imagens do Docker</h1>
+      <p class="intro">Antes de continuar, precisamos deixar as imagens necessárias prontas neste computador.</p>
+
+      <section class="notice" aria-label="O que acontecerá">
+        <span class="notice-mark" aria-hidden="true">i</span>
+        <p>Esta ação verificará se o Docker está disponível e poderá baixar ou construir imagens. O estado do daemon do Docker não será revertido se a preparação for cancelada ou falhar.</p>
+      </section>
+
+      <section class="progress-card" aria-label="Andamento da preparação">
+        <div class="status-line">
+          <span class="status-indicator" id="indicator" aria-hidden="true"></span>
+          <p id="status" role="status" aria-live="polite" aria-atomic="true">Verificando o estado da preparação…</p>
+        </div>
+        <div class="progress-track" id="progress-track" hidden aria-hidden="true"><span></span></div>
+      </section>
+
+      <div class="actions">
+        <button class="button button-primary" id="start" type="button" disabled>Preparar imagens</button>
+        <button class="button button-secondary" id="cancel" type="button" hidden>Cancelar</button>
+      </div>
+      <p class="error" id="error" role="alert" aria-live="assertive" hidden></p>
+      <p class="footnote">Você pode acompanhar o andamento aqui. Não feche esta janela durante a preparação.</p>
+    </main>
+  </body>
+</html>

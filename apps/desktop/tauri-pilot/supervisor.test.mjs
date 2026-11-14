@@ -9,6 +9,8 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
@@ -38,6 +40,77 @@ function supervisor(
     child.stdin.write(`${JSON.stringify({ type, ...value })}\n`);
   return { child, next, exited, send, frames, stdout: () => stdout };
 }
+
+test("private protocol routes Docker selection, reports progress, and verifies local pairing without Docker", {
+  timeout: 30_000,
+}, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "persona-docker-supervisor-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const server = createServer((request, response) => {
+    if (request.url !== "/hosting/session") {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ device: { scope: "admin" } }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const token = "b".repeat(64);
+  for (const name of [
+    "supervisor.mjs",
+    "layout.mjs",
+    "service.mjs",
+    "service-child.mjs",
+    "service-transport.mjs",
+    "stop-child.mjs",
+    "local-session.mjs",
+  ])
+    await copyFile(new URL(name, import.meta.url), join(directory, name));
+  await writeFile(
+    join(directory, "docker-service.mjs"),
+    `export async function startPilotDockerService({progress}) {
+      progress({phase:"checking",message:"Synthetic Docker check"});
+      return {
+        origin:${JSON.stringify(origin)},
+        pair:async()=>({token:${JSON.stringify(token)},expires:Date.now()+60000}),
+        exited:new Promise(()=>{}),
+        stop:async()=>({graceful:true,cleanup:false})
+      };
+    }\n`,
+  );
+
+  const control = supervisor(join(directory, "supervisor.mjs"));
+  try {
+    control.send("start", { runtime: "docker", persistent: true });
+    assert.deepEqual(await control.next(), {
+      type: "progress",
+      phase: "checking",
+      message: "Synthetic Docker check",
+    });
+    const ready = await control.next();
+    assert.equal(ready.type, "ready");
+    assert.equal(ready.origin, origin);
+    assert.equal(ready.token, token);
+    assert.equal("servicePid" in ready, false);
+    control.send("stop");
+    assert.deepEqual(await control.next(), {
+      type: "stopped",
+      mode: "graceful",
+      cleanup: false,
+    });
+    assert.deepEqual(await control.exited, [0, null]);
+  } finally {
+    if (control.child.exitCode === null) {
+      control.child.stdin.end();
+      await control.exited;
+    }
+    server.close();
+  }
+});
 
 test("private pipes: owned service readiness, pairing, cookie auth, idempotent stop", {
   timeout: 120_000,
@@ -99,6 +172,8 @@ test("persistent pilot workflow survives separate supervisor/backend launches in
   try {
     for (const name of [
       "supervisor.mjs",
+      "docker-profile.mjs",
+      "docker-service.mjs",
       "service.mjs",
       "service-child.mjs",
       "service-transport.mjs",
@@ -106,10 +181,10 @@ test("persistent pilot workflow survives separate supervisor/backend launches in
       "local-session.mjs",
     ])
       await copyFile(new URL(name, import.meta.url), join(directory, name));
-    // Only module location is isolated; both launches run the actual backend.
+    // Isolate profile storage while both launches run the actual backend.
     await writeFile(
       join(directory, "layout.mjs"),
-      `export * from ${JSON.stringify(new URL("./layout.mjs", import.meta.url).href)};\n`,
+      `export * from ${JSON.stringify(new URL("./layout.mjs", import.meta.url).href)};\nexport const dataDirectory = ${JSON.stringify(join(directory, "target/test-data"))};\n`,
     );
     const script = join(directory, "supervisor.mjs");
     const launch = () => {

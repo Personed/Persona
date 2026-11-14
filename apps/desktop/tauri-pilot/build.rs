@@ -30,6 +30,19 @@ fn main() {
         "cargo:rustc-env=PERSONA_FRAME_DARK={}",
         theme["dark"].as_str().unwrap()
     );
+    for name in [
+        "preparation.html",
+        "preparation.css",
+        "preparation.js",
+        "preparation-bridge.js",
+        "maintenance.html",
+        "maintenance.css",
+        "maintenance.js",
+        "maintenance-bridge.js",
+    ] {
+        println!("cargo:rerun-if-changed={name}");
+        std::fs::copy(name, output.join(name)).unwrap();
+    }
     println!("cargo:rerun-if-changed=../src/setup.html");
     let source = std::fs::read_to_string("../src/setup.html").unwrap();
     assert!(
@@ -67,6 +80,14 @@ fn main() {
             "desktop_state",
             "desktop_appearance",
             "desktop_menu",
+            "desktop_prepare",
+            "preparation_state",
+            "preparation_start",
+            "preparation_cancel",
+            "desktop_maintain",
+            "maintenance_state",
+            "maintenance_start",
+            "maintenance_cancel",
         ]),
     ))
     .unwrap();

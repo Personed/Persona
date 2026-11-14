@@ -10,6 +10,7 @@ use tauri::{
 /// The local environment is a singleton in the pilot, so its id is stable.
 pub const LOCAL_ID: &str = "00000000-0000-4000-8000-000000000000";
 pub const LOCAL_NAME: &str = "Este computador (temporário)";
+pub const LOCAL_DOCKER_NAME: &str = "Este computador (Docker)";
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Instance {
@@ -40,7 +41,10 @@ impl Instance {
         if id.is_empty() || id.len() > 64 || name.is_empty() || name.len() > 80 {
             return None;
         }
-        if runtime != "native" {
+        if !matches!(
+            (mode, runtime),
+            ("local", "native" | "docker") | ("existing", "native")
+        ) {
             return None;
         }
         let parsed = tauri::Url::parse(url).ok()?;
@@ -86,7 +90,7 @@ impl Default for Desktop {
             current: Mutex::new(None),
             instances: Mutex::new(Vec::new()),
             selected: Mutex::new(None),
-            directory: crate::layout::base().join("target/test-data/desktop"),
+            directory: crate::layout::data().join("desktop"),
         }
     }
 }
@@ -178,14 +182,15 @@ impl Desktop {
         self.find(&selected)
     }
 
-    pub fn startup_remote(&self, args: impl Iterator<Item = String>) -> Option<Instance> {
+    pub fn startup_instance(&self, args: impl Iterator<Item = String>) -> Option<Instance> {
         if args.into_iter().any(|arg| {
             arg == "--smoke-test" || arg.ends_with("-smoke-test") || arg == "--native-death-test"
         }) {
             return None;
         }
-        self.selected_instance()
-            .filter(|item| item.mode == "existing")
+        self.selected_instance().filter(|item| {
+            item.mode == "existing" || (item.mode == "local" && item.runtime == "docker")
+        })
     }
 
     pub fn find(&self, id: &str) -> Option<Instance> {
@@ -226,7 +231,7 @@ impl Desktop {
         }
     }
 
-    fn check(&self, window: &tauri::WebviewWindow) -> Result<Target, String> {
+    pub(crate) fn check(&self, window: &tauri::WebviewWindow) -> Result<Target, String> {
         let current = self
             .current
             .lock()
@@ -246,7 +251,7 @@ mod startup_tests {
     use super::*;
 
     #[test]
-    fn startup_restores_only_valid_selected_remote_outside_test_modes() {
+    fn startup_restores_selected_remote_or_docker_outside_test_modes() {
         let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(format!("target/test-data/startup-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
@@ -254,7 +259,7 @@ mod startup_tests {
             directory: directory.clone(),
             ..Desktop::default()
         };
-        assert!(desktop.startup_remote(std::iter::empty()).is_none());
+        assert!(desktop.startup_instance(std::iter::empty()).is_none());
         let remote = serde_json::json!({
             "id": "remote", "name": "Fixture", "mode": "existing", "runtime": "native",
             "url": "http://127.0.0.1:34567"
@@ -270,6 +275,16 @@ mod startup_tests {
                 "local",
                 false,
             ),
+            (
+                serde_json::json!({"id": "docker", "name": "Docker", "mode": "local", "runtime": "docker", "url": "http://127.0.0.1:34567"}),
+                "docker",
+                true,
+            ),
+            (
+                serde_json::json!({"id": "remote-docker", "name": "Invalid", "mode": "existing", "runtime": "docker", "url": "https://example.com"}),
+                "remote-docker",
+                false,
+            ),
         ] {
             std::fs::write(
                 desktop.path(),
@@ -277,8 +292,13 @@ mod startup_tests {
             )
             .unwrap();
             desktop.load();
+            if selected == "docker" {
+                let restored = desktop.selected_instance().unwrap();
+                assert_eq!(restored.runtime, "docker");
+                assert_eq!(restored.name, "Docker");
+            }
             assert_eq!(
-                desktop.startup_remote(std::iter::empty()).is_some(),
+                desktop.startup_instance(std::iter::empty()).is_some(),
                 restores
             );
             for flag in [
@@ -290,7 +310,7 @@ mod startup_tests {
             ] {
                 assert!(
                     desktop
-                        .startup_remote([flag.to_string()].into_iter())
+                        .startup_instance([flag.to_string()].into_iter())
                         .is_none()
                 );
             }
@@ -301,7 +321,7 @@ mod startup_tests {
             ..Desktop::default()
         };
         fresh.load();
-        assert!(fresh.startup_remote(std::iter::empty()).is_none());
+        assert!(fresh.startup_instance(std::iter::empty()).is_none());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
@@ -409,22 +429,31 @@ pub fn bridge_script() -> String {
 /// Grants the desktop commands to one webview, scoped to the exact validated
 /// origin. The pilot windows load from loopback HTTP, which Tauri treats as a
 /// remote origin, so a static local capability never applies to them.
-pub fn grant(app: &tauri::AppHandle, label: &str, origin: &tauri::Url) -> Result<(), String> {
+pub fn grant(
+    app: &tauri::AppHandle,
+    label: &str,
+    origin: &tauri::Url,
+    allow_prepare: bool,
+) -> Result<(), String> {
     let pattern = origin.origin().ascii_serialization();
     // Validate before handing the pattern to Tauri: an invalid pattern panics while resolving.
     pattern
         .parse::<RemoteUrlPattern>()
         .map_err(|_| "Origem inválida.".to_string())?;
-    app.add_capability(
-        CapabilityBuilder::new(format!("desktop-ui-{label}"))
-            .local(false)
-            .remote(pattern)
-            .webview(label)
-            .permission("allow-desktop-state")
-            .permission("allow-desktop-appearance")
-            .permission("allow-desktop-menu"),
-    )
-    .map_err(|_| "Não foi possível conceder acesso à interface local.".to_string())
+    let mut capability = CapabilityBuilder::new(format!("desktop-ui-{label}"))
+        .local(false)
+        .remote(pattern)
+        .webview(label)
+        .permission("allow-desktop-state")
+        .permission("allow-desktop-appearance")
+        .permission("allow-desktop-menu");
+    if allow_prepare {
+        capability = capability
+            .permission("allow-desktop-prepare")
+            .permission("allow-desktop-maintain");
+    }
+    app.add_capability(capability)
+        .map_err(|_| "Não foi possível conceder acesso à interface local.".to_string())
 }
 
 #[tauri::command]
@@ -472,6 +501,7 @@ fn persona_menu<R: tauri::Runtime>(
 ) -> Result<Submenu<R>, String> {
     let mut builder = SubmenuBuilder::new(app, "Persona")
         .text("open-local", "Abrir Persona Local")
+        .text("maintenance", "Backup e restauração do piloto…")
         .text("connect", "Conectar a outro Persona…");
     for instance in instances {
         let item = CheckMenuItem::with_id(
@@ -540,6 +570,13 @@ pub fn desktop_menu(
 
 /// Handles the native menu items that change the environment.
 pub fn menu_event(app: &tauri::AppHandle, id: &str) {
+    if id == "maintenance" {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let _ = crate::maintenance::open(&app);
+        });
+        return;
+    }
     if id == "quit" {
         app.exit(0);
         return;

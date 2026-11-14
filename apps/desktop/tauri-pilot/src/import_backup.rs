@@ -51,9 +51,14 @@ fn read_password() -> Result<String, String> {
     read_hidden(&mut password)
         .map_err(|_| "Não foi possível ler a senha do backup.".to_string())?;
     println!();
+    password_from_line(&password)
+}
+
+fn password_from_line(password: &str) -> Result<String, String> {
     let password = password.trim_end_matches(['\r', '\n']).to_string();
-    if !(12..=1024).contains(&password.chars().count()) {
-        return Err("A senha do backup deve ter entre 12 e 1024 caracteres.".into());
+    // Match the CLI's JavaScript UTF-16 length without capping existing backup passwords.
+    if password.encode_utf16().count() < 12 {
+        return Err("A senha do backup deve ter pelo menos 12 caracteres.".into());
     }
     Ok(password)
 }
@@ -101,6 +106,7 @@ pub fn run(archive: &PathBuf) -> Result<(), String> {
         .stderr(Stdio::inherit());
     for key in [
         "SystemRoot",
+        "LOCALAPPDATA",
         "WINDIR",
         "SystemDrive",
         "PATH",
@@ -144,6 +150,18 @@ pub fn run(archive: &PathBuf) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_passwords_match_cli_length() {
+        for password in ["x".repeat(2048), "😀".repeat(6), "密".repeat(600)] {
+            assert_eq!(
+                password_from_line(&format!("{password}\r\n")).unwrap(),
+                password
+            );
+        }
+        assert!(password_from_line("short").is_err());
+        assert!(password_from_line(&"😀".repeat(5)).is_err());
+    }
 
     #[test]
     fn import_arguments_require_one_archive() {

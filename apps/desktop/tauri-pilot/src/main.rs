@@ -11,7 +11,10 @@ use std::{
 mod desktop;
 mod import_backup;
 mod layout;
+mod maintenance;
+mod maintenance_smoke;
 mod persistence_acceptance;
+mod preparation;
 mod process;
 mod remote;
 mod remote_smoke;
@@ -21,6 +24,7 @@ mod setup_smoke;
 mod single_instance;
 mod startup_check;
 mod switch_smoke;
+mod tray;
 use process::OwnedProcess;
 use tauri::{
     Manager, Url,
@@ -35,6 +39,11 @@ struct Supervisor {
     superseded: AtomicBool,
     stop_at: Mutex<Option<Instant>>,
     cancelled: AtomicBool,
+    shutdown: Mutex<Option<bool>>,
+    persistent: AtomicBool,
+    maintenance_supported: AtomicBool,
+    docker: AtomicBool,
+    profile: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl Supervisor {
@@ -62,17 +71,16 @@ fn read_frame<R: Read>(
 fn wait_frame(
     frames: &Receiver<Result<serde_json::Value, ()>>,
     state: &Supervisor,
-    startup: bool,
+    startup_deadline: Option<Instant>,
     grace: Duration,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let started = Instant::now();
     loop {
         if state
             .stop_at
             .lock()
             .unwrap()
             .is_some_and(|at| at.elapsed() >= grace)
-            || (startup && started.elapsed() >= Duration::from_secs(120))
+            || startup_deadline.is_some_and(|deadline| Instant::now() >= deadline)
         {
             return Err("private supervisor deadline exceeded".into());
         }
@@ -86,6 +94,35 @@ fn wait_frame(
     }
 }
 
+fn shutdown_grace(state: &Supervisor) -> Duration {
+    if state.docker.load(Ordering::SeqCst) {
+        Duration::from_secs(90)
+    } else {
+        Duration::from_secs(40)
+    }
+}
+
+fn wait_startup_frame(
+    frames: &Receiver<Result<serde_json::Value, ()>>,
+    state: &Supervisor,
+    app: &tauri::AppHandle,
+    timeout: Duration,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let frame = wait_frame(frames, state, Some(deadline), shutdown_grace(state))?;
+        if frame["type"] == "progress" {
+            let phase = frame["phase"].as_str().ok_or("invalid progress phase")?;
+            let message = frame["message"]
+                .as_str()
+                .ok_or("invalid progress message")?;
+            setup::progress(app, phase, message);
+            continue;
+        }
+        return Ok(frame);
+    }
+}
+
 fn run_supervisor(
     app: tauri::AppHandle,
     state: Arc<Supervisor>,
@@ -93,9 +130,27 @@ fn run_supervisor(
     desktop: Arc<desktop::Desktop>,
     complete: mpsc::Sender<serde_json::Value>,
     remote_input: Option<serde_json::Value>,
+    local_runtime: String,
 ) {
     let remote = remote_input.is_some();
-    let persistent = !remote && persistent_local();
+    let docker = !remote && local_runtime == "docker";
+    let persistent = !remote && (persistent_local() || docker);
+    state.persistent.store(persistent, Ordering::SeqCst);
+    state.docker.store(docker, Ordering::SeqCst);
+    state.maintenance_supported.store(
+        persistent && matches!(local_runtime.as_str(), "native" | "docker"),
+        Ordering::SeqCst,
+    );
+    if !remote && let Some(window) = app.get_webview_window("setup") {
+        let title = if local_runtime == "docker" {
+            "Configurar Persona — piloto Docker persistente isolado"
+        } else if persistent {
+            "Configurar Persona — piloto persistente isolado"
+        } else {
+            "Configurar Persona — piloto temporário"
+        };
+        let _ = window.set_title(title);
+    }
     let label = if remote { "remote" } else { "pilot" };
     let remote_name = remote_input
         .as_ref()
@@ -117,6 +172,8 @@ fn run_supervisor(
         "start",
         if remote {
             "Verificando servidor…"
+        } else if local_runtime == "docker" {
+            "Preparando perfil Docker persistente e isolado do piloto…"
         } else if persistent {
             "Iniciando serviço persistente isolado do piloto…"
         } else {
@@ -138,7 +195,7 @@ fn run_supervisor(
             if let Some(value) = remote_input {
                 serde_json::json!({"type": "start", "value": value})
             } else {
-                serde_json::json!({"type": "start", "persistent": persistent})
+                serde_json::json!({"type": "start", "persistent": persistent, "runtime": local_runtime})
             }
         )?;
         *state.input.lock().unwrap() = Some(input);
@@ -158,13 +215,27 @@ fn run_supervisor(
         });
         let mut transport_failed = false;
         let startup = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let ready = wait_frame(&frames, &state, true, Duration::from_secs(40))
+            let timeout = if local_runtime == "docker" {
+                Duration::from_secs(63 * 60)
+            } else {
+                Duration::from_secs(120)
+            };
+            let ready = wait_startup_frame(&frames, &state, &app, timeout)
                 .inspect_err(|_| transport_failed = true)?;
             if ready["type"] != "ready" {
-                if remote && let Some(message) = ready["message"].as_str() {
+                if let Some(message) = ready["message"].as_str() {
                     failure_message = message.to_string();
                 }
                 return Err("supervisor did not become ready".into());
+            }
+            if persistent {
+                *state.profile.lock().unwrap() = if local_runtime == "docker" {
+                    maintenance::validated_docker_profile().ok()
+                } else {
+                    maintenance::validated_profile().ok()
+                };
+            } else {
+                *state.profile.lock().unwrap() = None;
             }
             setup::progress(
                 &app,
@@ -179,6 +250,7 @@ fn run_supervisor(
             let native_state = state.clone();
             let native_desktop = desktop.clone();
             let native_setup = setup.clone();
+            let native_runtime = local_runtime.clone();
             let (complete, bootstrap) = mpsc::channel();
             let bootstrap_done = Arc::new(AtomicBool::new(false));
             let worker_done = bootstrap_done.clone();
@@ -207,7 +279,7 @@ fn run_supervisor(
                     if state.stopping.load(Ordering::SeqCst) {
                         return Err("startup cancelled".into());
                     }
-                    desktop::grant(&app, label, &origin)?;
+                    desktop::grant(&app, label, &origin, !remote)?;
                     let url = origin.to_string();
                     let instance = desktop::Instance {
                         id: if remote {
@@ -220,13 +292,19 @@ fn run_supervisor(
                         },
                         name: if remote {
                             remote_name.clone()
+                        } else if docker {
+                            desktop::LOCAL_DOCKER_NAME.into()
                         } else if persistent {
                             "Este computador (piloto persistente isolado)".into()
                         } else {
                             desktop::LOCAL_NAME.into()
                         },
                         mode: if remote { "existing" } else { "local" }.into(),
-                        runtime: "native".into(),
+                        runtime: if remote {
+                            "native".into()
+                        } else {
+                            native_runtime.clone()
+                        },
                         url: url.clone(),
                     };
                     let mut config = app.config().app.windows[0].clone();
@@ -285,6 +363,10 @@ fn run_supervisor(
                     window.on_window_event(move |event| {
                         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                             api.prevent_close();
+                            if tray::enabled() {
+                                let _ = closing_window.hide();
+                                return;
+                            }
                             closing_setup.request_close();
                             closing_desktop.clear(closing_label);
                             stop.stop();
@@ -394,6 +476,8 @@ fn run_supervisor(
                 "ready",
                 if remote {
                     "Conexão pronta."
+                } else if docker {
+                    "Piloto Docker persistente isolado pronto. Dados separados do Electron."
                 } else if persistent {
                     "Piloto persistente isolado pronto. Dados separados do Electron."
                 } else {
@@ -411,7 +495,7 @@ fn run_supervisor(
         }
         // A terminal frame or EOF closes the UI; never reconnect to this port.
         let normal_stop = if startup.is_ok() {
-            wait_frame(&frames, &state, false, Duration::from_secs(40))
+            wait_frame(&frames, &state, None, shutdown_grace(&state))
                 .inspect_err(|_| transport_failed = true)
                 .is_ok_and(|frame| {
                     frame["type"] == "stopped"
@@ -429,7 +513,7 @@ fn run_supervisor(
             owned.force_stop()?;
         }
         let deadline =
-            state.stop_at.lock().unwrap().unwrap_or_else(Instant::now) + Duration::from_secs(40);
+            state.stop_at.lock().unwrap().unwrap_or_else(Instant::now) + shutdown_grace(&state);
         while !owned.has_exited()? {
             if transport_failed || Instant::now() >= deadline {
                 owned.force_stop()?;
@@ -437,7 +521,7 @@ fn run_supervisor(
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        let status = owned.finish()?;
+        let status = owned.finish_checked()?;
         if !status.success() || startup.is_err() || !normal_stop {
             return Err("pilot startup or shutdown failed".into());
         }
@@ -480,6 +564,7 @@ fn run_supervisor(
             }
         }
     }
+    *state.shutdown.lock().unwrap() = Some(result.is_ok());
     if setup.finish_attempt(opened, &state) {
         if !state.superseded.load(Ordering::SeqCst) {
             setup::show_failure(&app, &setup, &failure_message);
@@ -550,6 +635,16 @@ fn persistent_local() -> bool {
 }
 
 fn main() {
+    layout::configure().expect("failed to configure isolated pilot paths");
+    let file_dialog_smoke =
+        std::env::args().any(|arg| arg == "--maintenance-file-dialog-smoke-test");
+    if file_dialog_smoke
+        && (!layout::base().join("portable-test.json").is_file()
+            || layout::base().join("installer.json").is_file())
+    {
+        eprintln!("pilot: native file dialog smoke requires an isolated portable fixture");
+        std::process::exit(2);
+    }
     match import_backup::requested_archive() {
         Ok(Some(archive)) => {
             if let Err(error) = import_backup::run(&archive) {
@@ -599,9 +694,8 @@ fn main() {
                         || arg.ends_with("-smoke-test")
                         || arg == "--native-death-test"
                 }) {
-                    desktop.directory = layout::base()
-                        .join("target/test-data")
-                        .join(format!("desktop-smoke-{}", uuid::Uuid::new_v4()));
+                    desktop.directory =
+                        layout::data().join(format!("desktop-smoke-{}", uuid::Uuid::new_v4()));
                 }
                 desktop
             }),
@@ -610,6 +704,8 @@ fn main() {
         .runtime(tauri_runtime_wry::Wry::default())
         .manage(state.clone())
         .manage(desktop)
+        .manage(Arc::new(preparation::Preparation::default()))
+        .manage(Arc::new(maintenance::Maintenance::default()))
         .invoke_handler(tauri::generate_handler![
             setup::setup_state,
             setup::setup_submit,
@@ -617,13 +713,30 @@ fn main() {
             setup::setup_docker,
             desktop::desktop_state,
             desktop::desktop_appearance,
-            desktop::desktop_menu
+            desktop::desktop_menu,
+            preparation::preparation_state,
+            preparation::preparation_start,
+            preparation::preparation_cancel,
+            preparation::desktop_prepare,
+            maintenance::desktop_maintain,
+            maintenance::maintenance_state,
+            maintenance::maintenance_start,
+            maintenance::maintenance_cancel
         ])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref().to_string();
+            if id == tray::OPEN_ID {
+                tray::reopen(app);
+                return;
+            }
+            if id == tray::QUIT_ID {
+                app.exit(0);
+                return;
+            }
             desktop::menu_event(app, &id);
         })
         .setup(move |app| {
+            tray::create(app.handle())?;
             let desktop = app.state::<Arc<desktop::Desktop>>().inner().clone();
             desktop.load();
             // The smokes start from a known list: a saved environment must not
@@ -636,7 +749,14 @@ fn main() {
                     .map_err(|_| "failed to reset pilot environments")?;
             }
             setup::open(app.handle())?;
-            if let Some(instance) = desktop.startup_remote(std::env::args()) {
+            if std::env::args().any(|arg| {
+                arg == "--maintenance-smoke-test" || arg == "--maintenance-file-dialog-smoke-test"
+            }) {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || maintenance_smoke::run(handle, file_dialog_smoke));
+                return Ok(());
+            }
+            if let Some(instance) = desktop.startup_instance(std::env::args()) {
                 setup::switch(app.handle(), instance);
             }
             if let Some(check) = check {
@@ -674,6 +794,10 @@ fn main() {
     }
     app.run(move |_, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            if state.defer_maintenance_exit() {
+                api.prevent_exit();
+                return;
+            }
             if let Some(active) = state.request_close() {
                 api.prevent_exit();
                 active.stop();
@@ -774,7 +898,8 @@ mod tests {
         send.send(Ok(serde_json::json!({"type": "stopped"})))
             .unwrap();
         for startup in [true, false] {
-            assert!(wait_frame(&frames, &state, startup, Duration::from_millis(100)).is_err());
+            let deadline = startup.then(|| Instant::now() + Duration::from_secs(5));
+            assert!(wait_frame(&frames, &state, deadline, Duration::from_millis(100)).is_err());
         }
     }
 
@@ -826,7 +951,7 @@ mod tests {
                 wait_frame(
                     &frames,
                     &state,
-                    phase == "before",
+                    (phase == "before").then(|| Instant::now() + Duration::from_secs(5)),
                     Duration::from_millis(100)
                 )
                 .is_err()

@@ -1,4 +1,4 @@
-import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { restoreInstallation } from "./backup-maintenance.mjs";
@@ -17,12 +17,8 @@ function destinationPaths(destination) {
 }
 
 export async function importPilotBackup(archive, password, destination) {
-  if (
-    typeof password !== "string" ||
-    password.length < 12 ||
-    password.length > 1024
-  )
-    throw new Error("A senha do backup deve ter entre 12 e 1024 caracteres.");
+  if (typeof password !== "string" || password.length < 12)
+    throw new Error("A senha do backup deve ter pelo menos 12 caracteres.");
   const source = await lstat(archive);
   if (!source.isFile() || source.isSymbolicLink())
     throw new Error("O arquivo de backup é inválido.");
@@ -43,40 +39,42 @@ export async function importPilotBackup(archive, password, destination) {
       throw new Error("O perfil persistente do piloto está em uso.");
     throw error;
   }
-  let published = false;
   try {
     await restoreInstallation(archive, paths.directory, password, {
       requireProcessComputer: true,
+      async validateInstallation(directory) {
+        await assertNoLinks(directory, true);
+        const marker = join(directory, "pilot-profile");
+        try {
+          await writeFile(marker, pilotProfileMarker, {
+            flag: "wx",
+            mode: 0o600,
+          });
+        } catch (error) {
+          if (
+            error.code !== "EEXIST" ||
+            (await readFile(marker, "utf8")) !== pilotProfileMarker
+          )
+            throw error;
+        }
+      },
     });
-    published = true;
-    await writeFile(
-      join(paths.directory, "pilot-profile"),
-      pilotProfileMarker,
-      { flag: "wx", mode: 0o600 },
-    );
-    await assertNoLinks(paths.directory, true);
     return paths.directory;
-  } catch (error) {
-    if (published) await rm(paths.directory, { recursive: true, force: true });
-    throw error;
   } finally {
     await rm(paths.lock, { recursive: true, force: true });
   }
 }
 
-async function readPassword() {
+export async function readPassword(input = process.stdin) {
   const chunks = [];
-  let size = 0;
-  for await (const chunk of process.stdin) {
-    size += chunk.length;
-    if (size > 1025) throw new Error("A senha do backup é inválida.");
+  for await (const chunk of input) {
     chunks.push(chunk);
   }
   const password = Buffer.concat(chunks)
     .toString("utf8")
     .replace(/[\r\n]+$/, "");
-  if (password.length < 12 || password.length > 1024)
-    throw new Error("A senha do backup deve ter entre 12 e 1024 caracteres.");
+  if (password.length < 12)
+    throw new Error("A senha do backup deve ter pelo menos 12 caracteres.");
   return password;
 }
 

@@ -1,12 +1,12 @@
 # Persona Tauri pilot — integração temporária
 
-Piloto de desenvolvimento isolado. Não substitui Electron, não migra perfis
-automaticamente e não promete paridade. Abre o setup existente em uma WebView local separada.
-O submit local temporário usa a UI existente de `apps/web/dist`, servida pelo
-runtime Node real com dados descartáveis. O submit remoto abre essa UI em uma
-WebView HTTP separada, depois de validar o servidor. A UI real recebe a ponte
-`window.personaDesktop` (estado do ambiente, tema e menu). Salva conexões apenas
-em dados descartáveis do piloto; não instala runtimes.
+Piloto de desenvolvimento isolado. Não substitui Electron nem migra perfis
+automaticamente; a paridade ainda não foi comprovada. Abre o setup existente em
+uma WebView local separada. A execução nativa padrão usa dados temporários; a
+opção Docker usa `LocalStack` com um perfil persistente exclusivo do piloto. O
+submit remoto abre a UI em uma WebView HTTP separada, depois de validar o servidor.
+A UI real recebe `window.personaDesktop` (estado do ambiente, tema e menu). O
+piloto não instala Docker nem runtimes.
 
 ## Executar
 
@@ -34,15 +34,54 @@ cargo build --locked
 ./native-death.test.ps1
 ```
 
+`--maintenance-file-dialog-smoke-test` exercita os diálogos nativos de salvar e
+abrir sem iniciar supervisor ou worker. Rode somente uma cópia descartável que
+contenha `portable-test.json`; defina `PERSONA_TAURI_SMOKE_BACKUP_PATH` para um
+caminho sintético inexistente e `PERSONA_TAURI_SMOKE_RESTORE_PATH` para um arquivo
+sintético existente, ambos na raiz dessa cópia. O smoke exige que os caminhos
+retornados coincidam e não lê nem grava o conteúdo selecionado.
+
 Na raiz do repositório:
 
 ```sh
 node --test --test-concurrency=1 apps/desktop/tauri-pilot/local-session.test.mjs apps/desktop/tauri-pilot/stop-child.test.mjs apps/desktop/tauri-pilot/supervisor.test.mjs apps/desktop/tauri-pilot/service.test.mjs apps/desktop/tauri-pilot/service-transport.test.mjs apps/desktop/tauri-pilot/remote-probe.test.mjs apps/desktop/tauri-pilot/offline-profile.test.mjs
 pnpm exec biome check apps/desktop/tauri-pilot/local-session.mjs apps/desktop/tauri-pilot/local-session.fixture.mjs apps/desktop/tauri-pilot/local-session.test.mjs apps/desktop/tauri-pilot/stop-child.mjs apps/desktop/tauri-pilot/stop-child.test.mjs apps/desktop/tauri-pilot/service.mjs apps/desktop/tauri-pilot/supervisor.mjs apps/desktop/tauri-pilot/silent-supervisor.fixture.mjs apps/desktop/tauri-pilot/remote-probe.mjs apps/desktop/tauri-pilot/remote-probe.test.mjs apps/desktop/tauri-pilot/remote-server.fixture.mjs
+node --test apps/desktop/tauri-pilot/docker-profile.test.mjs apps/desktop/tauri-pilot/docker-service.test.mjs
+node --test apps/desktop/tauri-pilot/maintenance.test.mjs apps/desktop/tauri-pilot/maintenance-worker.test.mjs
+pnpm vitest run packages/hosting/test/stack.test.ts packages/hosting/test/work-images.test.ts
+pnpm vitest run packages/hosting/test/work-backup.test.ts
 ```
 
-O executável de desenvolvimento depende das fontes Node deste checkout. Bundles
-e instaladores Tauri continuam desativados.
+O executável de desenvolvimento depende das fontes Node deste checkout. O build
+normal continua sem bundle; o instalador usa configuração separada.
+
+## Instalador Windows isolado (NSIS)
+
+Na raiz: `node apps/desktop/tauri-pilot/build-installer.mjs`.
+Usa o CLI fixado em `3.0.0-alpha.6`, Cargo `--locked --offline` e o Node >=24
+que executa o script. Recria somente `target/installer-resources`, inclui runtime,
+Node e importador, e gera `target/release/bundle/nsis/*-setup.exe`.
+Usa ZLIB para evitar a demora extrema de LZMA nesse runtime grande.
+O primeiro empacotamento pode baixar ferramentas NSIS com hash validado pelo CLI.
+WebView2 deve estar instalado. O instalador não pede elevação (`currentUser`).
+
+Recursos instalados ficam junto ao executável; dados ficam exclusivamente em
+`%LOCALAPPDATA%/app.persona.tauri-pilot`. O modo portátil continua usando
+`target/test-data` junto ao executável, e desenvolvimento usa o checkout.
+`--persistent-local` ativa o perfil nativo persistente. A execução Docker usa
+sempre `pilot-docker-v1` (ou o perfil Docker selecionado) sob o mesmo diretório
+exclusivo do piloto; ela não lê `pilot-local-*`. A importação nativa continua
+recusando sobrescrever um perfil existente.
+Não há descoberta ou importação automática de instalações reais.
+O desinstalador oferece exclusão opcional dos dados do piloto; não selecione essa
+opção se deseja manter o perfil.
+
+Após gerar o NSIS, o script executa o binário release com os recursos staged e
+`LOCALAPPDATA` sintético para verificar o ciclo de serviço/UI, sem instalar ou
+alterar registro. Fechar uma janela normal apenas a oculta. O menu da bandeja
+reabre a janela ou encerra explicitamente o app pelo mesmo caminho de shutdown
+do serviço. Os modos smoke/startup/aceitação mantêm o fechamento e shutdown
+anteriores, sem bandeja.
 
 ### Pacote portátil de teste para Windows
 
@@ -73,13 +112,15 @@ importação offline de backup sintético: autenticação, credencial criptograf
 Bot e histórico continuam acessíveis após reiniciar o serviço e a origem não
 muda. O teste não abre o Electron nem migra um perfil real.
 
-Para experimentar persistência local isolada, inicie o piloto com
-`--persistent-local`. Os dados ficam em `target/test-data/pilot-local-v1`, junto
-ao executável portátil ou no diretório do piloto de desenvolvimento. Fechar o
-serviço normalmente preserva esses dados. Esse perfil não acessa nem migra o
-perfil Electron e ainda não substitui backup ou uma instalação de produção.
-Uma interrupção incerta mantém um bloqueio para evitar reutilização simultânea;
-não o remova sem confirmar que todos os processos responsáveis terminaram.
+Para experimentar persistência nativa isolada, inicie o piloto com
+`--persistent-local`; os dados ficam em `target/test-data/pilot-local-v1` no
+ambiente de desenvolvimento/portátil. Docker persiste em
+`target/test-data/pilot-docker-v1` (ou `%LOCALAPPDATA%/app.persona.tauri-pilot/pilot-docker-v1`
+no instalador), com ponteiro e lock próprios. A seleção Docker é restaurada no
+próximo início. Cancelamento e parada atuam somente no projeto Compose do perfil;
+se a saída dos contêineres não puder ser confirmada, o lock permanece e bloqueia
+reutilização. Não remova esse lock manualmente. O perfil não acessa nem migra
+dados do Electron.
 
 Para importar um backup cifrado em um perfil ainda vazio, execute o comando
 explícito:
@@ -109,14 +150,14 @@ não abre perfis automaticamente.
   herdados**, com frames JSON delimitados por newline; stderr é exclusivamente
   transporte, não log. O supervisor só inicia após submit do setup. stdout é descartado. Não rode
   `supervisor.mjs` manualmente redirecionando o protocolo para um terminal/log.
-- `supervisor.mjs` reutiliza `service.mjs`. Startup e stop são idempotentes.
-  O serviço usa uma configuração exclusiva em `target/test-data/service-*`,
-  dados/homes temporários, apenas 127.0.0.1 e uma porta loopback alta escolhida
-  dinamicamente. O ambiente do serviço
-  não herda configurações Persona, chaves ou homes reais. Rust limpa todo o ambiente
+- `supervisor.mjs` roteia execução nativa temporária por `service.mjs` e execução
+  Docker persistente por `LocalStack` compartilhado. O modo nativo usa configuração
+  exclusiva em `target/test-data/service-*`, dados/homes temporários, somente
+  127.0.0.1 e porta loopback alta. Docker usa Compose e arquivos somente do perfil
+  `pilot-docker-*`; não reutiliza o namespace nativo. Rust limpa todo o ambiente
   do supervisor e repassa somente PATH, SystemRoot, WINDIR e SystemDrive quando
   presentes. Não consulta valores de credenciais ou proxies herdados.
-- `service-child.mjs` adapta o IPC privado para o `parentPort` esperado e importa
+- `service-child.mjs` adapta o IPC privado do runtime nativo para o `parentPort` esperado e importa
   `apps/api/src/main.ts`. Runtime, autenticação, UI e pairing são os módulos reais.
   Readiness exige anúncio de listen do filho próprio, pairing IPC e uma sessão
   admin autenticada via HTTP; não usa `/health` como prova de identidade.
@@ -174,15 +215,18 @@ não abre perfis automaticamente.
 ícone reais de `packages/ui`. Gera somente artefatos ignorados em
 `target/setup-assets`; não mantém uma cópia do design. O HTML gerado adapta CSP,
 insere `setup-bridge.js` e informa que os dados são descartáveis. O bridge mantém
-`window.personaSetup`: state, submit, cancel, docker e progress. Docker retorna
-erro explícito. A conexão remota usa o mesmo formulário e contrato de submit,
+`window.personaSetup`: state, submit, cancel, docker e progress. Submit local
+aceita somente `{ mode: "local", runtime: "native" }` ou
+`{ mode: "local", runtime: "docker" }`. Docker não é instalado pelo piloto; se
+indisponível, a interface orienta o usuário a iniciá-lo ou instalá-lo manualmente.
+A conexão remota usa o mesmo formulário e contrato de submit,
 mas seu probe e sua WebView são separados da janela local de setup.
 
 `AppManifest` enumera sete comandos: quatro de setup e três de desktop. A
 capability local concede somente os quatro de setup ao label `setup`, sem
 concessão remota. Cada handler também verifica em
-Rust o label e a URL nativa exata de `setup.html`. Submit aceita somente o objeto
-`{ mode: "local", runtime: "native" }`, sem campos extras. Navegação para qualquer
+Rust o label e a URL nativa exata de `setup.html`. Submit aceita somente os dois
+objetos locais acima, sem campos extras. Navegação para qualquer
 outra URL, novas janelas e permissões são negadas. CSP usa `frame-src 'none'` e
 permite somente `ipc:`/`http://ipc.localhost` em `connect-src` para o transporte
 Tauri. A meta CSP original também é adaptada; não depende apenas da config.
@@ -197,7 +241,8 @@ A chave não substitui ACL nem validação nativa de label/URL.
 Progresso corresponde a startup real, sessão verificada e janela pronta. O comando
 cancel solicita stop ao supervisor próprio e retorna; submit continua pendente
 até settle dos processos e então entrega o resultado de cancelamento.
-Falhas/cancelamento permitem outra tentativa com novo serviço/diretório temporário.
+Falhas/cancelamento permitem outra tentativa. Perfis Docker persistentes usam o
+mesmo diretório isolado e conservam lock quando a parada fica incerta.
 Se o worker nativo não terminar após cancelamento, o piloto mantém a reserva do
 label até que ele termine ou o usuário encerre o aplicativo. Fechar o setup durante
 uma conexão ativa apenas oculta a janela.
@@ -211,9 +256,10 @@ anterior antes de iniciar a próxima; se a nova conexão falhar, a seleção sal
 preservada, mas a conexão anterior não é reiniciada automaticamente. Os smokes
 reinicializam essa lista descartável ao iniciar.
 
-Na inicialização normal, uma conexão remota selecionada é novamente verificada e
-aberta. Uma seleção local ou ausente abre o setup. Se a conexão remota falhar, o
-setup mostra o erro e permite tentar novamente. Os checks `--startup-check` usam
+Na inicialização normal, uma conexão remota selecionada ou um runtime Docker local
+selecionado é novamente verificado e aberto. Uma seleção nativa local ou ausente
+abre o setup. Se a conexão falhar, o setup mostra o erro e permite tentar
+novamente. Os checks `--startup-check` usam
 suas próprias instâncias descartáveis e verificam restauração e retry no Windows.
 
 `--switch-smoke-test` chama o handler do menu para trocar entre ambientes, verifica
@@ -259,9 +305,23 @@ antecipada de closing=false, sem usar sleeps como sincronização.
 `desktop-bridge.js` é injetado como initialization script nas janelas `pilot` e
 `remote` e define `window.personaDesktop` apenas no frame principal
 (`window.top === window`). Mantém o contrato que `apps/web` já consome:
-`platform`, `state`, `appearance` e `menu`. `prepare` e `maintain` não invocam
-comando privilegiado nenhum: devolvem `ok: false` com erro explícito, porque a
-ponte não gerencia imagens de Docker nem backup/restauração.
+`platform`, `state`, `appearance` e `menu`. `prepare` não executa preparação
+pela página HTTP. `maintain` apenas abre a janela nativa empacotada de
+confirmação; a página HTTP não pode escolher ação/arquivo, fornecer senha nem
+iniciar a operação. O usuário escolhe tudo e confirma nessa janela local.
+
+Backup e restauração exigem um perfil local persistente Windows e confirmação
+na janela empacotada; a página HTTP só pode abrir essa janela. O serviço precisa
+encerrar normalmente antes do worker. O backup fica fora do perfil. Restauração
+usa um perfil novo `pilot-local-restore-<UUID v4>` ou
+`pilot-docker-restore-<UUID v4>` e troca atomicamente somente o ponteiro do
+runtime correspondente; o perfil anterior permanece intacto em falhas. Docker
+valida configuração, imagens, template e computadores salvos antes de criar
+volumes. Volumes do template e dos computadores compatíveis são remapeados para
+nomes novos. A aceitação com daemon Docker real continua pendente. O worker recebe
+a senha e o runtime somente pelo pipe privado, depois da confirmação nativa e da
+escolha nativa do arquivo. Depois do envio, o app aguarda o resultado e a saída
+reais do worker e não promete cancelamento ou rollback.
 
 Rust implementa `desktop_state`, `desktop_appearance` e `desktop_menu`. Cada
 handler revalida, em Rust, o label da WebView e a origem exata já validada
@@ -278,7 +338,10 @@ elas. Por isso, na conexão validada, o piloto chama `Manager::add_capability`
 (com a feature `dynamic-acl`) criando a capability `desktop-ui-<label>` com
 `local: false`, `remote: [<origem validada>]`, `webviews: [<label>]` e apenas as
 permissões `allow-desktop-state`, `allow-desktop-appearance` e
-`allow-desktop-menu`. O padrão de URL é validado antes de ser entregue ao Tauri
+`allow-desktop-menu` e `allow-desktop-maintain`. O comando de manutenção apenas
+abre a confirmação nativa e valida novamente que o ambiente selecionado é local;
+os comandos que recebem senha e executam trabalho ficam disponíveis somente na
+capability local da janela `maintenance`, com origem e label exatos. O padrão de URL é validado antes de ser entregue ao Tauri
 porque um padrão inválido entra em pânico durante a resolução. O documento
 local de setup não recebe essa capability: `desktop_state` é recusado por ACL
 nessa janela, como o smoke confirma.
@@ -360,6 +423,27 @@ forçado não comprova cleanup.
   verificou montagem somente leitura da origem, criação de volume novo na
   restauração, preservação dos arquivos e não reutilização da origem. O daemon
   Docker real e volumes do usuário não foram acessados.
+- Runtime Tauri Docker: perfil, lock, cancelamento, encaminhamento de progresso,
+  pairing loopback, roteamento do supervisor e shutdown verificado têm testes
+  sintéticos. O daemon não estava disponível neste host; não houve pull, build,
+  criação de contêineres ou inspeção de volumes reais. A aceitação com daemon
+  autorizado permanece pendente.
+- Backup/restauração Docker: além dos testes sintéticos de arquivo de volume, uma
+  execução isolada da camada real de manutenção criou um backup cifrado, recusou
+  senha incorreta sem trocar a seleção e restaurou o perfil em um destino novo,
+  remapeando ID e volume do template. Um `docker.exe` sintético estrito emulou
+  somente `volume ls`, `container ls`, `volume create` e `run` com `tar cf/xf`,
+  transferindo um tar de fixture e falhando para qualquer outro comando. Nenhum
+  daemon, volume ou contêiner real foi acessado; a execução verifica o fluxo de
+  arquivo/cifra/publicação, não o Docker real nem o fluxo visual nativo ponta a
+  ponta. A janela empacotada continua como única entrada de produção para
+  manutenção.
+- Smoke de seletor nativo Windows concluído em cópia portátil descartável: os
+  diálogos “Salvar como” e “Abrir” retornaram exatamente os caminhos de fixture
+  esperados. O backup de saída não foi criado, o arquivo de entrada permaneceu
+  intacto e nenhum worker/operação foi despachado. UIA usou um `AGENT_DESKTOP_HOME`
+  temporário com DACL restrita; nenhuma ACL do app foi alterada. O WebView2 ainda
+  registrou o aviso de teardown 1412.
 - Teste do probe remoto: servidor loopback controlado respondeu à rota
   `/hosting/info`; redirect, schema, status e cancelamento foram rejeitados sem
   seguir redirect, e entrada inválida não chegou à rede. stdout permaneceu vazio.

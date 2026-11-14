@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "resources": { "target/installer-resources/": "./" },
+    "windows": {
+      "nsis": { "installMode": "currentUser", "compression": "zlib" },
+      "webviewInstallMode": { "type": "skip" }
+    }
+  }
+}

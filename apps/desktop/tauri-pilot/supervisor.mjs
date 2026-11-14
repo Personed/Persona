@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { startPilotDockerService } from "./docker-service.mjs";
 import { verifyLocalSession } from "./local-session.mjs";
 import { startPilotService, startTestService } from "./service.mjs";
 
@@ -7,8 +8,11 @@ const send = (message) => process.stderr.write(`${JSON.stringify(message)}\n`);
 let starting;
 let stopping;
 let closing = false;
+let runtime = "native";
+const startAbort = new AbortController();
 const stop = () => {
   closing = true;
+  startAbort.abort();
   stopping ??= (async () => {
     const service = await starting?.catch(() => undefined);
     const outcome = service
@@ -26,8 +30,16 @@ const stop = () => {
   });
   return stopping;
 };
-const start = (persistent) => {
-  starting ??= persistent ? startPilotService() : startTestService();
+const start = (runtime, persistent) => {
+  starting ??=
+    runtime === "docker"
+      ? startPilotDockerService({
+          signal: startAbort.signal,
+          progress: (value) => send({ type: "progress", ...value }),
+        })
+      : persistent
+        ? startPilotService()
+        : startTestService();
   return starting;
 };
 let announced = false;
@@ -45,8 +57,11 @@ input.on("line", async (line) => {
       typeof message.persistent !== "boolean"
     )
       throw new Error("Invalid profile mode");
-    const service = await start(message.persistent === true);
-    service.exited.then(() => {
+    runtime = message.runtime ?? "native";
+    if (runtime !== "native" && runtime !== "docker")
+      throw new Error("Invalid runtime");
+    const service = await start(runtime, message.persistent === true);
+    service.exited?.then(() => {
       if (!closing) {
         send({ type: "died" });
         void stop();
@@ -59,11 +74,28 @@ input.on("line", async (line) => {
       send({
         type: "ready",
         origin: service.origin,
-        servicePid: service.pid,
+        ...(service.pid ? { servicePid: service.pid } : {}),
         ...session,
       });
-  } catch {
-    send({ type: "failed" });
+  } catch (error) {
+    const message =
+      runtime !== "docker"
+        ? undefined
+        : error?.code === "EEXIST"
+          ? "O perfil Docker está ativo ou bloqueado por um estado anterior não confirmado."
+          : error instanceof AggregateError
+            ? "Não foi possível confirmar a parada dos contêineres; o perfil permanece bloqueado."
+            : typeof error?.message === "string" &&
+                (error.message.startsWith(
+                  "Não foi possível conectar ao Docker",
+                ) ||
+                  error.message.startsWith("Alterne o Docker") ||
+                  error.message.startsWith("Arquivos de instalação") ||
+                  error.message.startsWith("A etapa de instalação") ||
+                  error.message.startsWith("Conexão com a área de trabalho"))
+              ? error.message
+              : "Não foi possível iniciar o perfil Docker isolado. Verifique o Docker Desktop e tente novamente.";
+    send({ type: "failed", ...(message ? { message } : {}) });
     void stop();
   }
 });

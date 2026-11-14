@@ -89,6 +89,75 @@ export async function buildRuntime(runtime) {
     await cp(join(root, "deploy", name), join(runtime, name), {
       recursive: true,
     });
+  const release = JSON.parse(
+    await readFile(join(root, "deploy/release.json"), "utf8"),
+  );
+  await mkdir(join(runtime, "work/deploy"), { recursive: true });
+  await mkdir(join(runtime, "work/packages/agent/src/harness"), {
+    recursive: true,
+  });
+  for (const name of [
+    "worker.mjs",
+    "account-environment.mjs",
+    "pi-auth.mjs",
+    "pi-tools.mjs",
+    "http-service.mjs",
+    "native-history.mjs",
+    "native-mcp.mjs",
+    "mcp-client.mjs",
+    "gateway.mjs",
+    "tool-results.mjs",
+    "browser-service.mjs",
+    "browser-tools.mjs",
+    "browser-command.mjs",
+    "browser-view.mjs",
+    "desktop-view.mjs",
+    "computer-service.mjs",
+    "desktop-tools.mjs",
+    "desktop-driver.mjs",
+    "cursor-theme.mjs",
+    "cursor.lottie",
+  ])
+    await cp(
+      join(root, "packages/agent/src/harness", name),
+      join(runtime, "work/packages/agent/src/harness", name),
+    );
+  for (const name of [
+    "workspace.Dockerfile",
+    "workspace.mjs",
+    "proxy.Dockerfile",
+    "squid.conf",
+  ])
+    await cp(join(root, "deploy", name), join(runtime, "work/deploy", name));
+  await cp(
+    join(root, "deploy/licenses"),
+    join(runtime, "work/deploy/licenses"),
+    {
+      recursive: true,
+    },
+  );
+  await writeFile(
+    join(runtime, "release.json"),
+    JSON.stringify({
+      version: release.version,
+      serviceImage: release.serviceImage,
+      workImage: release.workImage,
+      proxyImage: release.proxyImage,
+      proxyBuild: {
+        context: "work",
+        dockerfile: "deploy/proxy.Dockerfile",
+      },
+      controllerEntry: "controller.mjs",
+      serverEntry: "server.mjs",
+      bridgeEntry: "bridge.mjs",
+      workerEntry: "node_modules/@persona/agent/src/harness/worker.mjs",
+      staticDir: "web",
+      workBuild: {
+        context: "work",
+        dockerfile: "deploy/workspace.Dockerfile",
+      },
+    }),
+  );
   const driver = join(
     runtime,
     "node_modules/@persona/agent/src/harness/cua-driver",

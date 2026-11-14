@@ -22,13 +22,18 @@ pub struct Setup {
     pub failed: AtomicBool,
     switching: AtomicBool,
     switch_cancelled: AtomicBool,
+    operation_busy: Mutex<bool>,
     settled: Condvar,
+    maintenance: AtomicBool,
+    maintenance_exit: AtomicBool,
 }
 
 impl Setup {
     fn register(&self, supervisor: Arc<Supervisor>, switching: bool) -> Result<(), String> {
         let mut active = self.active.lock().unwrap();
+        let operation = self.operation_busy.lock().unwrap();
         if active.is_some()
+            || *operation
             || self.closing.load(Ordering::SeqCst)
             || (!switching && self.switching.load(Ordering::SeqCst))
             || (switching && self.switch_cancelled.load(Ordering::SeqCst))
@@ -42,8 +47,10 @@ impl Setup {
 
     fn reserve_switch(&self, connected_only: bool) -> Result<Option<Arc<Supervisor>>, String> {
         let active = self.active.lock().unwrap();
+        let operation = self.operation_busy.lock().unwrap();
         if self.closing.load(Ordering::SeqCst)
             || self.switching.load(Ordering::SeqCst)
+            || *operation
             || (connected_only && !self.connected.load(Ordering::SeqCst))
         {
             return Err("Aguarde a operação atual terminar.".into());
@@ -56,8 +63,76 @@ impl Setup {
         Ok(active.clone())
     }
 
+    pub fn reserve_operation(&self) -> bool {
+        let _active = self.active.lock().unwrap();
+        let mut operation = self.operation_busy.lock().unwrap();
+        if self.closing.load(Ordering::SeqCst)
+            || self.switching.load(Ordering::SeqCst)
+            || !self.connected.load(Ordering::SeqCst)
+            || *operation
+        {
+            return false;
+        }
+        *operation = true;
+        true
+    }
+
+    pub fn finish_operation(&self) {
+        *self.operation_busy.lock().unwrap() = false;
+    }
+
+    pub fn reserve_maintenance(&self) -> Result<Arc<Supervisor>, String> {
+        let active = self.active.lock().unwrap();
+        let mut operation = self.operation_busy.lock().unwrap();
+        if self.closing.load(Ordering::SeqCst)
+            || self.switching.load(Ordering::SeqCst)
+            || !self.connected.load(Ordering::SeqCst)
+            || *operation
+        {
+            return Err("Aguarde a operação atual terminar.".into());
+        }
+        let supervisor = active
+            .as_ref()
+            .ok_or("Serviço local indisponível.")?
+            .clone();
+        if !supervisor.maintenance_supported.load(Ordering::SeqCst) {
+            return Err(
+                "Esta manutenção exige um perfil local persistente isolado do piloto.".into(),
+            );
+        }
+        *operation = true;
+        self.maintenance.store(true, Ordering::SeqCst);
+        supervisor.superseded.store(true, Ordering::SeqCst);
+        Ok(supervisor)
+    }
+
+    pub fn defer_maintenance_exit(&self) -> bool {
+        let _operation = self.operation_busy.lock().unwrap();
+        if !self.maintenance.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.maintenance_exit.store(true, Ordering::SeqCst);
+        true
+    }
+
+    pub fn finish_maintenance(&self) -> bool {
+        let mut operation = self.operation_busy.lock().unwrap();
+        self.maintenance.store(false, Ordering::SeqCst);
+        *operation = false;
+        self.maintenance_exit.swap(false, Ordering::SeqCst)
+    }
+
+    pub fn maintenance_exit_requested(&self) -> bool {
+        self.maintenance_exit.load(Ordering::SeqCst)
+    }
+
     pub fn request_close(&self) -> Option<Arc<Supervisor>> {
         let active = self.active.lock().unwrap();
+        let _operation = self.operation_busy.lock().unwrap();
+        if self.maintenance.load(Ordering::SeqCst) {
+            self.maintenance_exit.store(true, Ordering::SeqCst);
+            return None;
+        }
         self.closing.store(true, Ordering::SeqCst);
         active.clone()
     }
@@ -112,6 +187,20 @@ fn url() -> Url {
     Url::parse(origin).unwrap()
 }
 
+fn requested_local_runtime(value: &serde_json::Value) -> Option<&'static str> {
+    if value
+        .as_object()
+        .is_none_or(|object| object.len() != 2 || value["mode"] != "local")
+    {
+        return None;
+    }
+    match value["runtime"].as_str() {
+        Some("native") => Some("native"),
+        Some("docker") => Some("docker"),
+        _ => None,
+    }
+}
+
 #[tauri::command]
 pub fn setup_state(
     window: tauri::WebviewWindow,
@@ -136,13 +225,22 @@ fn begin(
     setup: Arc<Setup>,
     desktop: Arc<crate::desktop::Desktop>,
     remote_input: Option<serde_json::Value>,
+    local_runtime: String,
     switching: bool,
 ) -> Result<mpsc::Receiver<serde_json::Value>, String> {
     let supervisor = Arc::new(Supervisor::default());
     setup.register(supervisor.clone(), switching)?;
     let (send, result) = mpsc::channel();
     std::thread::spawn(move || {
-        run_supervisor(app, supervisor, setup, desktop, send, remote_input);
+        run_supervisor(
+            app,
+            supervisor,
+            setup,
+            desktop,
+            send,
+            remote_input,
+            local_runtime,
+        );
     });
     Ok(result)
 }
@@ -160,7 +258,7 @@ pub fn switch(app: &tauri::AppHandle, instance: crate::desktop::Instance) {
         if let Some(active) = active {
             active.stop();
         }
-        if !setup.wait_idle(Duration::from_secs(45)) {
+        if !setup.wait_idle(Duration::from_secs(90)) {
             setup.switching.store(false, Ordering::SeqCst);
             show_failure(
                 &app,
@@ -178,7 +276,14 @@ pub fn switch(app: &tauri::AppHandle, instance: crate::desktop::Instance) {
         } else {
             None
         };
-        let result = begin(app.clone(), setup.clone(), desktop, remote_input, true);
+        let result = begin(
+            app.clone(),
+            setup.clone(),
+            desktop,
+            remote_input,
+            instance.runtime,
+            true,
+        );
         setup.switching.store(false, Ordering::SeqCst);
         if let Err(error) = result {
             if !setup.closing.load(Ordering::SeqCst) {
@@ -196,11 +301,17 @@ pub async fn setup_submit(
 ) -> Result<serde_json::Value, String> {
     check(&window)?;
     let remote = value.get("mode").and_then(|v| v.as_str()) == Some("existing");
-    if !remote && value != serde_json::json!({"mode": "local", "runtime": "native"}) {
-        return Ok(
-            serde_json::json!({"ok": false, "error": "O ambiente local oferece somente execução nativa temporária. Docker não está disponível."}),
-        );
-    }
+    let local_runtime = if remote {
+        "native".to_string()
+    } else {
+        let Some(runtime) = requested_local_runtime(&value) else {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "error": "Escolha execução nativa ou Docker para o ambiente local."
+            }));
+        };
+        runtime.to_string()
+    };
     let app = window.app_handle().clone();
     let setup = state.inner().clone();
     let desktop = app.state::<Arc<crate::desktop::Desktop>>().inner().clone();
@@ -218,14 +329,21 @@ pub async fn setup_submit(
             if let Some(active) = active {
                 active.stop();
             }
-            if !setup.wait_idle(Duration::from_secs(45)) {
+            if !setup.wait_idle(Duration::from_secs(90)) {
                 setup.switching.store(false, Ordering::SeqCst);
                 let error = "O ambiente anterior ainda está encerrando. Aguarde e tente novamente.";
                 show_failure(&app, &setup, error);
                 return Ok(serde_json::json!({"ok": false, "error": error}));
             }
         }
-        let result = begin(app, setup.clone(), desktop, remote.then_some(value), switching);
+        let result = begin(
+            app,
+            setup.clone(),
+            desktop,
+            remote.then_some(value),
+            local_runtime,
+            switching,
+        );
         if switching {
             setup.switching.store(false, Ordering::SeqCst);
         }
@@ -259,7 +377,7 @@ pub fn setup_cancel(
 #[tauri::command]
 pub fn setup_docker(window: tauri::WebviewWindow) -> Result<(), String> {
     check(&window)?;
-    Err("Docker não está disponível neste piloto. Nenhuma URL externa foi aberta.".into())
+    Err("O piloto não instala Docker Desktop. Instale e inicie o Docker manualmente e tente novamente.".into())
 }
 
 pub fn progress(app: &tauri::AppHandle, phase: &str, message: &str) {
@@ -318,6 +436,9 @@ pub fn open(app: &tauri::AppHandle) -> tauri::Result<()> {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             let _ = closing_window.hide();
+            if crate::tray::enabled() {
+                return;
+            }
             // A live connection outlives the setup window; only an idle app quits.
             if state.connected.load(Ordering::SeqCst) {
                 return;
@@ -336,6 +457,72 @@ pub fn open(app: &tauri::AppHandle) -> tauri::Result<()> {
 mod tests {
     use super::*;
     use std::sync::Barrier;
+
+    #[test]
+    fn accepts_only_exact_local_runtime_submissions() {
+        assert_eq!(
+            requested_local_runtime(&serde_json::json!({
+                "mode": "local",
+                "runtime": "native"
+            })),
+            Some("native")
+        );
+        assert_eq!(
+            requested_local_runtime(&serde_json::json!({
+                "mode": "local",
+                "runtime": "docker"
+            })),
+            Some("docker")
+        );
+        for value in [
+            serde_json::json!({"mode":"local"}),
+            serde_json::json!({"mode":"local","runtime":"remote"}),
+            serde_json::json!({"mode":"local","runtime":"docker","extra":true}),
+            serde_json::json!({"mode":"existing","runtime":"docker"}),
+        ] {
+            assert_eq!(requested_local_runtime(&value), None);
+        }
+    }
+
+    #[test]
+    fn maintenance_retains_app_and_reservation_until_confirmed_completion() {
+        for shutdown in [None, Some(false), Some(true)] {
+            let state = Setup::default();
+            let supervisor = Arc::new(Supervisor::default());
+            supervisor.persistent.store(true, Ordering::SeqCst);
+            supervisor
+                .maintenance_supported
+                .store(true, Ordering::SeqCst);
+            state.register(supervisor.clone(), false).unwrap();
+            state.connected.store(true, Ordering::SeqCst);
+            assert!(state.reserve_maintenance().is_ok());
+            assert!(state.reserve_maintenance().is_err());
+            assert!(state.reserve_switch(true).is_err());
+            assert!(state.request_close().is_none());
+            assert!(!state.closing.load(Ordering::SeqCst));
+            *supervisor.shutdown.lock().unwrap() = shutdown;
+            assert!(state.finish_attempt(true, &supervisor));
+            assert!(state.wait_idle(Duration::ZERO));
+            assert_eq!(
+                *supervisor.shutdown.lock().unwrap() == Some(true),
+                shutdown == Some(true)
+            );
+            assert!(state.defer_maintenance_exit());
+            assert!(state.finish_maintenance());
+            assert!(!state.defer_maintenance_exit());
+        }
+    }
+
+    #[test]
+    fn maintenance_never_reserves_remote_or_temporary_service() {
+        let state = Setup::default();
+        state
+            .register(Arc::new(Supervisor::default()), false)
+            .unwrap();
+        state.connected.store(true, Ordering::SeqCst);
+        assert!(state.reserve_maintenance().is_err());
+        assert!(state.reserve_operation());
+    }
 
     #[test]
     fn connected_submission_reserves_replacement_and_honors_gap_cancellation() {
@@ -362,6 +549,22 @@ mod tests {
             );
             assert!(!state.closing.load(Ordering::SeqCst));
         }
+    }
+
+    #[test]
+    fn preparation_blocks_switch_and_registration_until_settled() {
+        let state = Setup::default();
+        state.connected.store(true, Ordering::SeqCst);
+        assert!(state.reserve_operation());
+        assert!(!state.reserve_operation());
+        assert!(state.reserve_switch(true).is_err());
+        assert!(
+            state
+                .register(Arc::new(Supervisor::default()), false)
+                .is_err()
+        );
+        state.finish_operation();
+        assert!(state.reserve_switch(true).is_ok());
     }
 
     #[test]

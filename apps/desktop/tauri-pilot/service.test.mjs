@@ -80,10 +80,22 @@ test("imported Docker work template remains local and configured", {
     id: "synthetic-template",
     image: "fixture:1",
     volume: "synthetic-volume",
+    network: "restricted",
+    cpus: 3,
+    memoryMiB: 2048,
+    pids: 128,
+    timeoutSeconds: 90,
+    proxyImage: "synthetic-proxy:1",
   };
   await writeFile(
     join(directory, "persona.config.json"),
-    JSON.stringify({ computer: { kind: "process" }, workComputer }),
+    JSON.stringify({
+      computer: { kind: "process" },
+      workComputer,
+      deployment: "native",
+      host: "::1",
+      model: { provider: "synthetic", modelId: "synthetic-model" },
+    }),
   );
   await writeFile(join(directory, "pilot-profile"), pilotProfileMarker);
   const service = await startPersistentService(directory);
@@ -93,6 +105,12 @@ test("imported Docker work template remains local and configured", {
     );
     assert.deepEqual(config.workComputer, workComputer);
     assert.deepEqual(config.computer, { kind: "process" });
+    assert.equal(config.deployment, "native");
+    assert.equal(config.host, "127.0.0.1");
+    assert.deepEqual(config.model, {
+      provider: "synthetic",
+      modelId: "synthetic-model",
+    });
   } finally {
     assert.deepEqual(await service.stop(), { graceful: true, cleanup: false });
     await service.exited;

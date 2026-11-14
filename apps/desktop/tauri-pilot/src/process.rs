@@ -18,7 +18,13 @@ impl OwnedProcess {
     pub fn spawn(script: &Path) -> io::Result<Self> {
         let mut command = Command::new(crate::layout::node());
         command.env_clear();
-        for key in ["PATH", "SystemRoot", "WINDIR", "SystemDrive"] {
+        for key in [
+            "PATH",
+            "SystemRoot",
+            "WINDIR",
+            "SystemDrive",
+            "LOCALAPPDATA",
+        ] {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
@@ -109,6 +115,19 @@ impl OwnedProcess {
         }
     }
 
+    pub fn has_finished_without_termination(&mut self) -> io::Result<bool> {
+        #[cfg(windows)]
+        {
+            Ok(self.has_exited()? && !self.job_has_active_processes()?)
+        }
+        #[cfg(not(windows))]
+        {
+            Err(io::Error::other(
+                "graceful process-tree completion is not verified on this platform",
+            ))
+        }
+    }
+
     pub fn finish(&mut self) -> io::Result<std::process::ExitStatus> {
         #[cfg(unix)]
         self.kill_group()?;
@@ -118,6 +137,63 @@ impl OwnedProcess {
             self.reaped = true;
         }
         Ok(status)
+    }
+
+    /// Confirms that the leader and every process still owned by this Windows
+    /// Job have exited. A remaining process is terminated and reported as an
+    /// uncertain cleanup instead of being mistaken for a graceful finish.
+    pub fn finish_checked(&mut self) -> io::Result<std::process::ExitStatus> {
+        #[cfg(windows)]
+        {
+            let status = self.child.wait()?;
+            if self.job_has_active_processes()? {
+                unsafe {
+                    use windows::Win32::System::JobObjects::TerminateJobObject;
+                    TerminateJobObject(self.job, 1).map_err(io::Error::other)?;
+                }
+                self.wait_for_empty_job()?;
+                return Err(io::Error::other(
+                    "owned job still contained processes after the leader exited",
+                ));
+            }
+            Ok(status)
+        }
+        #[cfg(not(windows))]
+        self.finish()
+    }
+
+    #[cfg(windows)]
+    fn job_has_active_processes(&self) -> io::Result<bool> {
+        use windows::Win32::System::JobObjects::{
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation,
+            QueryInformationJobObject,
+        };
+        let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        unsafe {
+            QueryInformationJobObject(
+                Some(self.job),
+                JobObjectBasicAccountingInformation,
+                &mut info as *mut _ as *mut _,
+                std::mem::size_of_val(&info) as u32,
+                None,
+            )
+            .map_err(io::Error::other)?;
+        }
+        Ok(info.ActiveProcesses != 0)
+    }
+
+    #[cfg(windows)]
+    fn wait_for_empty_job(&self) -> io::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if !self.job_has_active_processes()? {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::other("owned job has live processes"));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[cfg(unix)]
@@ -134,27 +210,9 @@ impl OwnedProcess {
     pub fn force_stop(&mut self) -> io::Result<()> {
         #[cfg(windows)]
         unsafe {
-            use windows::Win32::System::JobObjects::*;
+            use windows::Win32::System::JobObjects::TerminateJobObject;
             TerminateJobObject(self.job, 1).map_err(io::Error::other)?;
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-                QueryInformationJobObject(
-                    Some(self.job),
-                    JobObjectBasicAccountingInformation,
-                    &mut info as *mut _ as *mut _,
-                    std::mem::size_of_val(&info) as u32,
-                    None,
-                )
-                .map_err(io::Error::other)?;
-                if info.ActiveProcesses == 0 {
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    return Err(io::Error::other("owned job has live processes"));
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            self.wait_for_empty_job()?;
         }
         #[cfg(unix)]
         {

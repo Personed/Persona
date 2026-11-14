@@ -12,7 +12,32 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+async function writeFixtureLayout(directory) {
+  const layout = join(directory, "layout.mjs");
+  await writeFile(
+    layout,
+    `export * from ${JSON.stringify(new URL("./layout.mjs", import.meta.url).href)};\nexport const dataDirectory = ${JSON.stringify(join(directory, "target/test-data"))};\n`,
+  );
+  return import(pathToFileURL(layout).href);
+}
+
+test("native persistence fixture layout keeps profile storage inside its own installation", async () => {
+  const base = fileURLToPath(new URL("./target/test-data/", import.meta.url));
+  await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(join(base, "native-layout-"));
+  try {
+    const layout = await writeFixtureLayout(directory);
+    assert.equal(layout.dataDirectory, join(directory, "target/test-data"));
+    assert.equal(
+      layout.runtimeEntry.href,
+      new URL("../../api/src/main.ts", import.meta.url).href,
+    );
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
 
 test("native persistent pilot: synthetic application record survives complete executable restart", {
   skip: process.platform !== "win32",
@@ -25,6 +50,8 @@ test("native persistent pilot: synthetic application record survives complete ex
   try {
     for (const name of [
       "supervisor.mjs",
+      "docker-profile.mjs",
+      "docker-service.mjs",
       "service.mjs",
       "service-child.mjs",
       "service-transport.mjs",
@@ -45,10 +72,7 @@ test("native persistent pilot: synthetic application record survives complete ex
       "isolated native persistence acceptance\n",
       { flag: "wx" },
     );
-    await writeFile(
-      join(directory, "layout.mjs"),
-      `export * from ${JSON.stringify(new URL("./layout.mjs", import.meta.url).href)};\n`,
-    );
+    await writeFixtureLayout(directory);
     for (const phase of ["write", "read"]) {
       const child = spawn(
         join(directory, "persona-tauri-pilot.exe"),

@@ -40,8 +40,13 @@ impl Fixture {
             }
         });
         let supervisor = Supervisor::default();
-        let ready = crate::wait_frame(&frames, &supervisor, true, Duration::from_secs(120))
-            .map_err(|e| e.to_string())?;
+        let ready = crate::wait_frame(
+            &frames,
+            &supervisor,
+            Some(std::time::Instant::now() + Duration::from_secs(120)),
+            Duration::from_secs(40),
+        )
+        .map_err(|e| e.to_string())?;
         if ready["type"] != "ready" {
             return Err("remote fixture did not become ready".into());
         }

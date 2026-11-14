@@ -282,6 +282,13 @@ export async function backupInstallation(
   directory: string,
   output: string,
   password: string,
+  options: {
+    includeControllerTemplate?: boolean;
+    validateComputers?: (
+      config: RuntimeConfig,
+      computers: Awaited<ReturnType<typeof storedComputers>>,
+    ) => Promise<void>;
+  } = {},
 ) {
   if (password.length < 12) throw new Error("备份密码至少需要 12 个字符。");
   const root = resolve(directory);
@@ -359,6 +366,7 @@ export async function backupInstallation(
         ? join(installation, "data", "agent.sqlite")
         : join(config.dataDir, "agent.sqlite"),
     );
+    await options.validateComputers?.(config, computers);
     if (external && computers.some((item) => item.config.kind !== "process"))
       throw new Error("外部数据目录迁移仅支持本机工作电脑。");
     const computerArchives: { id: string; archive: string }[] = [];
@@ -383,6 +391,26 @@ export async function backupInstallation(
         workComputerArchive = "work-computer.tar";
         await archiveComputer(
           config.workComputer,
+          join(stage, workComputerArchive),
+          false,
+        );
+      }
+    } else if (
+      options.includeControllerTemplate &&
+      config.workComputer?.kind === "controller"
+    ) {
+      const controllerFile = join(root, "controller.json");
+      const controller = JSON.parse(await readFile(controllerFile, "utf8"));
+      const template = parseConfig(
+        { computer: controller.computer },
+        controllerFile,
+      ).computer;
+      if (template.kind !== "docker" || template.ssh)
+        throw new Error("工作电脑模板不兼容 Docker 备份。");
+      if (await dockerVolumeExists(template)) {
+        workComputerArchive = "work-computer.tar";
+        await archiveComputer(
+          template,
           join(stage, workComputerArchive),
           false,
         );
@@ -412,7 +440,9 @@ export async function backupInstallation(
         work: entries.includes("work.tar"),
         computers: computerArchives,
         workComputer:
-          config.workComputer?.kind === "docker"
+          config.workComputer?.kind === "docker" ||
+          (options.includeControllerTemplate &&
+            config.workComputer?.kind === "controller")
             ? { archive: workComputerArchive }
             : undefined,
       }),
@@ -456,8 +486,21 @@ export async function restoreInstallation(
   archive: string,
   destination: string,
   password: string,
-  options: { requireProcessComputer?: boolean } = {},
+  options: {
+    requireProcessComputer?: boolean;
+    requirePilotDockerProfile?: boolean;
+    validateInstallation?: (
+      directory: string,
+      config: RuntimeConfig,
+      computers: Awaited<ReturnType<typeof storedComputers>>,
+      manifest: Record<string, unknown>,
+    ) => Promise<void>;
+  } = {},
 ) {
+  if (options.requirePilotDockerProfile && !options.validateInstallation)
+    throw new Error(
+      "Docker piloto exige validação do perfil antes da restauração.",
+    );
   const target = resolve(destination);
   try {
     await lstat(target);
@@ -515,6 +558,11 @@ export async function restoreInstallation(
     );
     if (manifest.version !== 1 && manifest.version !== 2)
       throw new Error("备份版本不兼容。");
+    if (
+      options.requirePilotDockerProfile &&
+      (manifest.version !== 2 || !Array.isArray(manifest.computers))
+    )
+      throw new Error("Docker piloto exige um backup compatível versão 2.");
     const workComputerArchive = manifest.workComputer?.archive;
     if (
       manifest.workComputer !== undefined &&
@@ -533,6 +581,11 @@ export async function restoreInstallation(
       (sourceConfig.computer.kind !== "process" ||
         (sourceConfig.workComputer &&
           sourceConfig.workComputer.kind !== "docker") ||
+        (sourceConfig.workComputer?.kind === "docker" &&
+          sourceConfig.workComputer.ssh !== undefined) ||
+        sourceConfig.publicUrl !== undefined ||
+        sourceConfig.desktopCredentialFile !== undefined ||
+        !["127.0.0.1", "localhost", "::1"].includes(sourceConfig.host) ||
         sourceConfig.deployment !== "native")
     )
       throw new Error("该备份包含当前环境不支持的隔离电脑。");
@@ -542,6 +595,7 @@ export async function restoreInstallation(
     config.dataDir = join(target, "data");
     if (config.computer.kind === "controller")
       config.computer.credentialFile = join(target, "controller-token");
+    await writeConfiguration(filename, config);
     const database = join(restored, "data", "agent.sqlite");
     await checkCredentialKey(join(restored, "data"));
     if (options.requireProcessComputer)
@@ -552,10 +606,35 @@ export async function restoreInstallation(
       computers.some((item) => item.config.kind !== "process")
     )
       throw new Error("该备份包含当前环境不支持的隔离电脑。");
-    for (const entry of manifest.computers ?? []) {
-      if (!/^computer-[0-9]+[.]tar$/.test(entry.archive))
-        throw new Error("电脑备份路径无效。");
-      const item = computers.find((item) => item.id === entry.id);
+    // Validate consumer-specific files before creating volumes or publishing the profile.
+    await options.validateInstallation?.(
+      restored,
+      sourceConfig,
+      computers,
+      manifest,
+    );
+    const entries = manifest.computers ?? [];
+    if (!Array.isArray(entries)) throw new Error("电脑备份清单无效。");
+    const seenIds = new Set<string>();
+    const seenArchives = new Set<string>();
+    const computerArchives: {
+      item: (typeof computers)[number];
+      targetConfig: DockerConfig;
+      archivePath: string;
+    }[] = [];
+    for (const entry of entries) {
+      if (
+        !entry ||
+        typeof entry !== "object" ||
+        typeof entry.id !== "string" ||
+        !/^computer-[0-9]+[.]tar$/.test(entry.archive) ||
+        seenIds.has(entry.id) ||
+        seenArchives.has(entry.archive)
+      )
+        throw new Error("电脑备份清单无效。");
+      seenIds.add(entry.id);
+      seenArchives.add(entry.archive);
+      const item = computers.find((computer) => computer.id === entry.id);
       if (!item || item.config.kind === "process")
         throw new Error("电脑备份配置不完整。");
       const targetConfig = await archiveTarget(
@@ -564,11 +643,20 @@ export async function restoreInstallation(
         item.config,
       );
       if (!targetConfig) throw new Error("电脑备份配置不完整。");
-      const volume = await archiveComputer(
-        targetConfig,
-        join(stage, entry.archive),
-        true,
-      );
+      const archivePath = join(stage, entry.archive);
+      const archived = await lstat(archivePath);
+      if (!archived.isFile() || archived.isSymbolicLink() || archived.nlink > 1)
+        throw new Error("电脑备份文件无效。");
+      computerArchives.push({ item, targetConfig, archivePath });
+    }
+    if (workComputerArchive) {
+      const archivePath = join(stage, workComputerArchive);
+      const archived = await lstat(archivePath);
+      if (!archived.isFile() || archived.isSymbolicLink() || archived.nlink > 1)
+        throw new Error("模板备份文件无效。");
+    }
+    for (const { item, targetConfig, archivePath } of computerArchives) {
+      const volume = await archiveComputer(targetConfig, archivePath, true);
       restoredVolumes.push(volume);
       item.config =
         item.config.kind === "controller"
@@ -595,6 +683,33 @@ export async function restoreInstallation(
           ...sourceConfig.workComputer,
         });
       }
+    }
+    if (options.requirePilotDockerProfile) {
+      const controllerFile = join(restored, "controller.json");
+      const controller = JSON.parse(await readFile(controllerFile, "utf8"));
+      const template = parseConfig(
+        { computer: controller.computer },
+        controllerFile,
+      ).computer;
+      if (template.kind !== "docker" || template.ssh)
+        throw new Error("Docker piloto contém template incompatível.");
+      const volume = manifest.workComputer?.archive
+        ? await archiveComputer(
+            template,
+            join(stage, manifest.workComputer.archive),
+            true,
+          )
+        : {
+            config: remapDockerComputer(template),
+            removeVolume: async () => {},
+          };
+      if (manifest.workComputer?.archive) restoredVolumes.push(volume);
+      controller.computer = volume.config;
+      await writeConfiguration(controllerFile, controller);
+      config.workComputer = {
+        ...config.workComputer,
+        id: volume.config.id,
+      };
     }
     if (manifest.work) {
       const controllerFile = join(restored, "controller.json");
