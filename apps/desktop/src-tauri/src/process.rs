@@ -151,6 +151,10 @@ impl OwnedProcess {
         {
             let status = self.child.wait()?;
             if self.job_has_active_processes()? {
+                // Job accounting can lag behind the leader's exit notification.
+                if self.wait_for_empty_job().is_ok() {
+                    return Ok(status);
+                }
                 unsafe {
                     use windows::Win32::System::JobObjects::TerminateJobObject;
                     TerminateJobObject(self.job, 1).map_err(io::Error::other)?;
