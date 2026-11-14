@@ -16,6 +16,8 @@ código foi feita nesta auditoria.
   caminho do pnpm, o título do Chromium, o deploy offline e o stage entre drives.
 - Tarefas escolhidas do Passe 1 concluídas: AUD-07/08 (`1da052f`), AUD-10
   (`85ff5b9`) e AUD-12 (`38095c5`). AUD-09 e AUD-11 aguardam decisão.
+- CI do Passe 1 verde em `43569820471`; o job Windows nativo passou no rerun
+  após uma falha transitória de navegação `ERR_ABORTED`.
 - O working tree mantém alterações locais preexistentes em Tauri, web, docs e
   testes; elas não fazem parte dos commits da auditoria.
 - `README.zh-CN.md` foi restaurado e o worktree órfão foi removido.
