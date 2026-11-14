@@ -16,8 +16,10 @@ código foi feita nesta auditoria.
   caminho do pnpm, o título do Chromium, o deploy offline e o stage entre drives.
 - Tarefas escolhidas do Passe 1 concluídas: AUD-07/08 (`1da052f`), AUD-10
   (`85ff5b9`) e AUD-12 (`38095c5`). AUD-09 e AUD-11 aguardam decisão.
-- CI do Passe 1 verde em `43569820471`; o job Windows nativo passou no rerun
+- CI do Passe 1 verde em `43571982591`; o job Windows nativo passou no rerun
   após uma falha transitória de navegação `ERR_ABORTED`.
+- AUD-14 ampliado e implementado para migrar as APIs incompatíveis do runtime Pi
+  1.5.2; checks locais passaram. CI multiplataforma ainda pendente.
 - O working tree mantém alterações locais preexistentes em Tauri, web, docs e
   testes; elas não fazem parte dos commits da auditoria.
 - `README.zh-CN.md` foi restaurado e o worktree órfão foi removido.
@@ -59,7 +61,7 @@ Tarefas marcadas **decisão** precisam de confirmação antes de remover algo.
 | ID | Tarefa | Evidência | Validação | Risco |
 | --- | --- | --- | --- | --- |
 | AUD-13 (M) | Atualizar patches/minors seguros: `hono` 4.13.18, `@hono/node-server` 2.1.8, `@modelcontextprotocol/sdk` 1.32.2, `tar` 7.5.23, `vite` 8.3.8, `yaml` 2.9.1, `@biomejs/biome` 2.6.7, `@orpc/*` 1.16.2, `@playwright/test` 1.65.1, `vitest` 5.1.0, `file-type` 22.3.0, `undici` 8.12.4, `fflate` 0.8.3, `@anthropic-ai/claude-agent-sdk` 0.3.325. | `pnpm outdated` (30 entradas). | `pnpm install`, typecheck, lint, testes, build. | Regressões; um PR único e revertível. |
-| AUD-14 (M) | Atualizar a família `@earendil-works/*` de 1.4.0 para 1.5.2. | 5 pacotes no mesmo conjunto. | Testes de harness, runtime e build. | Mudanças de protocolo no runtime. |
+| AUD-14 (implementado; CI pendente) | Atualizar a família `@earendil-works/*` de 1.4.0 para 1.5.2 e migrar as APIs incompatíveis de schema, Chord, observers, watches, histórico e armazenamento. | Dependências Pi do workspace alinhadas em 1.5.2; import de TypeBox desacoplado; histórico paginado sem perder leituras completas. | `pnpm install --frozen-lockfile`, typecheck, suíte completa, lint e build passaram localmente; CI multiplataforma pendente. | Mudanças de protocolo no runtime. |
 | AUD-15 (M, separar) | Migrar majors: `@agentclientprotocol/sdk` 1.9 → 2.6, `croner` 10 → 11, `@trycua/cua-driver` 0.37 → 0.49, `agent-browser` 0.39 → 0.43, `@types/node` 24 → 26. | Versões listadas em `pnpm outdated`. | Testes específicos por pacote e CI. | Alto; uma tarefa por pacote. |
 | AUD-16 (M, decisão) | Atualizar Tauri alpha e Rust quando houver release estável. | `tauri = 3.0.0-alpha.6`; CI fixa Rust 1.95. | Build desktop e CI. | Alpha instável; não bloquear o restante. |
 

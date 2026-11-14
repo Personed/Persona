@@ -262,7 +262,7 @@ test("reopened routines coalesce missed repeats and deliver a real file once", a
     expect(runs[0]?.coalesced).toBe(true);
     expect(runs[0]?.content).toContain("Read the saved report preference");
     expect(items[0]?.nextAt).toBe(fixture.now() + 3600000);
-    const view = await second.conversation.viewState(context);
+    const view = await second.conversation.watch(context);
     try {
       const attachment = chatView(view.value).messages.flatMap(
         (message) => message.attachments ?? [],
@@ -279,7 +279,7 @@ test("reopened routines coalesce missed repeats and deliver a real file once", a
         await (await second.files.download(botId, attachmentId)).text(),
       ).toContain("Metric units");
     } finally {
-      view.dispose();
+      await view.stop();
     }
     const item = items[0];
     if (!item) throw new Error("Routine missing");

@@ -15,8 +15,14 @@ export async function* watchCommits<T>(
     pending = true;
     changed.resolve();
   };
-  const unsubscribe = harness.subscribeCommits(({ changes }) => {
-    if (changes.some(accepts)) notify();
+  const observation = harness.observeCommits({
+    advance: ({ changes }) => {
+      if (changes.some(accepts)) notify();
+    },
+    end: () => {
+      closed = true;
+      notify();
+    },
   });
   const unsubscribeClose = harness.subscribeClose(() => {
     closed = true;
@@ -41,7 +47,7 @@ export async function* watchCommits<T>(
     if (closed && !context.abortSignal?.aborted)
       throw new Error("服务连接已关闭。");
   } finally {
-    unsubscribe();
+    observation.detach();
     unsubscribeClose();
     context.abortSignal?.removeEventListener("abort", notify);
   }

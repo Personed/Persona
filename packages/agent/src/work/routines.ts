@@ -1,5 +1,4 @@
 import type { Context } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import {
   type ConversationId,
   defineExtension,
@@ -9,6 +8,7 @@ import {
   type TaskId,
   type Tx,
 } from "@earendil-works/pi-durable";
+import Type from "typebox";
 import { EngineDoc } from "../harness/state.ts";
 import { BOT_NAME_LENGTH, WORK_TEXT_LENGTH } from "./limits.ts";
 import {

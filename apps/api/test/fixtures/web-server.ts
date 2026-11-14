@@ -1,7 +1,6 @@
 import { createServer } from "node:http";
 import { dirname } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
@@ -24,6 +23,7 @@ import type { ChatMessage } from "@persona/agent/messages";
 import { persistentCredentials } from "@persona/hosting/credentials";
 import { Sessions } from "@persona/hosting/sessions";
 import { HostingStore } from "@persona/hosting/store";
+import Type from "typebox";
 import { EngineMessage } from "../../../../packages/agent/src/harness/state.ts";
 import { stored } from "../../../../packages/agent/src/harness/task-types.ts";
 import type { EngineApproval } from "../../../../packages/agent/src/harness/types.ts";

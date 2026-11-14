@@ -3,7 +3,6 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join, posix, resolve, win32 } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import {
   defineExtension,
   defineTool,
@@ -17,6 +16,7 @@ import {
   type ImageProcessor,
 } from "@earendil-works/pi-durable/tools";
 import { fileTypeFromBuffer } from "file-type";
+import Type from "typebox";
 import {
   type Attachment,
   type EvidenceSource,

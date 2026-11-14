@@ -103,7 +103,7 @@ test.runIf(platform() === "win32")(
         BACKGROUND_CONTEXT,
       );
       await submission.wait(BACKGROUND_CONTEXT);
-      const state = await runtime.conversation.viewState(BACKGROUND_CONTEXT);
+      const state = await runtime.conversation.watch(BACKGROUND_CONTEXT);
       try {
         const view = chatView(state.value);
         const result = view.messages.find(
@@ -122,7 +122,7 @@ test.runIf(platform() === "win32")(
           result?.diagnostics?.some((item) => item.message.includes("17")),
         ).toBe(true);
       } finally {
-        state.dispose();
+        await state.stop();
       }
     } finally {
       await runtime.harness.close(BACKGROUND_CONTEXT);
@@ -134,7 +134,7 @@ test.runIf(platform() === "win32")(
       BACKGROUND_CONTEXT,
     );
     try {
-      const state = await restored.conversation.viewState(BACKGROUND_CONTEXT);
+      const state = await restored.conversation.watch(BACKGROUND_CONTEXT);
       try {
         expect(
           chatView(state.value)
@@ -142,7 +142,7 @@ test.runIf(platform() === "win32")(
             ?.diagnostics?.some((item) => item.message.includes("17")),
         ).toBe(true);
       } finally {
-        state.dispose();
+        await state.stop();
       }
     } finally {
       await restored.harness.close(BACKGROUND_CONTEXT);

@@ -1,11 +1,11 @@
 import type { Context } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import {
   defineExtension,
   defineTool,
   type EntryId,
   type EntryRecord,
 } from "@earendil-works/pi-durable";
+import Type from "typebox";
 import {
   type ChatContent,
   type ChatMessage,

@@ -9,7 +9,6 @@ import {
   BACKGROUND_CONTEXT,
   withAbortSignal,
 } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
@@ -27,6 +26,7 @@ import {
   type Submission,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import Type from "typebox";
 import { expect, onTestFinished, test } from "vitest";
 import { chatView } from "../src/chat-view.ts";
 import { messageText } from "../src/messages.ts";
@@ -90,7 +90,7 @@ test("Pi retries a broken HTTP stream and retains evidence after reopening", asy
     model: { provider: "deepseek", modelId: "deepseek-flash" },
   };
   let runtime = await openAgent(file, options, selected, context);
-  let state = await runtime.conversation.viewState(context);
+  let state = await runtime.conversation.watch(context);
   try {
     const submitted = await runtime.conversation.submit(
       { type: "input", content: "Continue" },
@@ -111,10 +111,10 @@ test("Pi retries a broken HTTP stream and retains evidence after reopening", asy
     ).toEqual([]);
     expect(state.value.docs[LiveDoc.definition.kind]).not.toHaveProperty("run");
     expect(calls).toBe(2);
-    state.dispose();
+    await state.stop();
     await runtime.harness.close(context);
     runtime = await openAgent(file, options, selected, context);
-    state = await runtime.conversation.viewState(context);
+    state = await runtime.conversation.watch(context);
     const evidence = state.value.entries
       .flatMap((entry) => entry.model ?? [])
       .flatMap((message) =>
@@ -127,7 +127,7 @@ test("Pi retries a broken HTTP stream and retains evidence after reopening", asy
     );
   } finally {
     release.resolve();
-    state.dispose();
+    await state.stop();
     await runtime.harness.close(context);
   }
 });
@@ -152,11 +152,12 @@ test("generation drafts stay separate until one complete answer is stored", asyn
   faux.setResponses([fauxAssistantMessage(answer)]);
   const options = { models, registry: createRegistry() };
   const first = await openAgent(file, options, agent, context);
-  const state = await first.conversation.viewState(context);
+  const state = await first.conversation.watch(context);
   const snapshots: ReturnType<typeof chatView>[] = [];
   const drafting = Promise.withResolvers<void>();
-  state.subscribe((value) => {
-    const view = chatView(value);
+  state.start(async (call) => {
+    if (call.kind !== "value") return;
+    const view = chatView(call.value);
     snapshots.push(view);
     if (view.draft?.content.some((part) => part.type === "text" && part.text))
       drafting.resolve();
@@ -191,11 +192,11 @@ test("generation drafts stay separate until one complete answer is stored", asyn
         expect(reply.id).toBe(answerId);
       }
   } finally {
-    state.dispose();
+    await state.stop();
     await first.harness.close(context);
   }
   const second = await openAgent(file, options, agent, context);
-  const restored = await second.conversation.viewState(context);
+  const restored = await second.conversation.watch(context);
   try {
     const view = chatView(restored.value);
     expect(view.draft).toBeNull();
@@ -203,7 +204,7 @@ test("generation drafts stay separate until one complete answer is stored", asyn
       view.messages.filter((message) => message.role === "assistant"),
     ).toMatchObject([{ id: answerId, content: [{ text: answer }] }]);
   } finally {
-    restored.dispose();
+    await restored.stop();
     await second.harness.close(context);
   }
 });
@@ -235,7 +236,7 @@ test.each(["aborted", "error"] as const)(
       await first.harness.close(context);
     }
     const second = await openAgent(file, options, agent, context);
-    const state = await second.conversation.viewState(context);
+    const state = await second.conversation.watch(context);
     try {
       const view = chatView(state.value);
       expect(view.draft).toBeNull();
@@ -249,7 +250,7 @@ test.each(["aborted", "error"] as const)(
         chatTranscript(view).filter((item) => item.kind === "message"),
       ).toHaveLength(1);
     } finally {
-      state.dispose();
+      await state.stop();
       await second.harness.close(context);
     }
   },
@@ -537,7 +538,7 @@ test.each(["generation", "tool"])(
         status: "unanswered",
         reason: "aborted",
       });
-      const state = await second.conversation.viewState(context);
+      const state = await second.conversation.watch(context);
       try {
         expect(
           chatTranscript(chatView(state.value)).every(
@@ -550,7 +551,7 @@ test.each(["generation", "tool"])(
           ),
         ).toHaveLength(1);
       } finally {
-        state.dispose();
+        await state.stop();
       }
       expect(faux.state.callCount).toBe(1);
     } finally {

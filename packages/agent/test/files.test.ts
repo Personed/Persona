@@ -151,7 +151,7 @@ test("image reads resize to model limits, preserve originals, and retain decode 
     await submission.wait(context);
     const workspace = await files.workspace(runtime.conversation.id);
     expect(await readFile(join(workspace.cwd, file.path))).toEqual(original);
-    const state = await runtime.conversation.viewState(context);
+    const state = await runtime.conversation.watch(context);
     try {
       const results = chatView(state.value).messages.filter(
         (message) => message.role === "toolResult",
@@ -164,7 +164,7 @@ test("image reads resize to model limits, preserve originals, and retain decode 
         results[1]?.diagnostics?.some((item) => item.severity === "error"),
       ).toBe(true);
     } finally {
-      state.dispose();
+      await state.stop();
     }
   } finally {
     await runtime.harness.close(context);

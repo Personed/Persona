@@ -1,7 +1,6 @@
 import { once } from "node:events";
 import { appendFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage,
@@ -13,6 +12,7 @@ import {
   defineExtension,
   defineTool,
 } from "@earendil-works/pi-durable";
+import Type from "typebox";
 import { openAgent } from "../../src/open-agent.ts";
 
 const [database, callsFile, toolName, requestId, replay, checkpoint] =

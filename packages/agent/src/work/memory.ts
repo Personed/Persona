@@ -1,5 +1,4 @@
 import type { Context } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
 import {
   defineDoc,
@@ -9,6 +8,7 @@ import {
   section,
   type Tx,
 } from "@earendil-works/pi-durable";
+import Type from "typebox";
 import {
   MEMORY_CONTEXT_BYTES,
   MEMORY_PROFILE_BYTES,

@@ -167,9 +167,13 @@ test.each([
               ?.activeId,
         )
         .toBe(null);
-      const entries = await runtime.conversation.viewState(context);
-      expect(JSON.stringify(entries.value)).toContain('"state":"expired"');
-      expect(JSON.stringify(entries.value)).not.toContain('"state":"done"');
+      const entries = await runtime.conversation.watch(context);
+      try {
+        expect(JSON.stringify(entries.value)).toContain('"state":"expired"');
+        expect(JSON.stringify(entries.value)).not.toContain('"state":"done"');
+      } finally {
+        await entries.stop();
+      }
       return;
     }
     revision++;
@@ -196,8 +200,12 @@ test.each([
           (await runtime.harness.snapshot(EngineDoc, botId, context))?.activeId,
       )
       .toBe(null);
-    const entries = await runtime.conversation.viewState(context);
-    expect(JSON.stringify(entries.value)).toContain('"state":"done"');
+    const entries = await runtime.conversation.watch(context);
+    try {
+      expect(JSON.stringify(entries.value)).toContain('"state":"done"');
+    } finally {
+      await entries.stop();
+    }
     await expect(
       engines.takeRequest(botId, id, crypto.randomUUID(), context),
     ).rejects.toThrow("失效");

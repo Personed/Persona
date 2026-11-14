@@ -4,17 +4,14 @@ import {
   LiveDoc,
   type LiveState,
 } from "@earendil-works/pi-durable";
-import { chatView } from "./chat-view.ts";
+import { chatView, readConversationView } from "./chat-view.ts";
 import { EngineMessage } from "./harness/state.ts";
 
 export async function stopChat(conversation: Conversation, context: Context) {
-  const state = await conversation.viewState(context);
-  const live = state.value.docs[LiveDoc.definition.kind] as
-    | LiveState
-    | undefined;
+  const state = await readConversationView(conversation, context);
+  const live = state.docs[LiveDoc.definition.kind] as LiveState | undefined;
   const taskId = live?.run?.taskId;
-  const turnId = chatView(state.value).activeTurnId;
-  state.dispose();
+  const turnId = chatView(state).activeTurnId;
   await conversation.abort(context);
   if (!taskId || !turnId) return;
   const task = await conversation.commit((tx) => tx.task(taskId), context);

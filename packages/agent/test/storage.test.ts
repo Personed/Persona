@@ -52,40 +52,53 @@ test("replays document history in bounded pages and preserves historical reads",
   const file = join(directory, "agent.sqlite");
   const first = await SqliteStorage.open(await openNodeSqliteDatabase(file));
   await first.commit(
-    [{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }],
+    [[{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }]],
+    () => {},
     context,
   );
   const id = await first.mintId<DocumentId>();
   await first.commit(
     [
-      {
-        type: "document.create",
-        record: {
-          id,
-          kind: "test.replay",
-          scope: { kind: "conversation", conversationId: ROOT_CONVERSATION_ID },
-          history: "rewindable",
-          fork: "asOf",
+      [
+        {
+          type: "document.create",
+          record: {
+            id,
+            kind: "test.replay",
+            scope: {
+              kind: "conversation",
+              conversationId: ROOT_CONVERSATION_ID,
+            },
+            history: "rewindable",
+            fork: "asOf",
+          },
+          content: { kind: "base", version: 1, value: { count: 0 } },
         },
-        content: { kind: "base", version: 1, value: { count: 0 } },
-      },
+      ],
     ],
+    () => {},
     context,
   );
   let midpoint: Seq | undefined;
   for (let count = 1; count <= 97; count++) {
-    const seq = await first.commit(
+    let seq: Seq | undefined;
+    await first.commit(
       [
-        {
-          type: "document.change",
-          id,
-          content: {
-            kind: "delta",
-            version: 1,
-            ops: [["s", ["count"], count]],
+        [
+          {
+            type: "document.change",
+            id,
+            content: {
+              kind: "delta",
+              version: 1,
+              ops: [["s", ["count"], count]],
+            },
           },
-        },
+        ],
       ],
+      (_index, committedSeq) => {
+        seq = committedSeq;
+      },
       context,
     );
     if (count === 49) midpoint = seq;

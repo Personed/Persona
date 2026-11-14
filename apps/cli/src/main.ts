@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/chord/context";
 import { openChat } from "@persona/agent/chat";
 import { messageText } from "@persona/agent/messages";
-import { chatView } from "@persona/agent/view";
+import { chatView, readConversationHistory } from "@persona/agent/view";
 import { reply } from "./chat.ts";
 
 async function main() {
@@ -44,11 +44,9 @@ async function main() {
       return;
     }
     await conversation.waitForIdle(context);
-    const history = await conversation.viewState(context);
     const messages = runtime.engines
       ? (await runtime.engines.view(conversation.id, context)).messages
-      : chatView(history.value).messages;
-    history.dispose();
+      : chatView(await readConversationHistory(conversation, context)).messages;
     for (const message of messages) {
       if (message.role === "user" || message.role === "assistant") {
         const text = messageText(message);

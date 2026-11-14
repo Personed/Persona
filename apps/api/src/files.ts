@@ -4,7 +4,7 @@ import { MAX_FILE_BYTES } from "@persona/agent/attachments";
 import type { Bots } from "@persona/agent/bots";
 import type { Computers } from "@persona/agent/computer/catalog";
 import type { Files } from "@persona/agent/files";
-import { chatView } from "@persona/agent/view";
+import { chatView, readConversationHistory } from "@persona/agent/view";
 import { WorkError } from "@persona/agent/work";
 import { z } from "zod";
 import { botConversation, botTarget } from "./conversation.ts";
@@ -12,17 +12,14 @@ import { botConversation, botTarget } from "./conversation.ts";
 export function fileRouter(bots: Bots, files: Files, computers?: Computers) {
   async function discard(botId: number, id: string) {
     const conversation = await botConversation(bots, botId);
-    const state = await conversation.viewState(BACKGROUND_CONTEXT);
-    try {
-      if (
-        chatView(state.value).messages.some((message) =>
-          message.attachments?.some((file) => file.id === id),
-        )
+    if (
+      chatView(
+        await readConversationHistory(conversation, BACKGROUND_CONTEXT),
+      ).messages.some((message) =>
+        message.attachments?.some((file) => file.id === id),
       )
-        return;
-    } finally {
-      state.dispose();
-    }
+    )
+      return;
     await files.discard(botId, id);
   }
   return {

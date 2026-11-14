@@ -283,7 +283,7 @@ test.each([false, true])("screenshot delivery: %s", async (deliver) => {
       )
     ).wait(context),
   ).toMatchObject({ status: "done" });
-  const state = await runtime.conversation.viewState(context);
+  const state = await runtime.conversation.watch(context);
   expect(observations).toBe(2);
   try {
     const file = (returned as { structuredContent: { evidence: Attachment[] } })
@@ -323,6 +323,6 @@ test.each([false, true])("screenshot delivery: %s", async (deliver) => {
       structuredContent: { evidence: [{ id: file.id }] },
     });
   } finally {
-    state.dispose();
+    await state.stop();
   }
 });

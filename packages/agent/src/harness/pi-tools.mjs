@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { Type } from "@earendil-works/pi-ai";
+import Type from "typebox";
 export default function (pi) {
   const { url, servers = [] } = JSON.parse(
     readFileSync(process.env.PERSONA_PI_TOOLS, "utf8"),

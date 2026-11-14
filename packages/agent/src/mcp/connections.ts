@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { JsonRepresentation } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord/context";
+import type { JsonRepresentation } from "@earendil-works/chord/json";
 import type { CredentialStore } from "@earendil-works/pi-ai";
 import { defineDoc, type Harness } from "@earendil-works/pi-durable";
 import type { mcpOperation } from "../harness/mcp-client.mjs";

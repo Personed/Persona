@@ -286,7 +286,7 @@ test.each(["completed", "running", "sending"] as const)(
         .flatMap((worker) => worker.requests)
         .filter((request) => request.method === "turn/start"),
     ).toHaveLength(1);
-    const state = await runtime.conversation.viewState(context);
+    const state = await runtime.conversation.watch(context);
     try {
       if (outcome === "completed") {
         const records = chatView(state.value).messages;
@@ -307,7 +307,7 @@ test.each(["completed", "running", "sending"] as const)(
           "执行结果未确认",
         );
     } finally {
-      state.dispose();
+      await state.stop();
     }
   },
 );
@@ -467,11 +467,11 @@ test("switching from embedded Pi imports recent conversation into the first nati
       .at(-1)
       ?.requests.some((request) => request.method === "thread/start"),
   ).toBe(true);
-  const state = await runtime.conversation.viewState(context);
+  const state = await runtime.conversation.watch(context);
   expect(chatView(state.value).messages.map(messageText)).toContain(
     "Remember the blue folder",
   );
-  state.dispose();
+  await state.stop();
 });
 
 test.each(["tools", "ack", "gap"])(

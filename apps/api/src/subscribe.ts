@@ -8,9 +8,11 @@ export async function* watchValues<T>(
   let pending: T | undefined = watch.value;
   let changed = Promise.withResolvers<void>();
   let closed = false;
-  watch.start(async (value) => {
-    pending = value;
-    changed.resolve();
+  watch.start(async (call) => {
+    if (call.kind === "value") {
+      pending = call.value;
+      changed.resolve();
+    }
   });
   void watch.closed.then(() => {
     closed = true;

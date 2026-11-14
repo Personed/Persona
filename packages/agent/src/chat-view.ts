@@ -1,8 +1,12 @@
+import type { Context } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import {
   AgentDoc,
   type AgentState,
+  type Conversation,
+  ConversationTranscript,
   type ConversationView,
+  type EntryId,
   LiveDoc,
   type LiveState,
   type ModelRef,
@@ -46,6 +50,75 @@ export type ChatView = {
     output?: string;
   }[];
 };
+
+export async function readConversationView(
+  conversation: Pick<Conversation, "watch">,
+  context: Context,
+) {
+  const watch = await conversation.watch(context);
+  try {
+    return watch.value;
+  } finally {
+    await watch.stop();
+  }
+}
+
+export async function readConversationHistory(
+  conversation: Pick<Conversation, "entries" | "watch">,
+  context: Context,
+) {
+  const watch = await conversation.watch(context);
+  try {
+    const transcript = new ConversationTranscript(
+      (query, limit, ctx) => conversation.entries(query, limit, undefined, ctx),
+      { pageSize: 200 },
+    );
+    let view = transcript.merge(watch.value);
+    while (view.items[0]?.kind === "earlier")
+      view = await transcript.loadEarlier(context);
+    const { before: _before, ...snapshot } = watch.value;
+    return {
+      ...snapshot,
+      entries: view.items.flatMap((item) =>
+        item.kind === "entry" ? [item.entry] : [],
+      ),
+    };
+  } finally {
+    await watch.stop();
+  }
+}
+
+export async function readConversationPage(
+  conversation: Pick<Conversation, "entries" | "watch">,
+  context: Context,
+  before?: string,
+) {
+  const snapshot = await readConversationView(conversation, context);
+  if (before === undefined) return chatView(snapshot);
+
+  const [beforeEntry = 0, beforeIndex = 0] = before.split(":").map(Number);
+  const { before: _before, ...base } = snapshot;
+  if (!beforeEntry) return chatView({ ...base, entries: [] });
+
+  const page = await conversation.entries(
+    { order: "descending", maxEntryId: beforeEntry as EntryId },
+    500,
+    undefined,
+    context,
+  );
+  const view = chatView({ ...base, entries: [...page.items].reverse() });
+  const messages = view.messages.filter((message) => {
+    if (!message.cursor) return false;
+    const [entry = 0, index = 0] = message.cursor.split(":").map(Number);
+    return (
+      entry < beforeEntry || (entry === beforeEntry && index < beforeIndex)
+    );
+  });
+  view.messages = messages.slice(-200);
+  if (page.next || messages.length > 200)
+    view.before = view.messages[0]?.cursor ?? `${page.items.at(-1)?.id ?? 0}:0`;
+  return view;
+}
 
 export function chatView(
   view: Omit<ConversationView, "conversation"> & {
@@ -219,6 +292,9 @@ export function chatView(
   }
   return {
     id: view.conversation.id,
+    ...(view.before !== undefined
+      ? { before: `${view.before}:${Number.MAX_SAFE_INTEGER}` }
+      : {}),
     model: agent?.model ?? null,
     instructions: agent?.instructions ?? "",
     messages,

@@ -44,11 +44,15 @@ export function botWork(harness: Harness, now = Date.now, files?: Files) {
           if (change.type !== "document" && change.type !== "document.copy")
             return false;
           if (change.record.kind === EngineDoc.definition.kind) {
-            if (change.conversationId !== botId || change.type !== "document")
+            if (
+              change.conversationId !== botId ||
+              (change.type === "document" && change.kind !== "change")
+            )
               return false;
+            if (change.type === "document.copy") return true;
             const state = change.value as {
               runtime?: EngineRuntimeState;
-            } | null;
+            };
             const next = JSON.stringify(state?.runtime?.nativeSkills);
             if (catalog === next) return false;
             catalog = next;

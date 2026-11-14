@@ -1,10 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { JsonRepresentation } from "@earendil-works/chord";
 import {
   BACKGROUND_CONTEXT,
   type Context,
 } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
+import type { JsonRepresentation } from "@earendil-works/chord/json";
 import {
   type ConversationId,
   defineDoc,
@@ -19,6 +18,7 @@ import {
   type TaskId,
 } from "@earendil-works/pi-durable";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import Type from "typebox";
 import { z } from "zod";
 import type { Files } from "../files.ts";
 import { computerEvidence } from "../harness/evidence.ts";

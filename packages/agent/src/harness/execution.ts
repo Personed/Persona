@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import Type from "typebox";
 import type { Attachment } from "../attachments.ts";
 import type { Computers } from "../computer/catalog.ts";
 import { computerInstructions } from "../computer/instructions.ts";

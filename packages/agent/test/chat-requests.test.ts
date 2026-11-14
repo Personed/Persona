@@ -43,23 +43,23 @@ for (const ending of ["answer", "deny", "expire", "restart"] as const) {
             ?.approvals.length,
       )
       .toBe(1);
-    const state = await conversation.viewState(context);
+    const state = await conversation.watch(context);
     const pending = chatView(
       state.value,
       (await harness.snapshot(ComputerRequests, conversation.id, context))
         ?.approvals,
     ).messages.find((message) => message.approval);
-    state.dispose();
+    await state.stop();
     expect(pending?.approval?.state).toBe("pending");
     expect(pending?.timestamp).toEqual(expect.any(Number));
     if (ending === "restart") {
       const restored = await fixture.reopen();
-      const state = await restored.conversation.viewState(context);
+      const state = await restored.conversation.watch(context);
       expect(
         chatView(state.value).messages.find((message) => message.approval)
           ?.approval?.state,
       ).toBe("expired");
-      state.dispose();
+      await state.stop();
       boundary.expire(conversation.id, request.id);
       await result.catch(() => {});
       return;
@@ -74,11 +74,11 @@ for (const ending of ["answer", "deny", "expire", "restart"] as const) {
       );
     await result;
     const restored = await fixture.reopen();
-    const history = await restored.conversation.viewState(context);
+    const history = await restored.conversation.watch(context);
     const card = chatView(history.value).messages.find(
       (message) => message.approval,
     );
-    history.dispose();
+    await history.stop();
     expect(card?.id).toBe(pending?.id);
     expect(card?.approval?.state).toBe(
       ending === "answer"

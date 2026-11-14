@@ -16,7 +16,7 @@ export async function reply(
   write: (text: string) => void,
   engines?: Runtime,
 ) {
-  const view = await conversation.viewState(context);
+  const view = await conversation.watch(context);
   const previous = new Set(
     (engines
       ? await engines.view(conversation.id, context)
@@ -48,7 +48,10 @@ export async function reply(
       })()
     : undefined;
   void watching?.catch(() => {});
-  if (!engines) view.subscribe((value) => render(chatView(value)));
+  if (!engines)
+    view.start(async (call) => {
+      if (call.kind === "value") render(chatView(call.value));
+    });
   try {
     const submission = engines
       ? await engines.submit(
@@ -70,6 +73,6 @@ export async function reply(
   } finally {
     watch.abort();
     await watching?.catch(() => {});
-    view.dispose();
+    await view.stop();
   }
 }

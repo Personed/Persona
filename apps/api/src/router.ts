@@ -13,7 +13,11 @@ import { materialText } from "@persona/agent/materials";
 import type { McpConnections } from "@persona/agent/mcp";
 import { type Runtime, slimChatView } from "@persona/agent/runtime";
 import { stopChat } from "@persona/agent/stop";
-import { chatView } from "@persona/agent/view";
+import {
+  chatView,
+  readConversationHistory,
+  readConversationPage,
+} from "@persona/agent/view";
 import { type BotWork, WorkError } from "@persona/agent/work";
 import { z } from "zod";
 import { computerRouter } from "./computer.ts";
@@ -99,12 +103,11 @@ export function createRouter(
               before: input.before,
             }),
           );
-        const view = await conversation.viewState(BACKGROUND_CONTEXT);
-        try {
-          return chatView(view.value);
-        } finally {
-          view.dispose();
-        }
+        return readConversationPage(
+          conversation,
+          BACKGROUND_CONTEXT,
+          input.before,
+        );
       }),
     message: os
       .input(
@@ -181,13 +184,12 @@ export function createRouter(
                   ? await (engines
                       ? engines.view(input.botId, BACKGROUND_CONTEXT)
                       : (async () => {
-                          const state =
-                            await conversation.viewState(BACKGROUND_CONTEXT);
-                          try {
-                            return chatView(state.value);
-                          } finally {
-                            state.dispose();
-                          }
+                          return chatView(
+                            await readConversationHistory(
+                              conversation,
+                              BACKGROUND_CONTEXT,
+                            ),
+                          );
                         })())
                   : null;
               const materials = view

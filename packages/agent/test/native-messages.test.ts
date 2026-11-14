@@ -2,7 +2,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage,
@@ -14,6 +13,7 @@ import {
   defineExtension,
   defineTool,
 } from "@earendil-works/pi-durable";
+import Type from "typebox";
 import { expect, onTestFinished, test } from "vitest";
 import { chatView } from "../src/chat-view.ts";
 import { openAgent } from "../src/open-agent.ts";
@@ -63,7 +63,8 @@ test("native assistant messages arrive during work and survive restart", async (
   const options = { models, registry };
   const agent = { model: { provider: "faux", modelId: "faux-1" } };
   const first = await openAgent(database, options, agent, context);
-  const state = await first.conversation.viewState(context);
+  const state = await first.conversation.watch(context);
+  state.start(async () => {});
   let avatar: string | undefined;
   const delivered = () =>
     chatTranscript(chatView(state.value)).flatMap((item) =>
@@ -89,13 +90,13 @@ test("native assistant messages arrive during work and survive restart", async (
     expect(chatView(state.value).busy).toBe(true);
     expect(delivered()).toEqual(["I will check the source."]);
   } finally {
-    state.dispose();
+    await state.stop();
     await first.harness.close(context);
   }
   const second = await openAgent(database, options, agent, context);
   try {
     await second.conversation.waitForIdle(context);
-    const restored = await second.conversation.viewState(context);
+    const restored = await second.conversation.watch(context);
     try {
       const items = chatTranscript(chatView(restored.value));
       const texts = items.flatMap((item) =>
@@ -111,7 +112,7 @@ test("native assistant messages arrive during work and survive restart", async (
       );
       expect((await second.bots.list(context))[0]?.avatar).toBe(avatar);
     } finally {
-      restored.dispose();
+      await restored.stop();
     }
   } finally {
     await second.harness.close(context);

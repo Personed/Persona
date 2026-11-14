@@ -66,20 +66,23 @@ export class UsageReader {
     const invalidate = () => {
       this.cached = undefined;
     };
-    const unsubscribe = harness.subscribeCommits(({ changes }) => {
-      if (
-        changes.some(
-          (change) =>
-            change.type === "conversation" ||
-            (change.type === "entry" &&
-              (change.value.kind === EngineUsageEntry ||
-                change.value.kind === "pi.assistant")),
+    const observation = harness.observeCommits({
+      advance: ({ changes }) => {
+        if (
+          changes.some(
+            (change) =>
+              change.type === "conversation" ||
+              (change.type === "entry" &&
+                (change.value.kind === EngineUsageEntry ||
+                  change.value.kind === "pi.assistant")),
+          )
         )
-      )
-        invalidate();
+          invalidate();
+      },
+      end: invalidate,
     });
     harness.subscribeClose(() => {
-      unsubscribe();
+      observation.detach();
       invalidate();
     });
   }

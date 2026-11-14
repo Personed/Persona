@@ -106,7 +106,7 @@ test("Pi HTTP initialization preserves gzip streams, Durable retry, diagnostics,
       ).wait(context),
     ).toMatchObject({ status: "done" });
     expect(calls).toBe(2);
-    const view = await runtime.conversation.viewState(context);
+    const view = await runtime.conversation.watch(context);
     try {
       const evidence = JSON.stringify(
         view.value.entries
@@ -118,7 +118,7 @@ test("Pi HTTP initialization preserves gzip streams, Durable retry, diagnostics,
       expect(evidence).toContain("fixture-recovered");
       expect(evidence).toContain("UND_ERR_SOCKET");
     } finally {
-      view.dispose();
+      await view.stop();
     }
     const controller = new AbortController();
     const request = fetch(`${baseUrl}/cancel`, { signal: controller.signal });

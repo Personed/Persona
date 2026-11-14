@@ -1,5 +1,4 @@
 import type { Context } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import {
   defineDoc,
   defineExtension,
@@ -8,6 +7,7 @@ import {
   section,
   type Tx,
 } from "@earendil-works/pi-durable";
+import Type from "typebox";
 import type { Files } from "../files.ts";
 import { EngineDoc } from "../harness/state.ts";
 import { SKILL_FILE_BYTES } from "./limits.ts";

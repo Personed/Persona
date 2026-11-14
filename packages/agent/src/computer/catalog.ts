@@ -173,15 +173,18 @@ export class Computers {
 
   async *watch(signal: AbortSignal, context: Context) {
     const changes = on(this.events, "change", { signal });
-    const unsubscribe = this.harness.subscribeCommits(({ changes }) => {
-      if (
-        changes.some(
-          (change) =>
-            change.type === "document" &&
-            change.record.kind === ComputersDoc.definition.kind,
+    const observation = this.harness.observeCommits({
+      advance: ({ changes }) => {
+        if (
+          changes.some(
+            (change) =>
+              (change.type === "document" || change.type === "document.copy") &&
+              change.record.kind === ComputersDoc.definition.kind,
+          )
         )
-      )
-        this.events.emit("change");
+          this.events.emit("change");
+      },
+      end: () => {},
     });
     try {
       yield await this.list(context);
@@ -189,7 +192,7 @@ export class Computers {
     } catch (error) {
       if (!signal.aborted) throw error;
     } finally {
-      unsubscribe();
+      observation.detach();
       await changes.return?.();
     }
   }

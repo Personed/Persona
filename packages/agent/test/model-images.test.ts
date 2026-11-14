@@ -2,7 +2,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage,
@@ -14,6 +13,7 @@ import {
   defineExtension,
   defineTool,
 } from "@earendil-works/pi-durable";
+import Type from "typebox";
 import { expect, onTestFinished, test } from "vitest";
 import { openAgent } from "../src/open-agent.ts";
 import { png } from "./fixtures/png.ts";
@@ -139,11 +139,11 @@ test("Pi normalizes user and tool images, preserves evidence, and applies new mo
         .filter(Boolean),
     ).toEqual([]);
     expect(calls).toBe(2);
-    const state = await runtime.conversation.viewState(context);
+    const state = await runtime.conversation.watch(context);
     try {
       expect(JSON.stringify(state.value.entries)).toContain(original.data);
     } finally {
-      state.dispose();
+      await state.stop();
     }
     await runtime.harness.close(context);
     runtime = await openAgent(file, options, agent, context);
