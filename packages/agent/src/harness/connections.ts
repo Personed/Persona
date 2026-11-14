@@ -387,8 +387,17 @@ export class EngineConnections {
     );
     timer.unref();
     try {
-      const command = config.command || engineProvider(config.provider).command;
-      const path = worker.resolve ? await worker.resolve(command) : command;
+      const provider = engineProvider(config.provider);
+      const command = config.command || provider.command;
+      let path = worker.resolve ? await worker.resolve(command) : command;
+      if (
+        !path &&
+        worker.resolve &&
+        config.command &&
+        config.command !== provider.command &&
+        provider.command
+      )
+        path = await worker.resolve(provider.command);
       if (!path) return { available: false, version: null, path: null };
       if (config.provider === "acp")
         return { available: true, version: null, path };
