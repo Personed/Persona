@@ -262,7 +262,8 @@ test("owned service death is terminal, with no restart", {
     const ready = await control.next();
     assert.equal(ready.type, "ready");
     // Only the PID received from our private supervisor is terminated.
-    process.kill(ready.servicePid);
+    // SIGTERM is handled as a graceful shutdown; this case must be abrupt.
+    process.kill(ready.servicePid, "SIGKILL");
     assert.equal((await control.next()).type, "died");
     assert.deepEqual(await control.next(), {
       type: "stopped",

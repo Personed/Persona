@@ -123,7 +123,8 @@ test("forced service exit reports uncertainty and retains disposable data", {
 }, async () => {
   const service = await startTestService();
   try {
-    process.kill(service.pid);
+    // SIGTERM is handled as a graceful shutdown; this case must be abrupt.
+    process.kill(service.pid, "SIGKILL");
     await service.exited;
     assert.deepEqual(await service.stop(), { graceful: false, cleanup: false });
     assert.deepEqual(await service.stop(), { graceful: false, cleanup: false });
