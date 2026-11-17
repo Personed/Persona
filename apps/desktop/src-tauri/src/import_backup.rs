@@ -87,7 +87,7 @@ fn read_hidden(password: &mut String) -> io::Result<()> {
 
 #[cfg(not(windows))]
 fn read_hidden(password: &mut String) -> io::Result<()> {
-    io::stdin().lock().read_line(password)
+    io::stdin().lock().read_line(password).map(|_| ())
 }
 
 pub fn run(archive: &PathBuf) -> Result<(), String> {
