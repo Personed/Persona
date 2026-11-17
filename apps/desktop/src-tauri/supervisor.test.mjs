@@ -256,16 +256,41 @@ test("EOF during startup cancels without announcing ready", {
 
 test("owned service death is terminal, with no restart", {
   timeout: 120_000,
-}, async () => {
-  const testData = fileURLToPath(
-    new URL("./target/test-data/", import.meta.url),
+}, async (t) => {
+  const base = fileURLToPath(new URL("./target/test-data/", import.meta.url));
+  await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(join(base, "supervisor-forced-exit-"));
+  const testData = join(directory, "target/test-data");
+  const unrelatedServiceDirectory = await mkdtemp(
+    join(base, "service-concurrent-"),
   );
-  await mkdir(testData, { recursive: true });
-  const existingServices = new Set(
-    (await readdir(testData)).filter((name) => name.startsWith("service-")),
-  );
-  const control = supervisor();
+  let cleanupSafe = false;
+  let control;
+  t.after(async () => {
+    try {
+      await access(unrelatedServiceDirectory);
+      if (cleanupSafe) await rm(directory, { recursive: true });
+    } finally {
+      await rm(unrelatedServiceDirectory, { recursive: true, force: true });
+    }
+  });
   try {
+    for (const name of [
+      "supervisor.mjs",
+      "docker-profile.mjs",
+      "docker-service.mjs",
+      "service.mjs",
+      "service-child.mjs",
+      "service-transport.mjs",
+      "stop-child.mjs",
+      "local-session.mjs",
+    ])
+      await copyFile(new URL(name, import.meta.url), join(directory, name));
+    await writeFile(
+      join(directory, "layout.mjs"),
+      `export * from ${JSON.stringify(new URL("./layout.mjs", import.meta.url).href)};\nexport const dataDirectory = ${JSON.stringify(testData)};\n`,
+    );
+    control = supervisor(join(directory, "supervisor.mjs"));
     control.send("start");
     const ready = await control.next();
     assert.equal(ready.type, "ready");
@@ -283,19 +308,16 @@ test("owned service death is terminal, with no restart", {
       control.frames.filter((frame) => frame.type === "ready").length,
       1,
     );
-    const retainedServices = (await readdir(testData)).filter(
-      (name) => name.startsWith("service-") && !existingServices.has(name),
+    const retainedServices = (await readdir(testData)).filter((name) =>
+      name.startsWith("service-"),
     );
     assert.equal(retainedServices.length, 1);
     await access(join(testData, retainedServices[0]));
+    cleanupSafe = true;
   } finally {
-    if (control.child.exitCode === null) {
+    if (control?.child.exitCode === null) {
       control.child.stdin.end();
       await control.exited;
-    }
-    for (const name of await readdir(testData)) {
-      if (name.startsWith("service-") && !existingServices.has(name))
-        await rm(join(testData, name), { recursive: true, force: true });
     }
   }
 });
