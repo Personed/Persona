@@ -6,6 +6,7 @@ import {
   copyFile,
   mkdir,
   mkdtemp,
+  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -256,6 +257,13 @@ test("EOF during startup cancels without announcing ready", {
 test("owned service death is terminal, with no restart", {
   timeout: 120_000,
 }, async () => {
+  const testData = fileURLToPath(
+    new URL("./target/test-data/", import.meta.url),
+  );
+  await mkdir(testData, { recursive: true });
+  const existingServices = new Set(
+    (await readdir(testData)).filter((name) => name.startsWith("service-")),
+  );
   const control = supervisor();
   try {
     control.send("start");
@@ -275,10 +283,19 @@ test("owned service death is terminal, with no restart", {
       control.frames.filter((frame) => frame.type === "ready").length,
       1,
     );
+    const retainedServices = (await readdir(testData)).filter(
+      (name) => name.startsWith("service-") && !existingServices.has(name),
+    );
+    assert.equal(retainedServices.length, 1);
+    await access(join(testData, retainedServices[0]));
   } finally {
     if (control.child.exitCode === null) {
       control.child.stdin.end();
       await control.exited;
+    }
+    for (const name of await readdir(testData)) {
+      if (name.startsWith("service-") && !existingServices.has(name))
+        await rm(join(testData, name), { recursive: true, force: true });
     }
   }
 });

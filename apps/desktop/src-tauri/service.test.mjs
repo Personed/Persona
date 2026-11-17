@@ -130,7 +130,11 @@ test("forced service exit reports uncertainty and retains disposable data", {
     assert.deepEqual(await service.stop(), { graceful: false, cleanup: false });
     await access(service.directory);
   } finally {
-    await service.stop();
+    try {
+      await service.stop();
+    } finally {
+      await rm(service.directory, { recursive: true, force: true });
+    }
   }
 });
 
