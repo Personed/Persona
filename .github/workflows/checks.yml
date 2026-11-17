@@ -157,6 +157,31 @@ jobs:
         with:
           name: persona-windows
           path: apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+  desktop-linux:
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@v6.1.0
+      - run: pnpm install --frozen-lockfile
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl file libgtk-3-dev libssl-dev \
+            libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev wget
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+      - name: Check Rust formatting
+        working-directory: apps/desktop/src-tauri
+        run: cargo +1.95.0 fmt --check
+      - name: Verify desktop Rust contracts on Linux
+        working-directory: apps/desktop/src-tauri
+        run: cargo +1.95.0 test --locked
   sandbox:
     needs: check
     runs-on: ubuntu-latest
