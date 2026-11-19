@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const values = z.record(z.string().min(1).max(256), z.string().max(32768));
+const httpProtocols = ["http:", "https:"];
 export const mcpConfig = z.discriminatedUnion("transport", [
   z.object({
     transport: z.literal("stdio"),
@@ -13,7 +14,16 @@ export const mcpConfig = z.discriminatedUnion("transport", [
     url: z
       .url()
       .max(8192)
-      .refine((value) => ["http:", "https:"].includes(new URL(value).protocol)),
+      .check(
+        z
+          .custom<string>(
+            (value) =>
+              typeof value === "string" &&
+              httpProtocols.includes(new URL(value).protocol),
+            { abort: false },
+          )
+          .meta({ apiContract: { "x-persona-url-protocols": httpProtocols } }),
+      ),
     headers: values.default({}),
   }),
 ]);

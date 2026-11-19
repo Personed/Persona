@@ -1,0 +1,104 @@
+[
+  {
+    "procedure": "get",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/get",
+      "body": {
+        "json": {
+          "botId": 999999
+        }
+      }
+    },
+    "response": {
+      "status": 404,
+      "body": {
+        "json": {
+          "defined": false,
+          "code": "NOT_FOUND",
+          "status": 404,
+          "message": "Not Found"
+        }
+      }
+    }
+  },
+  {
+    "procedure": "get",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/get",
+      "body": {
+        "json": {
+          "botId": -1
+        }
+      }
+    },
+    "response": {
+      "status": 400,
+      "body": {
+        "json": {
+          "defined": false,
+          "code": "BAD_REQUEST",
+          "status": 400,
+          "message": "Input validation failed",
+          "data": {
+            "issues": [
+              {
+                "origin": "number",
+                "code": "too_small",
+                "minimum": 0,
+                "inclusive": true,
+                "path": [
+                  "botId"
+                ],
+                "message": "Too small: expected number to be >=0"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "procedure": "engines.get",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/engines/get",
+      "body": {
+        "json": {
+          "botId": 999999
+        }
+      }
+    },
+    "response": {
+      "status": 404,
+      "body": {
+        "json": {
+          "defined": false,
+          "code": "NOT_FOUND",
+          "status": 404,
+          "message": "Not Found"
+        }
+      }
+    }
+  },
+  {
+    "procedure": "computer.list",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/computer/list",
+      "body": {}
+    },
+    "response": {
+      "status": 503,
+      "body": {
+        "json": {
+          "defined": false,
+          "code": "SERVICE_UNAVAILABLE",
+          "status": 503,
+          "message": "电脑接入尚未配置。"
+        }
+      }
+    }
+  }
+]

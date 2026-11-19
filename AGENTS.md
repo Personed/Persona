@@ -35,6 +35,18 @@ Pi Durable 1.4.0 stores Bot tasks. Native Harness processes own model loops. Per
 | `packages/agent/src/computer` | Computer bindings, shared tools, control ownership, viewers, and optional Jev assistance. |
 | `packages/hosting` | Hosting setup, credentials, device sessions, installation, and service lifecycle. |
 | `packages/ui` | Shared controls, theme tokens, and avatars. |
+| `cmd/persona` | Go binary entry point. Subcommands `serve`, `tui`, `chat`, `worker`, `controller`, `migrate`, and `version`. |
+| `internal/` | Go packages, one domain each. `store`, `engine`, `tools`, `computer`, and `hosting` hold the shared interfaces. |
+| `contracts/api` | Frozen API wire contract and recorded fixtures for the Go service. |
+
+## Go migration
+
+- The root Go module `github.com/Personed/Persona` replaces the TypeScript backend piece by piece. Both coexist until the TypeScript backend is removed. See [contracts/api/README.md](contracts/api/README.md).
+- `cmd/persona` stays a thin dispatcher into `internal/cli`. Put behavior in the owning `internal/` package.
+- The interfaces in `internal/store`, `internal/engine`, `internal/tools`, `internal/computer`, and `internal/hosting` are the boundaries between migration pieces. Change one only with its callers and mocks in the same change.
+- `internal/store` records mirror pi-durable so existing databases import without translation. Pi is the only engine and runs as `pi --mode rpc` over JSONL on stdio. Pi has no Go SDK. An idle Bot has no engine process.
+- The Go service serves the oRPC wire in `contracts/api` unchanged: paths, input validation, output shapes, error codes, and HTTP statuses. Regenerate `procedures.json` and the fixtures in the same change as any TypeScript API change.
+- Use the Go standard library. Add a module dependency only when a piece needs it, and keep `go.mod` on the Go version CI installs.
 
 ## Computer Use contracts
 
@@ -86,6 +98,7 @@ Pi Durable 1.4.0 stores Bot tasks. Native Harness processes own model loops. Per
 
 - Use the scripts in `package.json` as the command source. Run focused tests for the changed behavior first, then the checks required by affected consumers and CI.
 - Run `pnpm typecheck` and `pnpm lint` for code changes. Fix new errors and report retained warnings.
+- For Go changes, run `gofmt -l .`, `go vet ./...`, `go test ./...`, and `golangci-lint run` with the root `.golangci.yml`. The Checks `go` job runs build, vet, and tests on Linux, macOS, and Windows, and lint on Linux. `pnpm contract:check` runs in the `check` job.
 - For Harness or Computer Use changes, read [docs/computer-evals.md](docs/computer-evals.md) before changing behavior. Save the relevant failure or baseline first. Run the regression after the change.
 - Add new confirmed failure cases to the small, sanitized eval set. Report completion evidence, coverage, elapsed time, and model round trips when available. Without eval evidence, do not claim a Harness performance or success-rate improvement.
 - Offline trajectory scoring evaluates recorded behavior. Scorer tests test the scorer. Neither reruns an Agent. Rule pass rates are separate from task success rates.

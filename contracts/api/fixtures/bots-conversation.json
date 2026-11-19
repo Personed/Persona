@@ -1,0 +1,199 @@
+[
+  {
+    "procedure": "bots.list",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/bots/list",
+      "body": {}
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "json": [
+          {
+            "id": 1,
+            "name": "Persona",
+            "avatar": "<uuid>",
+            "createdAt": "<time>",
+            "welcomeComplete": false,
+            "busy": false,
+            "preview": ""
+          }
+        ]
+      }
+    }
+  },
+  {
+    "procedure": "get",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/get",
+      "body": {
+        "json": {
+          "botId": 1
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "json": {
+          "id": 1,
+          "model": {
+            "provider": "faux",
+            "modelId": "faux-1"
+          },
+          "instructions": "",
+          "messages": [],
+          "runs": [],
+          "draft": null,
+          "activeTurnId": null,
+          "busy": false,
+          "processing": false,
+          "failed": false,
+          "approvals": [],
+          "tools": []
+        }
+      }
+    }
+  },
+  {
+    "procedure": "send",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/send",
+      "body": {
+        "json": {
+          "botId": 1,
+          "text": "hello",
+          "requestId": "<uuid>"
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "json": {
+          "id": 11
+        }
+      }
+    }
+  },
+  {
+    "procedure": "get",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/get",
+      "body": {
+        "json": {
+          "botId": 1
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "json": {
+          "id": 1,
+          "model": {
+            "provider": "faux",
+            "modelId": "faux-1"
+          },
+          "instructions": "",
+          "messages": [
+            {
+              "id": "10:0",
+              "turnId": "10:0",
+              "role": "user",
+              "timestamp": "<time>",
+              "attachments": [],
+              "content": [
+                {
+                  "type": "text",
+                  "text": "hello",
+                  "key": "10:0:0"
+                }
+              ],
+              "stopped": false,
+              "cursor": "10:0",
+              "requestId": "<uuid>"
+            },
+            {
+              "id": "14:0",
+              "turnId": "10:0",
+              "role": "assistant",
+              "timestamp": "<time>",
+              "stopReason": "stop",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hello from Persona.",
+                  "key": "14:0:0"
+                }
+              ],
+              "stopped": false,
+              "cursor": "14:0"
+            }
+          ],
+          "runs": [],
+          "draft": null,
+          "activeTurnId": null,
+          "busy": false,
+          "processing": false,
+          "failed": false,
+          "approvals": [],
+          "tools": []
+        }
+      }
+    }
+  },
+  {
+    "procedure": "stop",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/stop",
+      "body": {
+        "json": {
+          "botId": 1
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "json": {
+          "ok": true
+        }
+      }
+    }
+  },
+  {
+    "procedure": "bots.create",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/bots/create",
+      "body": {
+        "json": {
+          "name": "Contract",
+          "instructions": "Answer briefly.",
+          "model": {
+            "provider": "faux",
+            "modelId": "faux-1"
+          },
+          "requestId": "<uuid>"
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "json": {
+          "id": 15,
+          "name": "Contract",
+          "avatar": "<uuid>",
+          "createdAt": "<time>"
+        }
+      }
+    }
+  }
+]
