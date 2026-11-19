@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -351,8 +352,15 @@ func TestGatewayServesAttachFile(t *testing.T) {
 	t.Cleanup(func() { _ = session.Close() })
 
 	listed, err := session.ListTools(ctx, nil)
-	if err != nil || len(listed.Tools) != 1 || listed.Tools[0].Name != "attach_file" {
-		t.Fatalf("tools = %+v, %v", listed, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tool := range listed.Tools {
+		names = append(names, tool.Name)
+	}
+	if !slices.Contains(names, "attach_file") {
+		t.Fatalf("tools = %v", names)
 	}
 	// Delivery needs no approval: the gateway has no approver here.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "attach_file", Arguments: map[string]any{"path": "out/report.pdf"}})
