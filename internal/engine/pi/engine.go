@@ -164,10 +164,8 @@ func (e *Engine) transient(ctx context.Context, env []string, run func(context.C
 	return run(ctx, client)
 }
 
+// bound limits a control command to RequestTimeout, or the caller's earlier deadline.
 func (e *Engine) bound(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, ok := ctx.Deadline(); ok {
-		return context.WithCancel(ctx)
-	}
 	return context.WithTimeout(ctx, e.config.RequestTimeout)
 }
 
@@ -182,12 +180,14 @@ func (e *Engine) Start(ctx context.Context, options engine.SessionOptions) (engi
 			return nil, err
 		}
 		if c.launch != l.key && attempt == 0 {
-			busy := c.busy()
+			// retire fails when another session owns the process, and blocks
+			// later claims, so a replacement never stops a live session.
+			retired := c.retire()
 			release()
-			if busy {
+			if !retired {
 				return nil, ErrBusy
 			}
-			e.pool.Stop(options.BotID)
+			e.pool.stopIf(options.BotID, c)
 			continue
 		}
 		s := &session{engine: e, conn: c, botID: options.BotID, release: release, events: make(chan engine.Event), closed: make(chan struct{})}
@@ -218,15 +218,26 @@ func (e *Engine) open(ctx context.Context, botID int64) (*conn, error) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
-		path := filepath.Join(dir, "instructions.md")
+		// Pi runs in WorkDir, so it needs an absolute path.
+		path, err := filepath.Abs(filepath.Join(dir, "instructions.md"))
+		if err != nil {
+			return nil, err
+		}
 		if err := os.WriteFile(path, []byte(prompt), 0o600); err != nil {
 			return nil, err
 		}
 		args = append(args, "--append-system-prompt", path)
 	}
-	env := make([]string, 0, len(l.options.Env))
+	env := make([]string, 0, len(l.options.Env)+1)
 	for k, v := range l.options.Env {
 		env = append(env, k+"="+v)
+	}
+	if len(l.options.Tools) > 0 {
+		path, err := writeTools(e.config.StateDir, botID, l.options)
+		if err != nil {
+			return nil, err
+		}
+		env = append(env, "PERSONA_PI_TOOLS="+path)
 	}
 	p, err := Start(Command{
 		Path: e.config.Command,
@@ -242,6 +253,25 @@ func (e *Engine) open(ctx context.Context, botID int64) (*conn, error) {
 	return c, nil
 }
 
+// writeTools writes the product tool file pi-tools.mjs reads from
+// PERSONA_PI_TOOLS, as worker.mjs does: the Persona MCP gateway URL (from the
+// PERSONA_PI_MCP_URL session variable) and the declared tools.
+func writeTools(stateDir string, botID int64, o engine.SessionOptions) (string, error) {
+	dir := filepath.Join(stateDir, "bots", strconv.FormatInt(botID, 10))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	path, err := filepath.Abs(filepath.Join(dir, "persona-tools.json"))
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(map[string]any{"url": o.Env["PERSONA_PI_MCP_URL"], "tools": o.Tools, "servers": []any{}})
+	if err != nil {
+		return "", err
+	}
+	return path, os.WriteFile(path, data, 0o600)
+}
+
 func launchKeyOf(o engine.SessionOptions) string {
 	h := sha256.New()
 	env := make([]string, 0, len(o.Env))
@@ -249,7 +279,8 @@ func launchKeyOf(o engine.SessionOptions) string {
 		env = append(env, k+"="+v)
 	}
 	slices.Sort(env)
-	for _, part := range append([]string{o.WorkDir, o.SystemPrompt}, env...) {
+	tools, _ := json.Marshal(o.Tools)
+	for _, part := range append([]string{o.WorkDir, o.SystemPrompt, string(tools)}, env...) {
 		_, _ = fmt.Fprintf(h, "%d:%s", len(part), part)
 	}
 	return hex.EncodeToString(h.Sum(nil))
@@ -285,25 +316,31 @@ type conn struct {
 
 	mu          sync.Mutex
 	owner       *session
+	retired     bool
 	sessionFile string
 }
 
 func (c *conn) Close() error          { return c.proc.Stop(c.grace) }
 func (c *conn) Done() <-chan struct{} { return c.proc.Done() }
 
-func (c *conn) busy() bool {
+func (c *conn) claim(s *session) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.owner != nil
+	if c.owner != nil || c.retired {
+		return false
+	}
+	c.owner = s
+	return true
 }
 
-func (c *conn) claim(s *session) bool {
+// retire marks an unowned process for replacement so no session claims it.
+func (c *conn) retire() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.owner != nil {
 		return false
 	}
-	c.owner = s
+	c.retired = true
 	return true
 }
 
@@ -400,7 +437,7 @@ func (s *session) setup(ctx context.Context, o engine.SessionOptions) error {
 // session state is then unknown.
 func (s *session) fail() {
 	s.close()
-	s.engine.pool.Stop(s.botID)
+	s.engine.pool.stopIf(s.botID, s.conn)
 }
 
 func (s *session) call(ctx context.Context, command string, params, out any) error {
@@ -468,17 +505,15 @@ func (s *session) Steer(ctx context.Context, prompt engine.Prompt) error {
 	return s.call(ctx, "steer", promptParams{Message: prompt.Text, Images: images(prompt.Images)}, nil)
 }
 
-// Abort clears queued input and stops the turn. If Pi does not confirm, its
-// process tree is stopped instead.
+// Abort clears queued input and asks Pi to stop the turn, so its session file
+// records the stop, then ends the session and the Bot's Pi process tree, as the
+// shared Stop path requires.
 func (s *session) Abort(ctx context.Context) error {
-	err := s.call(ctx, "clear_queue", nil, nil)
-	if err == nil {
-		err = s.call(ctx, "abort", nil, nil)
+	if s.call(ctx, "clear_queue", nil, nil) == nil {
+		_ = s.call(ctx, "abort", nil, nil)
 	}
-	if err != nil {
-		s.close()
-		s.engine.pool.Stop(s.botID)
-	}
+	s.close()
+	s.engine.pool.stopIf(s.botID, s.conn)
 	return nil
 }
 
@@ -489,6 +524,9 @@ func (s *session) Answer(ctx context.Context, requestID string, value json.RawMe
 	if len(value) > 0 {
 		if err := json.Unmarshal(value, &fields); err != nil {
 			return fmt.Errorf("pi: answer must be an object: %w", err)
+		}
+		if fields == nil {
+			fields = map[string]json.RawMessage{}
 		}
 	}
 	fields["type"], _ = json.Marshal("extension_ui_response")
