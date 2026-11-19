@@ -39,17 +39,52 @@ func (c *chat) syncAnswer() {
 	if c.answer != nil && slices.ContainsFunc(pending, func(a client.Approval) bool { return a.ID == c.answer.request.ID }) {
 		return
 	}
-	c.answer = nil
+	if c.answer != nil {
+		c.answer = nil
+		c.input.Focus()
+	}
 	if len(pending) > 0 {
 		c.answer = &answer{request: pending[0], picked: map[string][]string{}}
 	}
 }
 
+type answeredMsg struct {
+	botID  int
+	answer *answer
+	err    error
+}
+
+// answerCmd sends the answer and closes the card; a failed send brings the card back.
 func (m Model) answerCmd(input map[string]any) tea.Cmd {
-	input["botId"] = m.chat.bot.ID
-	input["id"] = m.chat.answer.request.ID
-	m.chat.answer = nil
-	return m.call("engines.answer", input)
+	c := m.chat
+	sent, id := c.answer, c.bot.ID
+	input["botId"] = id
+	input["id"] = sent.request.ID
+	c.answer = nil
+	cl, ctx := m.client, m.ctx
+	return tea.Batch(c.input.Focus(), func() tea.Msg {
+		return answeredMsg{id, sent, cl.Call(ctx, "engines.answer", input, nil)}
+	})
+}
+
+func (m Model) answered(msg answeredMsg) Model {
+	m.err = msg.err
+	c := m.chat
+	if msg.err == nil || c == nil || c.bot.ID != msg.botID || c.answer != nil {
+		return m
+	}
+	if slices.ContainsFunc(c.view.Approvals, func(a client.Approval) bool { return a.ID == msg.answer.request.ID }) {
+		msg.answer.typing = false
+		c.answer = msg.answer
+		m.layout()
+	}
+	return m
+}
+
+// free reports whether the current question or permission accepts a typed answer.
+func (a *answer) free() bool {
+	q := a.current()
+	return q == nil || q.AllowOther
 }
 
 // answerKey handles keys while the approval card has focus.
@@ -58,6 +93,9 @@ func (m Model) answerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	options := a.options()
 	switch msg.String() {
 	case "tab":
+		if !a.free() {
+			return m, nil
+		}
 		a.typing = true
 		return m, c.input.Focus()
 	case "up", "k":
@@ -182,7 +220,10 @@ func (m Model) answerHelp() string {
 	if m.chat.answer.current() == nil {
 		return "y allow · n deny · ↑/↓ + enter choose · tab reply with text · "
 	}
-	return "↑/↓ + enter choose · space toggle · tab type answer · ctrl+n decline · "
+	if m.chat.answer.free() {
+		return "↑/↓ + enter choose · space toggle · tab type answer · ctrl+n decline · "
+	}
+	return "↑/↓ + enter choose · space toggle · ctrl+n decline · "
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

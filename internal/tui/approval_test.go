@@ -2,6 +2,9 @@ package tui
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -68,7 +71,7 @@ func TestQuestionApproval(t *testing.T) {
 	m, server := chatWith(t, client.Approval{ID: "q", Title: "Questions", Kind: "question", Questions: []client.Question{
 		{ID: "color", Title: "Pick a color", Options: []client.Option{{ID: "red", Label: "Red"}, {ID: "blue", Label: "Blue"}}},
 		{ID: "tags", Title: "Pick tags", Multiple: true, Options: []client.Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}}},
-		{ID: "note", Title: "Anything else?", Required: true},
+		{ID: "note", Title: "Anything else?", Required: true, AllowOther: true},
 	}})
 	if got := content(m); !strings.Contains(got, "Pick a color") || !strings.Contains(got, "(1/3)") {
 		t.Fatalf("question card:\n%s", got)
@@ -98,5 +101,38 @@ func TestDeclineQuestion(t *testing.T) {
 	press(t, m, tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
 	if got := lastAnswer(t, server); got != `{"allow":false,"botId":1,"id":"q"}` {
 		t.Fatalf("decline = %s", got)
+	}
+}
+
+func TestApprovalRefocusesInput(t *testing.T) {
+	m, _ := chatWith(t, client.Approval{ID: "p1", Title: "Open file"})
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"json":{}}`) }))
+	t.Cleanup(ok.Close)
+	model := m.(Model)
+	model.client = &client.Client{BaseURL: ok.URL}
+	m = press(t, model, key(tea.KeyTab, ""), key(tea.KeyTab, ""), key(tea.KeyEnter, ""))
+	if c := m.(Model).chat; c.answer != nil || !c.input.Focused() {
+		t.Fatalf("answer %v, input focused %v, err %v", c.answer, c.input.Focused(), m.(Model).err)
+	}
+}
+
+func TestFailedAnswerKeepsCard(t *testing.T) {
+	m, _ := chatWith(t, client.Approval{ID: "q", Title: "Q", Kind: "question", Questions: []client.Question{
+		{ID: "x", Title: "X?", Options: []client.Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}}}}})
+	model := m.(Model)
+	model.client = &client.Client{BaseURL: "http://127.0.0.1:1"}
+	m = press(t, model, key(tea.KeyDown, ""), key(tea.KeyEnter, ""))
+	c := m.(Model).chat
+	if c.answer == nil || c.answer.picked["x"][0] != "b" || m.(Model).err == nil {
+		t.Fatalf("card not restored after failed send: %+v, err %v", c.answer, m.(Model).err)
+	}
+}
+
+func TestClosedQuestionRefusesText(t *testing.T) {
+	m, _ := chatWith(t, client.Approval{ID: "q", Title: "Q", Kind: "question", Questions: []client.Question{
+		{ID: "x", Title: "X?", Options: []client.Option{{ID: "a", Label: "A"}}}}})
+	m = press(t, m, key(tea.KeyTab, ""))
+	if a := m.(Model).chat.answer; a.typing || strings.Contains(content(m), "tab type answer") {
+		t.Fatalf("closed question accepted text:\n%s", content(m))
 	}
 }

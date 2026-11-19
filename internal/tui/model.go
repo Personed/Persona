@@ -207,6 +207,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.prepend(msg.page)
 		return m, nil
+	case answeredMsg:
+		return m.answered(msg), nil
 	case doneMsg:
 		m.err = msg.err
 		return m, nil
