@@ -209,3 +209,51 @@ func TestRequestContextDeadline(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestTypedNilParams(t *testing.T) {
+	pi := newFakePi(t)
+	done := make(chan error, 1)
+	go func() {
+		_, err := pi.client.Request(context.Background(), "get_state", (*struct{})(nil))
+		done <- err
+	}()
+	command := pi.command(t)
+	pi.write(t, `{"id":"`+command["id"].(string)+`","type":"response","command":"get_state","success":true}`+"\n")
+	if err := <-done; err != nil || command["type"] != "get_state" {
+		t.Fatalf("command %v err %v", command, err)
+	}
+}
+
+func TestStalledStdinHonorsContext(t *testing.T) {
+	outR, outW := io.Pipe()
+	_, inW := io.Pipe() // nobody reads Pi's stdin
+	t.Cleanup(func() { _ = outW.Close() })
+	client := NewClient(outR, inW)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	for range 2 {
+		if _, err := client.Request(ctx, "get_state", nil); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v", err)
+		}
+	}
+	if err := client.Send(ctx, map[string]string{"type": "extension_ui_response"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Send = %v", err)
+	}
+}
+
+func TestResponseBeforeEOFWins(t *testing.T) {
+	for range 50 {
+		pi := newFakePi(t)
+		done := make(chan error, 1)
+		go func() {
+			_, err := pi.client.Request(context.Background(), "abort", nil)
+			done <- err
+		}()
+		id := pi.command(t)["id"].(string)
+		pi.write(t, `{"id":"`+id+`","type":"response","command":"abort","success":true}`+"\n")
+		_ = pi.stdout.Close()
+		if err := <-done; err != nil {
+			t.Fatalf("answered request failed: %v", err)
+		}
+	}
+}

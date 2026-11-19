@@ -30,6 +30,7 @@ type Process struct {
 	stdin  *os.File
 	stdout *os.File
 	stderr tail
+	tree   tree
 
 	done chan struct{}
 	err  error
@@ -67,6 +68,7 @@ func Start(command Command) (*Process, error) {
 	}
 	closeAll(inR, outW, errW)
 	p := &Process{cmd: cmd, stdin: inW, stdout: outR, done: make(chan struct{})}
+	p.tree = track(cmd.Process)
 	go func() { _, _ = io.Copy(&p.stderr, errR); _ = errR.Close() }()
 	go func() {
 		p.err = cmd.Wait()
@@ -111,15 +113,15 @@ func (p *Process) Stop(grace time.Duration) error {
 func (p *Process) stop(grace time.Duration) error {
 	_ = p.stdin.Close()
 	if !p.wait(grace) {
-		_ = terminate(p.cmd.Process)
+		_ = p.terminate()
 		if !p.wait(grace) {
-			if err := kill(p.cmd.Process); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			if err := p.kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				return err
 			}
 			<-p.done
 		}
 	}
-	reapGroup(p.cmd.Process, grace)
+	p.reap(grace)
 	_ = p.stdout.Close()
 	return nil
 }
