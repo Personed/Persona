@@ -203,6 +203,29 @@ func (p *Pool[T]) Stop(botID int64) {
 	<-retiring
 }
 
+// stopIf is Stop for the Bot's instance only while it is still match, so a
+// late caller never stops a replacement.
+func (p *Pool[T]) stopIf(botID int64, match T) {
+	p.mu.Lock()
+	s, ok := p.slots[botID]
+	if !ok || s.err != nil || !isReady(s) || any(s.value) != any(match) {
+		p.mu.Unlock()
+		return
+	}
+	retiring := p.retireLocked(botID, s)
+	p.mu.Unlock()
+	<-retiring
+}
+
+func isReady[T Instance](s *slot[T]) bool {
+	select {
+	case <-s.ready:
+		return true
+	default:
+		return false
+	}
+}
+
 // Live returns how many Bots have an instance starting, running or stopping.
 func (p *Pool[T]) Live() int {
 	p.mu.Lock()

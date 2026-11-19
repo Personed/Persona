@@ -150,11 +150,20 @@ func TestEngineSessionOverRPC(t *testing.T) {
 	if err := s.Steer(ctx, engine.Prompt{Text: "also"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.Compact(ctx, "keep code"); err != nil {
+		t.Fatal(err)
+	}
+	pid := s.(*session).conn.proc
 	if err := s.Abort(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Compact(ctx, "keep code"); err != nil {
-		t.Fatal(err)
+	select {
+	case <-pid.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Abort left the Bot's Pi running")
+	}
+	if _, ok := <-s.Events(); ok {
+		t.Fatal("events still open after Abort")
 	}
 }
 
@@ -272,4 +281,23 @@ func TestEngineIdleBotsHaveNoProcess(t *testing.T) {
 		}
 		return e.Live() == 0
 	})
+}
+
+func TestWriteToolsFile(t *testing.T) {
+	dir := t.TempDir()
+	path, err := writeTools(dir, 7, engine.SessionOptions{
+		Env:   map[string]string{"PERSONA_PI_MCP_URL": "http://127.0.0.1:9/mcp"},
+		Tools: []engine.ToolSpec{{Name: "memory_search", Description: "Search", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	})
+	if err != nil || !filepath.IsAbs(path) {
+		t.Fatalf("path %q, %v", path, err)
+	}
+	data, _ := os.ReadFile(path)
+	var file struct {
+		URL   string            `json:"url"`
+		Tools []engine.ToolSpec `json:"tools"`
+	}
+	if json.Unmarshal(data, &file) != nil || file.URL != "http://127.0.0.1:9/mcp" || len(file.Tools) != 1 || file.Tools[0].Name != "memory_search" {
+		t.Fatalf("tools file %s", data)
+	}
 }
