@@ -207,11 +207,18 @@ func envelope(value any) any {
 // with each Blob's path in "maps", and field i holds the i-th Blob. Blobs are
 // found in maps, Objects and slices, not in struct fields.
 func writeOutput(w http.ResponseWriter, output any) {
+	plain, err := marshal(envelope(output))
+	if err != nil {
+		writeError(w, toError(err))
+		return
+	}
 	var maps [][]any
 	var blobs []*Blob
 	value := extractBlobs(output, nil, &maps, &blobs)
 	if len(blobs) == 0 {
-		writeJSON(w, http.StatusOK, envelope(output))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(plain)
 		return
 	}
 	data, err := marshal(map[string]any{"json": value, "maps": maps})
@@ -244,28 +251,41 @@ func writeOutput(w http.ResponseWriter, output any) {
 }
 
 // extractBlobs returns v with each Blob replaced by {}, as JSON.stringify
-// writes a Blob, and records the Blobs and their paths.
+// writes a Blob, and records the Blobs and their paths. v must marshal, so it
+// has no cycles.
 func extractBlobs(v any, path []any, maps *[][]any, blobs *[]*Blob) any {
 	switch t := v.(type) {
 	case Blob:
 		return extractBlobs(&t, path, maps, blobs)
 	case *Blob:
+		if t == nil {
+			return nil
+		}
 		*maps = append(*maps, append([]any{}, path...))
 		*blobs = append(*blobs, t)
 		return struct{}{}
 	case map[string]any:
+		if t == nil {
+			return v
+		}
 		out := make(map[string]any, len(t))
 		for key, item := range t {
 			out[key] = extractBlobs(item, append(path, key), maps, blobs)
 		}
 		return out
 	case *Object:
+		if t == nil {
+			return v
+		}
 		out := &Object{Keys: t.Keys, Values: make(map[string]any, len(t.Values))}
 		for _, key := range t.Keys {
 			out.Values[key] = extractBlobs(t.Values[key], append(path, key), maps, blobs)
 		}
 		return out
 	case []any:
+		if t == nil {
+			return v
+		}
 		out := make([]any, len(t))
 		for i, item := range t {
 			out[i] = extractBlobs(item, append(path, i), maps, blobs)

@@ -20,7 +20,17 @@ func canParseURL(s string) bool {
 	scheme, rest := strings.ToLower(s[:colon]), s[colon+1:]
 	switch scheme {
 	case "file":
-		return true
+		if len(rest) < 2 || !strings.ContainsRune(`/\`, rune(rest[0])) || !strings.ContainsRune(`/\`, rune(rest[1])) {
+			return true
+		}
+		rest = rest[2:]
+		if end := strings.IndexAny(rest, `/\?#`); end >= 0 {
+			rest = rest[:end]
+		}
+		if strings.HasPrefix(rest, "[") {
+			return strings.HasSuffix(rest, "]") && validIPv6(rest[1:len(rest)-1])
+		}
+		return rest == "" || validDomain(rest)
 	case "http", "https", "ws", "wss", "ftp":
 		rest = strings.TrimLeft(rest, `/\`)
 		if end := strings.IndexAny(rest, `/\?#`); end >= 0 {
@@ -69,7 +79,7 @@ func validAuthority(authority string, special bool) bool {
 	host, port := authority, ""
 	if strings.HasPrefix(authority, "[") {
 		end := strings.IndexByte(authority, ']')
-		if end < 0 || !strings.Contains(authority[1:end], ":") || net.ParseIP(authority[1:end]) == nil {
+		if end < 0 || !validIPv6(authority[1:end]) {
 			return false
 		}
 		rest := authority[end+1:]
@@ -87,9 +97,15 @@ func validAuthority(authority string, special bool) bool {
 	if !special {
 		return !strings.ContainsAny(host, "\x00\t\n\r #/:<>?@[\\]^|")
 	}
-	if host == "" {
-		return false
-	}
+	return host != "" && validDomain(host)
+}
+
+func validIPv6(address string) bool {
+	return strings.Contains(address, ":") && net.ParseIP(address) != nil
+}
+
+// validDomain checks a special URL's host that is not an IPv6 address.
+func validDomain(host string) bool {
 	host = percentDecode(host)
 	for _, c := range []byte(host) {
 		if c < 0x20 || c == 0x7f || strings.IndexByte(" #%/:<>?@[\\]^|", c) >= 0 {
