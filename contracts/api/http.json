@@ -1,0 +1,40 @@
+{
+  "$comment": "HTTP routes outside the oRPC router, from apps/api/src/app.ts and apps/api/src/hosting/routes.ts. Maintained by hand; update with those files.",
+  "auth": {
+    "device": "Bearer token or the hosting session cookie. Missing or unknown: 401 {\"error\": string}.",
+    "admin": "Device session with scope \"admin\". Otherwise: 403 {\"error\": string}.",
+    "origin": "Hosted mode rejects cross-origin mutating requests before routing."
+  },
+  "routes": [
+    { "method": "GET", "path": "/health", "auth": "none", "response": "200 {\"ok\": true}" },
+    { "method": "POST", "path": "/rpc/*", "auth": "device; admin for the procedures in adminProcedures", "response": "oRPC RPC wire, see procedures.json" },
+    { "method": "GET", "path": "/files/:botId/:id", "auth": "device", "response": "200 file bytes with its stored Content-Type; 404 when missing. Hosted mode adds Cache-Control: private, no-store" },
+    { "method": "GET", "path": "/mcp/oauth/callback", "auth": "none (OAuth state parameter)", "response": "HTML page that completes the MCP OAuth login" },
+    { "method": "GET", "path": "/hosting/info", "auth": "none", "response": "200 hosting metadata" },
+    { "method": "POST", "path": "/hosting/exchange", "auth": "pairing code", "request": "{\"code\": string(1..80), \"label\": string(1..80)}", "response": "200 {\"device\"} and sets the session cookie; 401 for an invalid or expired code" },
+    { "method": "POST", "path": "/hosting/desktop", "auth": "Bearer desktop credential file token", "response": "200 {\"token\", \"expires\"}; 401; 404 when no desktop credential file is configured" },
+    { "method": "GET", "path": "/hosting/session", "auth": "device", "response": "200 {\"device\"}" },
+    { "method": "POST", "path": "/hosting/logout", "auth": "device", "response": "Revokes the device session and clears the cookie" },
+    { "method": "GET", "path": "/hosting/devices", "auth": "admin", "response": "200 device list" },
+    { "method": "DELETE", "path": "/hosting/devices/:id", "auth": "admin", "response": "Revokes one device" },
+    { "method": "POST", "path": "/hosting/pairing", "auth": "admin", "response": "200 new pairing code" },
+    { "method": "GET", "path": "/hosting/models", "auth": "admin", "response": "200 provider login state" },
+    { "method": "DELETE", "path": "/hosting/models/:provider", "auth": "admin", "response": "Removes stored provider credentials" },
+    { "method": "POST", "path": "/hosting/login", "auth": "admin", "response": "Starts a provider login flow" },
+    { "method": "GET", "path": "/hosting/login/:id", "auth": "admin", "response": "Login flow state" },
+    { "method": "POST", "path": "/hosting/login/:id", "auth": "admin", "response": "Answers a login prompt" },
+    { "method": "DELETE", "path": "/hosting/login/:id", "auth": "admin", "response": "Cancels one login flow" },
+    { "method": "DELETE", "path": "/hosting/login", "auth": "admin", "response": "Cancels every login flow" },
+    { "method": "GET", "path": "/*", "auth": "none", "response": "Static web UI from apps/web/dist" }
+  ],
+  "limits": { "/hosting/*": "request body at most 64 KiB; responses send Cache-Control: no-store" },
+  "adminProcedures": [
+    "mcp.*",
+    "models.setVisibility",
+    "computer.manage", "computer.add", "computer.authorize", "computer.default", "computer.configure",
+    "computer.prepare", "computer.service", "computer.browserMode", "computer.approval",
+    "computer.assistantConfigure", "computer.assistantKey", "computer.assistantTest",
+    "engines.configure", "engines.inspect", "engines.install", "engines.login",
+    "engines.loginState", "engines.answerLogin", "engines.cancelLogin"
+  ]
+}
