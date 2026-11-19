@@ -193,7 +193,12 @@ func (e *Engine) Start(ctx context.Context, options engine.SessionOptions) (engi
 		s := &session{engine: e, conn: c, botID: options.BotID, release: release, events: make(chan engine.Event), closed: make(chan struct{})}
 		if !c.claim(s) {
 			release()
-			return nil, ErrBusy
+			if !c.isRetired() {
+				return nil, ErrBusy
+			}
+			// A stopping session retired this process; wait for it, then start anew.
+			e.pool.stopIf(options.BotID, c)
+			continue
 		}
 		if err := s.setup(ctx, options); err != nil {
 			s.fail()
@@ -333,6 +338,22 @@ func (c *conn) claim(s *session) bool {
 	return true
 }
 
+// retireFrom retires the process its owner s is about to stop, before s
+// releases it, so no new session claims a process that is being stopped.
+func (c *conn) retireFrom(s *session) {
+	c.mu.Lock()
+	if c.owner == s || c.owner == nil {
+		c.retired = true
+	}
+	c.mu.Unlock()
+}
+
+func (c *conn) isRetired() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.retired
+}
+
 // retire marks an unowned process for replacement so no session claims it.
 func (c *conn) retire() bool {
 	c.mu.Lock()
@@ -436,6 +457,7 @@ func (s *session) setup(ctx context.Context, o engine.SessionOptions) error {
 // fail ends a session whose setup failed and replaces the Pi process, whose
 // session state is then unknown.
 func (s *session) fail() {
+	s.conn.retireFrom(s)
 	s.close()
 	s.engine.pool.stopIf(s.botID, s.conn)
 }
@@ -512,6 +534,7 @@ func (s *session) Abort(ctx context.Context) error {
 	if s.call(ctx, "clear_queue", nil, nil) == nil {
 		_ = s.call(ctx, "abort", nil, nil)
 	}
+	s.conn.retireFrom(s)
 	s.close()
 	s.engine.pool.stopIf(s.botID, s.conn)
 	return nil

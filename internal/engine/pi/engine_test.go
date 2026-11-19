@@ -165,6 +165,14 @@ func TestEngineSessionOverRPC(t *testing.T) {
 	if _, ok := <-s.Events(); ok {
 		t.Fatal("events still open after Abort")
 	}
+	next, err := e.Start(ctx, engine.SessionOptions{BotID: 1, WorkDir: work})
+	if err != nil {
+		t.Fatalf("Start after Abort: %v", err)
+	}
+	if next.(*session).conn.proc == pid {
+		t.Fatal("Start after Abort reused the stopped Pi")
+	}
+	_ = next.Close()
 }
 
 func mustEval(t *testing.T, path string) string {
