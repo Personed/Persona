@@ -166,6 +166,8 @@ func TestSnapshot(t *testing.T) {
 	}
 }
 
+func approveAll(context.Context, tools.Call, tools.Definition) (bool, error) { return true, nil }
+
 func TestToolsThroughRegistry(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newService(t)
@@ -186,11 +188,16 @@ func TestToolsThroughRegistry(t *testing.T) {
 	}
 	call := func(name, input string) tools.Result {
 		t.Helper()
-		result, err := registry.Call(ctx, tools.Call{BotID: 1, TaskID: 7, CallID: name + input, Name: name, Input: json.RawMessage(input)}, nil)
+		result, err := registry.Call(ctx, tools.Call{BotID: 1, TaskID: 7, CallID: name + input, Name: name, Input: json.RawMessage(input)}, approveAll)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		return result
+	}
+	for _, name := range []string{"memory_save", "memory_delete"} {
+		if _, err := registry.Call(ctx, tools.Call{BotID: 1, CallID: "x", Name: name, Input: json.RawMessage(`{}`)}, nil); !errors.Is(err, tools.ErrDenied) {
+			t.Fatalf("%s without approval = %v", name, err)
+		}
 	}
 	var saved memory.Entry
 	if err := json.Unmarshal([]byte(call("memory_save", `{"revision":0,"text":"Uses pnpm","category":"work"}`).Content[0].Text), &saved); err != nil {

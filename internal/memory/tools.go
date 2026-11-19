@@ -59,6 +59,7 @@ var (
 		Name:        "memory_save",
 		Description: "Save durable facts that apply across tasks as profile; save task-specific procedures and preferences as work notes. Use declarative facts, not instructions. Save when useful or requested. Default to this Bot. Use shared=true only when the user explicitly requests sharing across Bots. List first to obtain the ID and revision for edits. Use revision=0 and omit id for new memory. Never save secrets.",
 		InputSchema: json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"id":{"type":"string"},"revision":{"type":"integer","minimum":0},"text":{"type":"string","minLength":1,"maxLength":%d},"category":{"type":"string","enum":["profile","work"]},"shared":{"type":"boolean"}},"required":["revision","text"]}`, TextLength)),
+		Mutates:     true,
 	}
 	searchDefinition = tools.Definition{
 		Name:        "memory_search",
@@ -70,6 +71,7 @@ var (
 		Name:        "memory_delete",
 		Description: "Delete a saved memory by its ID and current revision when asked to forget it.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"},"revision":{"type":"integer","minimum":1}},"required":["id","revision"]}`),
+		Mutates:     true,
 	}
 )
 

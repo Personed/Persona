@@ -3,8 +3,11 @@ package mcpserver_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,15 +29,27 @@ func (mutatingTool) Run(context.Context, tools.Call) (tools.Result, error) {
 	return tools.Result{Content: []tools.Content{{Type: "image", MimeType: "image/png", Data: "iVBORw=="}}, Handle: "result-1"}, nil
 }
 
-func open(t *testing.T, approve tools.Approver) (*mcpserver.Gateway, *mcp.ClientSession) {
+type countingTool struct{ runs atomic.Int64 }
+
+func (*countingTool) Definition() tools.Definition {
+	return tools.Definition{Name: "count", InputSchema: json.RawMessage(`{"type":"object"}`), Mutates: true}
+}
+
+func (c *countingTool) Run(context.Context, tools.Call) (tools.Result, error) {
+	return tools.Result{Content: []tools.Content{{Type: "text", Text: fmt.Sprint("run ", c.runs.Add(1))}}}, nil
+}
+
+func open(t *testing.T, approve tools.Approver, extra ...tools.Tool) (*mcpserver.Gateway, *mcp.ClientSession) {
 	t.Helper()
 	ctx := context.Background()
 	registry := tools.NewRegistry()
 	if err := memory.Register(registry, memory.NewService(storetest.New(), nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Register(mutatingTool{}); err != nil {
-		t.Fatal(err)
+	for _, tool := range append([]tools.Tool{mutatingTool{}}, extra...) {
+		if err := registry.Register(tool); err != nil {
+			t.Fatal(err)
+		}
 	}
 	gateway, err := mcpserver.Open(ctx, mcpserver.Options{Registry: registry, BotID: 1, TaskID: 9, Approve: approve})
 	if err != nil {
@@ -65,7 +80,11 @@ func text(t *testing.T, result *mcp.CallToolResult) string {
 
 func TestGatewayServesMemoryTools(t *testing.T) {
 	ctx := context.Background()
-	gateway, session := open(t, nil)
+	var approved []string
+	gateway, session := open(t, func(_ context.Context, call tools.Call, _ tools.Definition) (bool, error) {
+		approved = append(approved, call.Name)
+		return call.Name != "write_file", nil
+	})
 
 	waiting, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
@@ -114,6 +133,56 @@ func TestGatewayServesMemoryTools(t *testing.T) {
 	denied, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "write_file", Arguments: map[string]any{}})
 	if err != nil || !denied.IsError || !strings.Contains(text(t, denied), "denied") {
 		t.Fatalf("unapproved write_file = %+v, %v", denied, err)
+	}
+	if strings.Join(approved, ",") != "memory_save,memory_delete,write_file" {
+		t.Fatalf("approved = %v", approved)
+	}
+}
+
+func TestGatewayReplaysRedeliveredCall(t *testing.T) {
+	counter := &countingTool{}
+	var approvals atomic.Int64
+	gateway, _ := open(t, func(context.Context, tools.Call, tools.Definition) (bool, error) {
+		approvals.Add(1)
+		return true, nil
+	}, counter)
+	session := ""
+	post := func(body string) string {
+		t.Helper()
+		request, _ := http.NewRequest(http.MethodPost, gateway.URL, strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		request.Header.Set("X-Persona-Request-Id", "spoofed")
+		if session != "" {
+			request.Header.Set("Mcp-Session-Id", session)
+			request.Header.Set("Mcp-Protocol-Version", "2025-06-18")
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if session == "" {
+			session = response.Header.Get("Mcp-Session-Id")
+		}
+		data, _ := io.ReadAll(response.Body)
+		return string(data)
+	}
+	post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"pi","version":"0"}}}`)
+	post(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	call := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"count","arguments":{"n":1}}}`
+	first, again := post(call), post(call)
+	if !strings.Contains(first, "run 1") || first != again {
+		t.Fatalf("first = %s, redelivered = %s", first, again)
+	}
+	if reused := post(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"count","arguments":{"n":2}}}`); !strings.Contains(reused, "reused") {
+		t.Fatalf("reused ID = %s", reused)
+	}
+	if next := post(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"count","arguments":{"n":1}}}`); !strings.Contains(next, "run 2") {
+		t.Fatalf("new ID = %s", next)
+	}
+	if counter.runs.Load() != 2 || approvals.Load() != 2 {
+		t.Fatalf("runs = %d, approvals = %d", counter.runs.Load(), approvals.Load())
 	}
 }
 

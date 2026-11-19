@@ -6,6 +6,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -13,11 +14,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
-	"strconv"
 	"sync"
-	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -29,6 +29,10 @@ const MaxRequestBytes = 1 << 20
 
 // ResultHandleMeta is the result _meta key that carries tools.Result.Handle.
 const ResultHandleMeta = "persona/resultHandle"
+
+// requestIDHeader carries the JSON-RPC ID of a tools/call into its handler; the SDK
+// does not expose it. Incoming values are discarded.
+const requestIDHeader = "X-Persona-Request-Id"
 
 // Options select the tools and identity of one gateway.
 type Options struct {
@@ -48,6 +52,18 @@ type Gateway struct {
 	listed     chan struct{}
 	listedOnce sync.Once
 	served     chan error
+
+	mu    sync.Mutex
+	calls map[string]*outcome
+}
+
+// outcome is the recorded result of one call, returned again when the client
+// redelivers the same request instead of running the tool twice.
+type outcome struct {
+	name   string
+	input  string
+	done   chan struct{}
+	result *mcp.CallToolResult
 }
 
 // Open lists the Bot's tools and starts serving them on a loopback port.
@@ -57,14 +73,10 @@ func Open(ctx context.Context, options Options) (*Gateway, error) {
 		return nil, err
 	}
 	secret := make([]byte, 32)
-	nonce := make([]byte, 8)
 	if _, err := rand.Read(secret); err != nil {
 		return nil, err
 	}
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	gateway := &Gateway{listed: make(chan struct{}), served: make(chan error, 1)}
+	gateway := &Gateway{listed: make(chan struct{}), served: make(chan error, 1), calls: map[string]*outcome{}}
 	server := mcp.NewServer(&mcp.Implementation{Name: "persona", Version: "1.0.0"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}})
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
@@ -74,25 +86,13 @@ func Open(ctx context.Context, options Options) (*Gateway, error) {
 			return next(ctx, method, request)
 		}
 	})
-	var sequence atomic.Int64
-	callPrefix := hex.EncodeToString(nonce) + ":"
 	for _, definition := range definitions {
 		tool, err := declare(definition)
 		if err != nil {
 			return nil, err
 		}
 		server.AddTool(tool, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			result, err := options.Registry.Call(ctx, tools.Call{
-				BotID:  options.BotID,
-				TaskID: options.TaskID,
-				CallID: callPrefix + strconv.FormatInt(sequence.Add(1), 10),
-				Name:   request.Params.Name,
-				Input:  request.Params.Arguments,
-			}, options.Approve)
-			if err != nil {
-				return errorResult(err), nil
-			}
-			return convert(result)
+			return gateway.call(ctx, options, request)
 		})
 	}
 
@@ -102,10 +102,10 @@ func Open(ctx context.Context, options Options) (*Gateway, error) {
 	}
 	path := "/mcp/" + hex.EncodeToString(secret)
 	mux := http.NewServeMux()
-	mux.Handle(path, mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+	mux.Handle(path, withRequestID(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		JSONResponse:        true,
 		MaxRequestBodyBytes: MaxRequestBytes,
-	}))
+	})))
 	gateway.server = &http.Server{Handler: mux}
 	gateway.URL = "http://" + listener.Addr().String() + path
 	go func() { gateway.served <- gateway.server.Serve(listener) }()
@@ -130,6 +130,79 @@ func (g *Gateway) Close() error {
 		return errors.Join(err, served)
 	}
 	return err
+}
+
+// call runs one tools/call. Its CallID is the MCP session ID plus the JSON-RPC request
+// ID, so a redelivered request keeps its identity and receives the recorded outcome.
+func (g *Gateway) call(ctx context.Context, options Options, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var requestID string
+	if request.Extra != nil {
+		requestID = request.Extra.Header.Get(requestIDHeader)
+	}
+	if requestID == "" {
+		return errorResult(errors.New("mcpserver: tools/call has no request ID")), nil
+	}
+	var input bytes.Buffer
+	if len(request.Params.Arguments) > 0 {
+		if err := json.Compact(&input, request.Params.Arguments); err != nil {
+			return errorResult(err), nil
+		}
+	}
+	callID := request.Session.ID() + ":" + requestID
+	g.mu.Lock()
+	recorded, found := g.calls[callID]
+	if !found {
+		recorded = &outcome{name: request.Params.Name, input: input.String(), done: make(chan struct{})}
+		g.calls[callID] = recorded
+	}
+	g.mu.Unlock()
+	if found {
+		if recorded.name != request.Params.Name || recorded.input != input.String() {
+			return errorResult(fmt.Errorf("mcpserver: request ID %s was reused for a different call", requestID)), nil
+		}
+		select {
+		case <-recorded.done:
+			return recorded.result, nil
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		}
+	}
+	defer close(recorded.done)
+	result, err := options.Registry.Call(ctx, tools.Call{
+		BotID:  options.BotID,
+		TaskID: options.TaskID,
+		CallID: callID,
+		Name:   request.Params.Name,
+		Input:  request.Params.Arguments,
+	}, options.Approve)
+	if err != nil {
+		recorded.result = errorResult(err)
+	} else if recorded.result, err = convert(result); err != nil {
+		recorded.result = errorResult(err)
+	}
+	return recorded.result, nil
+}
+
+func withRequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Del(requestIDHeader)
+		if r.Method == http.MethodPost {
+			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBytes))
+			if err != nil {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			var message struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			if json.Unmarshal(body, &message) == nil && message.Method == "tools/call" && len(message.ID) > 0 {
+				r.Header.Set(requestIDHeader, string(message.ID))
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func declare(definition tools.Definition) (*mcp.Tool, error) {
