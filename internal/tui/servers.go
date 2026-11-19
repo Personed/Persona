@@ -53,17 +53,29 @@ func (s *servers) save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), "tui-*.json")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), s.path)
 }
 
 // remember records token for server and makes server the default for the next start.
 func (s *servers) remember(server, token string) error {
 	if s == nil {
 		return nil
+	}
+	// Merge into the file as it is now, so another terminal's pairing since this one started is kept.
+	if disk, err := loadServers(s.path); err == nil && s.path != "" {
+		s.Tokens = disk.Tokens
 	}
 	s.Current = server
 	if token == "" {

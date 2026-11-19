@@ -39,6 +39,7 @@ type Model struct {
 	chat    *chat
 	work    *work
 	login   *login
+	saveErr error
 	servers *servers
 }
 
@@ -253,6 +254,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.chatKey(msg)
 		}
 		return m.botsKey(msg)
+	case tea.PasteMsg:
+		if m.screen == screenLogin && m.login != nil {
+			var cmd tea.Cmd
+			m.login.code, cmd = m.login.code.Update(msg)
+			return m, cmd
+		}
 	case tea.MouseWheelMsg:
 		if m.chat != nil {
 			var cmd tea.Cmd
@@ -277,6 +284,7 @@ func (m Model) botsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.cursor = min(m.cursor+1, max(len(m.bots)-1, 0))
 	case "r":
+		m = m.retrySave()
 		return m, m.loadBots()
 	case "L":
 		if m.client.Token != "" {
@@ -554,10 +562,14 @@ func (m Model) chatView() string {
 }
 
 func (m Model) errLine() string {
-	if m.err == nil {
-		return ""
+	line := ""
+	if m.saveErr != nil {
+		line = errorStyle.Render("pairing not saved, r retries: "+m.saveErr.Error()) + "\n"
 	}
-	return errorStyle.Render(m.err.Error()) + "\n"
+	if m.err != nil {
+		line += errorStyle.Render(m.err.Error()) + "\n"
+	}
+	return line
 }
 
 func requestID() string {

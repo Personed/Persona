@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -67,11 +68,17 @@ func (m Model) paired(msg pairedMsg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 	}
-	if err := m.servers.remember(m.client.BaseURL, msg.token); err != nil {
-		m.err = err
-	}
+	m.saveErr = m.servers.remember(m.client.BaseURL, msg.token)
 	m.login, m.screen = nil, screenBots
 	return m, m.loadBots()
+}
+
+// retrySave saves a token whose earlier save failed, so the pairing survives a restart.
+func (m Model) retrySave() Model {
+	if m.saveErr != nil {
+		m.saveErr = m.servers.remember(m.client.BaseURL, m.client.Token)
+	}
+	return m
 }
 
 func (m Model) logout() tea.Cmd {
@@ -80,6 +87,11 @@ func (m Model) logout() tea.Cmd {
 }
 
 func (m Model) loggedOut(msg loggedOutMsg) (tea.Model, tea.Cmd) {
+	// Keep the token while the service may still hold the session, so log out can be repeated.
+	if msg.err != nil && !unauthorized(msg.err) {
+		m.err = fmt.Errorf("log out failed, this terminal is still paired: %w", msg.err)
+		return m, nil
+	}
 	m.client.Token, m.bots = "", nil
 	if err := m.servers.remember(m.client.BaseURL, ""); err != nil {
 		m.err = err
