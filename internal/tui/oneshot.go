@@ -41,11 +41,11 @@ func Chat(ctx context.Context, args []string, stdout io.Writer) error {
 	if text := strings.TrimSpace(strings.Join(flags.Args(), " ")); text != "" {
 		return chatOnce(ctx, c, bot, text, stdout)
 	}
-	var view client.ChatView
-	if err := c.Call(ctx, "get", map[string]int{"botId": bot.ID}, &view); err != nil {
+	view, err := history(ctx, c, bot.ID)
+	if err != nil {
 		return err
 	}
-	for _, m := range view.Messages {
+	for _, m := range view {
 		if text := m.Text(); text != "" && (m.Role == "user" || m.Role == "assistant") {
 			fmt.Fprintf(stdout, "%s> %s\n", speaker(m.Role, bot), text)
 		}
@@ -82,7 +82,28 @@ func speaker(role string, bot client.Bot) string {
 	return bot.Name
 }
 
-// chatOnce sends text and prints the new assistant text as it streams, until the Bot is idle again.
+// history reads the whole chat, following before page by page from the newest page.
+func history(ctx context.Context, c *client.Client, botID int) ([]client.Message, error) {
+	var all []client.Message
+	before := ""
+	for {
+		input := map[string]any{"botId": botID}
+		if before != "" {
+			input["before"] = before
+		}
+		var page client.ChatView
+		if err := c.Call(ctx, "get", input, &page); err != nil {
+			return nil, err
+		}
+		all = append(page.Messages, all...)
+		if page.Before == "" || page.Before == before {
+			return all, nil
+		}
+		before = page.Before
+	}
+}
+
+// chatOnce sends text and prints the reply of its own turn as it streams, until that turn ends.
 func chatOnce(ctx context.Context, c *client.Client, bot client.Bot, text string, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -103,12 +124,13 @@ func chatOnce(ctx context.Context, c *client.Client, bot client.Bot, text string
 	for _, m := range view.Messages {
 		known[m.ID] = true
 	}
-	if err := c.Call(ctx, "send", map[string]any{"botId": bot.ID, "text": text, "requestId": requestID()}, nil); err != nil {
+	rid := requestID()
+	if err := c.Call(ctx, "send", map[string]any{"botId": bot.ID, "text": text, "requestId": rid}, nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "%s> ", bot.Name)
-	printed := map[string]string{}
-	replied, waiting := false, false
+	// turn is the turn of the sent message; another turn's reply that streams meanwhile is not printed.
+	turn, mine, printed, waiting := "", false, "", false
 	for {
 		if err := stream.Next(&change); err != nil {
 			fmt.Fprintln(out)
@@ -120,19 +142,25 @@ func chatOnce(ctx context.Context, c *client.Client, bot client.Bot, text string
 		if err := view.Apply(change); err != nil {
 			return err
 		}
+		reply, replied := "", false
 		for _, m := range view.Messages {
-			if known[m.ID] || m.Role != "assistant" {
+			if m.Role == "user" && m.RequestID == rid {
+				turn, mine = m.TurnID, true
+			}
+			if m.Role != "assistant" || known[m.ID] || !mine || (turn != "" && m.TurnID != turn) {
 				continue
 			}
-			replied = true
-			now := m.Text()
-			if before := printed[m.ID]; strings.HasPrefix(now, before) {
-				fmt.Fprint(out, now[len(before):])
-			} else {
-				fmt.Fprint(out, "\n"+now)
-			}
-			printed[m.ID] = now
+			reply, replied = reply+m.Text(), true
 		}
+		if d := view.Draft; d != nil && mine && (turn == "" || d.TurnID == "" || d.TurnID == turn) {
+			reply += d.Text()
+		}
+		if strings.HasPrefix(reply, printed) {
+			fmt.Fprint(out, reply[len(printed):])
+		} else {
+			fmt.Fprint(out, "\n"+reply)
+		}
+		printed = reply
 		if len(view.Approvals) > 0 && !waiting {
 			waiting = true
 			fmt.Fprintf(out, "\n[waiting: %s - answer it in persona tui]\n", view.Approvals[0].Title)
@@ -141,7 +169,8 @@ func chatOnce(ctx context.Context, c *client.Client, bot client.Bot, text string
 			fmt.Fprintln(out)
 			return fmt.Errorf("the model did not finish the reply: %s", view.Error)
 		}
-		if replied && !view.Busy && !view.Processing {
+		active := view.ActiveTurnID != nil && turn != "" && *view.ActiveTurnID == turn
+		if replied && view.Draft == nil && !active && (turn != "" || !view.Busy) {
 			fmt.Fprintln(out)
 			return nil
 		}
