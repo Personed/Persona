@@ -47,6 +47,7 @@ Pi Durable 1.4.0 stores Bot tasks. Native Harness processes own model loops. Per
 - `internal/store` records mirror pi-durable so existing databases import without translation. Pi is the only engine and runs as `pi --mode rpc` over JSONL on stdio. Pi has no Go SDK. An idle Bot has no engine process.
 - The Go service serves the oRPC wire in `contracts/api` unchanged: paths, input validation, output shapes, error codes, and HTTP statuses. Regenerate `procedures.json` and the fixtures in the same change as any TypeScript API change.
 - `internal/mcpserver` serves the `internal/tools` registry to Pi as one loopback MCP endpoint per Bot task. Add product tools by registering them in the registry; mutating tools set `Mutates` so calls pass the shared approver. A call's `CallID` is its MCP session and JSON-RPC request ID, and a redelivered request gets the recorded outcome. `internal/store/storetest` is the in-memory store for tests until the SQLite store lands.
+- `internal/memory` owns background review. The runtime counts answered turns with `TurnCompleted` and runs a due review with `Review` as the Bot's only task: a separate native session, memory tools only, at most 12 calls and 120 seconds. A review task whose prompt was sent is never sent again.
 - Use the Go standard library. Add a module dependency only when a piece needs it, and keep `go.mod` on the Go version CI installs.
 
 ## Computer Use contracts
