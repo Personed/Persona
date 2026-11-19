@@ -56,6 +56,8 @@ type Gateway struct {
 	closing    context.Context
 	stop       context.CancelFunc
 
+	results results
+
 	mu       sync.Mutex
 	calls    map[string]*outcome
 	closed   bool
@@ -71,7 +73,8 @@ type outcome struct {
 	result *mcp.CallToolResult
 }
 
-// Open lists the Bot's tools and starts serving them on a loopback port.
+// Open lists the Bot's tools and starts serving them on a loopback port. The gateway
+// adds query_result, which reads the results it shortened for the model.
 func Open(ctx context.Context, options Options) (*Gateway, error) {
 	definitions, err := options.Registry.List(ctx, options.BotID)
 	if err != nil {
@@ -92,7 +95,7 @@ func Open(ctx context.Context, options Options) (*Gateway, error) {
 			return next(ctx, method, request)
 		}
 	})
-	for _, definition := range definitions {
+	for _, definition := range append(definitions, queryDefinition) {
 		tool, err := declare(definition)
 		if err != nil {
 			return nil, err
@@ -192,13 +195,19 @@ func (g *Gateway) call(ctx context.Context, options Options, request *mcp.CallTo
 		}
 	}
 	defer close(recorded.done)
-	result, err := options.Registry.Call(ctx, tools.Call{
+	var result tools.Result
+	var err error
+	if request.Params.Name == queryDefinition.Name {
+		result = g.results.query(request.Params.Arguments)
+	} else if result, err = options.Registry.Call(ctx, tools.Call{
 		BotID:  options.BotID,
 		TaskID: options.TaskID,
 		CallID: callID,
 		Name:   request.Params.Name,
 		Input:  request.Params.Arguments,
-	}, options.Approve)
+	}, options.Approve); err == nil {
+		result = g.results.project(result)
+	}
 	if err != nil {
 		recorded.result = errorResult(err)
 	} else if recorded.result, err = convert(result); err != nil {
