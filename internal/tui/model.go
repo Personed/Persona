@@ -50,6 +50,7 @@ type chat struct {
 	retryText string
 	retryID   string
 	older     bool
+	answer    *answer
 }
 
 type botsMsg struct {
@@ -175,7 +176,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = err
 		}
 		m.chat.loaded = true
-		m.refresh()
+		m.chat.syncAnswer()
+		m.layout()
 		return m, next(msg.botID, msg.stream)
 	case sendMsg:
 		c := m.chat
@@ -340,6 +342,20 @@ func (m *Model) closeChat() {
 
 func (m Model) chatKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	c := m.chat
+	if c.answer != nil {
+		switch {
+		case !c.answer.typing && msg.String() != "esc" && msg.String() != "ctrl+x":
+			return m.answerKey(msg)
+		case c.answer.typing && msg.String() == "tab":
+			c.answer.typing = false
+			c.input.Blur()
+			return m, nil
+		case c.answer.typing && msg.String() == "enter":
+			text := strings.TrimSpace(c.input.Value())
+			c.input.Reset()
+			return m.confirm(text)
+		}
+	}
 	switch msg.String() {
 	case "esc":
 		m.closeChat()
@@ -378,7 +394,11 @@ func (m *Model) layout() {
 	m.chat.input.SetWidth(m.width)
 	m.chat.input.SetHeight(inputHeight)
 	m.chat.viewport.SetWidth(m.width)
-	m.chat.viewport.SetHeight(max(m.height-inputHeight-3, 1))
+	card := 0
+	if m.chat.answer != nil {
+		card = lipgloss.Height(m.answerView())
+	}
+	m.chat.viewport.SetHeight(max(m.height-inputHeight-3-card, 1))
 	m.refresh()
 }
 
@@ -392,10 +412,11 @@ func (m *Model) refresh() {
 }
 
 var (
-	titleStyle = lipgloss.NewStyle().Bold(true)
-	faint      = lipgloss.NewStyle().Faint(true)
-	selected   = lipgloss.NewStyle().Reverse(true)
-	errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	titleStyle    = lipgloss.NewStyle().Bold(true)
+	faint         = lipgloss.NewStyle().Faint(true)
+	selected      = lipgloss.NewStyle().Reverse(true)
+	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	approvalStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 )
 
 // View renders the current screen.
@@ -454,7 +475,12 @@ func (m Model) chatView() string {
 	if c.view.Busy {
 		help = "ctrl+x stop · " + help
 	}
-	return header + "\n" + c.viewport.View() + "\n" + c.input.View() + "\n" + m.errLine() + faint.Render(help)
+	card := ""
+	if c.answer != nil {
+		card = m.answerView()
+		help = m.answerHelp() + "esc Bots"
+	}
+	return header + "\n" + c.viewport.View() + "\n" + card + c.input.View() + "\n" + m.errLine() + faint.Render(help)
 }
 
 func (m Model) errLine() string {
