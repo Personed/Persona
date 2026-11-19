@@ -18,6 +18,7 @@ func TestRun(t *testing.T) {
 		{args: []string{"help"}, code: 0, stdout: "migrate"},
 		{args: []string{"version"}, code: 0, stdout: "dev"},
 		{args: []string{"serve"}, code: 1, stderr: "persona serve: not implemented"},
+		{args: []string{"migrate", "-data-dir", t.TempDir()}, code: 1, stderr: "persona migrate: no pi-durable database"},
 		{args: []string{"unknown"}, code: 2, stderr: `unknown command "unknown"`},
 	}
 	for _, c := range cases {
