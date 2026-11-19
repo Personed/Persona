@@ -44,20 +44,6 @@ export const getDimensions = () => {
   ] as const;
 };
 
-export const metrics = [
-  { value: "cost", label: "任务成本", unit: "USD" },
-  { value: "tasks", label: "任务数", unit: "次" },
-  { value: "input", label: "输入用量", unit: "tok" },
-  { value: "output", label: "输出用量", unit: "tok" },
-] as const;
-
-export const dimensions = [
-  { value: "model", label: "模型" },
-  { value: "provider", label: "Provider" },
-  { value: "harness", label: "Harness" },
-  { value: "bot", label: "Bot" },
-] as const;
-
 export const harnesses = [
   { value: "pi", label: "Pi" },
   { value: "codex", label: "Codex" },
