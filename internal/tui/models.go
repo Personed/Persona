@@ -20,6 +20,12 @@ type picker struct {
 	effort map[string]string
 }
 
+// modelSavedMsg ends a model change; sending waits for it so the next turn runs on the chosen model.
+type modelSavedMsg struct {
+	botID int
+	err   error
+}
+
 type engineMsg struct {
 	botID  int
 	engine client.Engine
@@ -88,9 +94,13 @@ func (m Model) pickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		p.effort[model.ID] = ids[i]
 	case "enter":
-		options := maps.Clone(p.engine.Config.Options)
-		if options == nil {
-			options = map[string]string{}
+		// The service validates a new model's options against that model alone, so other options carry over only when the model stays.
+		options := map[string]string{}
+		if cfg := p.engine.Config; cfg.Model != nil && *cfg.Model == model.ID {
+			options = maps.Clone(cfg.Options)
+			if options == nil {
+				options = map[string]string{}
+			}
 		}
 		if model.Effort != nil {
 			if level := p.level(model); level != "" {
@@ -99,12 +109,11 @@ func (m Model) pickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				delete(options, model.Effort.ID)
 			}
 		}
-		c.picker = nil
+		c.picker, c.saving = nil, true
 		m.layout()
-		return m, m.call("engines.select", map[string]any{
-			"botId": c.bot.ID, "model": model.ID, "options": options,
-			"revision": p.engine.Revision, "requestId": requestID(),
-		})
+		cl, ctx, id := m.client, m.ctx, c.bot.ID
+		input := map[string]any{"botId": id, "model": model.ID, "options": options, "revision": p.engine.Revision, "requestId": requestID()}
+		return m, func() tea.Msg { return modelSavedMsg{id, cl.Call(ctx, "engines.select", input, nil)} }
 	}
 	return m, nil
 }
@@ -127,7 +136,10 @@ func (m Model) pickerView() string {
 	p := m.chat.picker
 	var b strings.Builder
 	b.WriteString(approvalStyle.Render("Model · "+p.engine.Config.Provider) + "\n")
-	for i, model := range p.models {
+	rows := max(m.height-inputHeight-6, 3)
+	start := min(max(p.cursor-rows+1, 0), max(len(p.models)-rows, 0))
+	for i := start; i < min(start+rows, len(p.models)); i++ {
+		model := p.models[i]
 		line := model.Name
 		if model.Name != model.ID {
 			line += faint.Render("  " + model.ID)

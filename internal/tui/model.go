@@ -54,6 +54,7 @@ type chat struct {
 	older     bool
 	answer    *answer
 	picker    *picker
+	saving    bool
 }
 
 type botsMsg struct {
@@ -212,6 +213,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case answeredMsg:
 		return m.answered(msg), nil
+	case modelSavedMsg:
+		if m.chat != nil && m.chat.bot.ID == msg.botID {
+			m.chat.saving = false
+		}
+		m.err = msg.err
+		return m, nil
 	case engineMsg:
 		return m.showPicker(msg), nil
 	case workStreamMsg, workMsg, routineMsg:
@@ -389,6 +396,9 @@ func (m Model) chatKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadBots()
 	case "enter":
 		text := strings.TrimSpace(c.input.Value())
+		if c.saving {
+			return m, nil
+		}
 		if text == "" {
 			return m, nil
 		}
@@ -503,6 +513,9 @@ func (m Model) chatView() string {
 		header += faint.Render(" · loading")
 	case c.view.Busy:
 		header += " · working"
+	}
+	if c.saving {
+		header += " · saving model"
 	}
 	help := "enter send · ctrl+j newline · pgup/pgdn scroll · ctrl+l model · ctrl+o Work · esc Bots"
 	if c.view.Busy {
