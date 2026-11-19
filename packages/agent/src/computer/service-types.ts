@@ -1,5 +1,3 @@
-import type { ProductResult, ProductTool } from "../harness/types.ts";
-
 export type ComputerService = "browser" | "desktop";
 export type ServiceState = {
   available: boolean;
@@ -26,4 +24,3 @@ export type ComputerRequest =
       arguments: Record<string, unknown>;
       cursorColor?: string;
     };
-export type ComputerResponse = ProductTool[] | ProductResult | ServiceState;
