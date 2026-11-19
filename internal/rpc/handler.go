@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -207,18 +208,15 @@ func envelope(value any) any {
 // with each Blob's path in "maps", and field i holds the i-th Blob. Blobs are
 // found in maps, Objects and slices, not in struct fields.
 func writeOutput(w http.ResponseWriter, output any) {
-	plain, err := marshal(envelope(output))
-	if err != nil {
-		writeError(w, toError(err))
-		return
-	}
 	var maps [][]any
 	var blobs []*Blob
-	value := extractBlobs(output, nil, &maps, &blobs)
+	value, ok := extractBlobs(output, nil, &maps, &blobs)
+	if !ok {
+		writeError(w, toError(errors.New("rpc: output nests too deeply")))
+		return
+	}
 	if len(blobs) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(plain)
+		writeJSON(w, http.StatusOK, envelope(output))
 		return
 	}
 	data, err := marshal(map[string]any{"json": value, "maps": maps})
@@ -251,48 +249,57 @@ func writeOutput(w http.ResponseWriter, output any) {
 }
 
 // extractBlobs returns v with each Blob replaced by {}, as JSON.stringify
-// writes a Blob, and records the Blobs and their paths. v must marshal, so it
-// has no cycles.
-func extractBlobs(v any, path []any, maps *[][]any, blobs *[]*Blob) any {
+// writes a Blob, and records the Blobs and their paths. It fails past 1000
+// levels of nesting, where encoding/json reports cycles.
+func extractBlobs(v any, path []any, maps *[][]any, blobs *[]*Blob) (any, bool) {
+	if len(path) > 1000 {
+		return nil, false
+	}
+	ok := true
+	item := func(v any, key any) any {
+		out, itemOK := extractBlobs(v, append(path, key), maps, blobs)
+		ok = ok && itemOK
+		return out
+	}
 	switch t := v.(type) {
 	case Blob:
 		return extractBlobs(&t, path, maps, blobs)
 	case *Blob:
 		if t == nil {
-			return nil
+			return nil, true
 		}
 		*maps = append(*maps, append([]any{}, path...))
 		*blobs = append(*blobs, t)
-		return struct{}{}
+		return struct{}{}, true
 	case map[string]any:
 		if t == nil {
-			return v
+			return v, true
 		}
 		out := make(map[string]any, len(t))
-		for key, item := range t {
-			out[key] = extractBlobs(item, append(path, key), maps, blobs)
+		for key, value := range t {
+			out[key] = item(value, key)
 		}
-		return out
+		return out, ok
 	case *Object:
 		if t == nil {
-			return v
+			return v, true
 		}
 		out := &Object{Keys: t.Keys, Values: make(map[string]any, len(t.Values))}
 		for _, key := range t.Keys {
-			out.Values[key] = extractBlobs(t.Values[key], append(path, key), maps, blobs)
+			out.Values[key] = item(t.Values[key], key)
 		}
-		return out
+		return out, ok
 	case []any:
 		if t == nil {
-			return v
+			return v, true
 		}
 		out := make([]any, len(t))
-		for i, item := range t {
-			out[i] = extractBlobs(item, append(path, i), maps, blobs)
+		for i, value := range t {
+			out[i] = item(value, i)
 		}
-		return out
+		return out, ok
 	}
-	return v
+	return v, true
 }
 
 func writeError(w http.ResponseWriter, err *Error) {
