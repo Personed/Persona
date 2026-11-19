@@ -21,27 +21,42 @@ func (s *SQLite) Commit(ctx context.Context, batches []Batch) (int, []Seq, error
 	}
 	seqs := make([]Seq, 0, len(batches))
 	for i, batch := range batches {
-		seq, err := s.commitBatch(ctx, batch)
+		seq, err := s.commitBatch(ctx, batch, nil)
 		if err != nil {
 			return i, seqs, fmt.Errorf("store: batch %d: %w", i, err)
 		}
 		seqs = append(seqs, seq)
-		s.publish(seq)
 	}
 	return len(seqs), seqs, nil
 }
 
-func (s *SQLite) commitBatch(ctx context.Context, batch Batch) (Seq, error) {
+// CommitVersioned accepts explicit document schema versions for a single batch.
+// Only document creation or full-value replacement can specify a version. The
+// importer uses it to preserve versions that the Store interface cannot supply.
+func (s *SQLite) CommitVersioned(ctx context.Context, batch Batch, versions map[DocumentID]int) (Seq, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	if s.closed {
+		return 0, ErrClosed
+	}
+	return s.commitBatch(ctx, batch, versions)
+}
+
+func (s *SQLite) commitBatch(ctx context.Context, batch Batch, versions map[DocumentID]int) (Seq, error) {
 	var seq Seq
 	err := transaction(ctx, s.db, func(tx *sql.Tx) error {
 		var err error
-		seq, err = applyBatch(ctx, tx, batch)
+		seq, err = applyBatch(ctx, tx, batch, versions)
 		return err
 	})
+	if err != nil {
+		return 0, err
+	}
+	s.publish(seq)
 	return seq, err
 }
 
-func applyBatch(ctx context.Context, tx *sql.Tx, batch Batch) (Seq, error) {
+func applyBatch(ctx context.Context, tx *sql.Tx, batch Batch, versions map[DocumentID]int) (Seq, error) {
 	seq, err := nextSeq(ctx, tx)
 	if err != nil {
 		return 0, err
@@ -65,7 +80,7 @@ func applyBatch(ctx context.Context, tx *sql.Tx, batch Batch) (Seq, error) {
 			return 0, fmt.Errorf("write %d (%s): %w", i, w.Type, err)
 		}
 	}
-	if err := writeDocuments(ctx, tx, seq, docs); err != nil {
+	if err := writeDocuments(ctx, tx, seq, docs, versions); err != nil {
 		return 0, err
 	}
 	if lastID != 0 {

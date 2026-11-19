@@ -61,7 +61,13 @@ func TestDocumentRevisionsAndLifetimes(t *testing.T) {
 	ctx := t.Context()
 	doc := &Document{ID: 1, Kind: "notes", Key: "weekly", Scope: Scope{Kind: "conversation", ConversationID: 99}, History: "rewindable"}
 	const original = `{"items":[1,2],"text":"🙂hi","remove":true,"large":9007199254740993}`
-	first := mustCommit(t, s, Write{Type: WriteDocumentCreate, Document: doc, Value: json.RawMessage(original)})
+	first, err := s.CommitVersioned(ctx,
+		Batch{{Type: WriteDocumentCreate, Document: doc, Value: json.RawMessage(original)}},
+		map[DocumentID]int{doc.ID: 3},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	second := mustCommit(t, s, Write{
 		Type: WriteDocumentChange, Document: &Document{ID: doc.ID},
 		Ops: json.RawMessage(`[["s",["done"],false],["d",["remove"]],["p",["items"],1,0,[3]],["m",["items"],[2,0,1]],["t",["text"],2],["a",["text"],"!"]]`),
@@ -90,11 +96,11 @@ func TestDocumentRevisionsAndLifetimes(t *testing.T) {
 		version int
 		value   string
 	}{
-		{doc.ID, first, 1, original},
-		{doc.ID, second, 2, changed},
+		{doc.ID, first, 3, original},
+		{doc.ID, second, 3, changed},
 		{replacement.ID, third, 1, `{"new":true}`},
-		{copyDoc.ID, Current, 1, changed},
-		{bots.ID, Current, 2, `{"items":[{"id":99}]}`},
+		{copyDoc.ID, Current, 3, changed},
+		{bots.ID, Current, 1, `{"items":[{"id":99}]}`},
 	} {
 		got, err := s.Document(ctx, tc.id, tc.at)
 		if err != nil || got.Version != tc.version || string(got.Value) != tc.value {
@@ -122,5 +128,42 @@ func TestDocumentRevisionsAndLifetimes(t *testing.T) {
 	}
 	if got, err := s.Document(ctx, replacement.ID, Current); err != nil || string(got.Value) != `{"new":true}` {
 		t.Fatalf("failed operation changed original revision: %s, %v", got.Value, err)
+	}
+	write := Write{Type: WriteDocumentChange, Document: &replacement, Ops: json.RawMessage(`[["s",["new"],false]]`)}
+	if _, err := s.CommitVersioned(ctx, Batch{write}, map[DocumentID]int{replacement.ID: 5}); err == nil {
+		t.Fatal("schema change using a delta was accepted")
+	}
+	write.Ops, write.Value = nil, json.RawMessage(`{"migrated":true}`)
+	newVersion, err := s.CommitVersioned(ctx, Batch{write}, map[DocumentID]int{replacement.ID: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Document(ctx, replacement.ID, newVersion); err != nil || got.Version != 5 {
+		t.Fatalf("migrated document version = %d, %v", got.Version, err)
+	}
+	if got, err := s.Document(ctx, replacement.ID, third); err != nil || got.Version != 1 {
+		t.Fatalf("earlier revision version = %d, %v", got.Version, err)
+	}
+}
+
+func TestChordDeltaPreservesUTF16AcrossCommits(t *testing.T) {
+	s, path := openTestStore(t)
+	doc := &Document{ID: 1, Kind: "notes", Scope: Scope{Kind: "session"}}
+	mustCommit(t, s, Write{Type: WriteDocumentCreate, Document: doc, Value: json.RawMessage(`{"joined":"","split":"🙂","\ud800":"key"}`)})
+	mustCommit(t, s, Write{Type: WriteDocumentChange, Document: doc,
+		Ops: json.RawMessage(`[["a",["joined"],"\ud83d"],["a",["joined"],"\ude42"],["t",["split"],1],["a",["\uD800"],"!"]]`)})
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s = openTestPath(t, path)
+	got, err := s.Document(t.Context(), doc.ID, Current)
+	if err != nil || string(got.Value) != `{"\ud800":"key!","joined":"🙂","split":"\ude42"}` {
+		t.Fatalf("first revision = %s, %v", got.Value, err)
+	}
+	mustCommit(t, s, Write{Type: WriteDocumentChange, Document: doc,
+		Ops: json.RawMessage(`[["a",["split"],"\ud83d"],["a",["split"],"\ude42"]]`)})
+	got, err = s.Document(t.Context(), doc.ID, Current)
+	if err != nil || string(got.Value) != `{"\ud800":"key!","joined":"🙂","split":"\ude42🙂"}` {
+		t.Fatalf("second revision = %s, %v", got.Value, err)
 	}
 }

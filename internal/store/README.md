@@ -16,9 +16,11 @@ place. The one-shot importer owns copying legacy records.
   without changing its request ID or conversation.
 - Bot metadata stays in the `persona.bots` session document. Rewindable
   conversation documents retain historical values. Other documents retain only
-  the latest value. `Version` counts content revisions within an incarnation.
-  A copy starts from the source's current value before the batch, and changes
-  accept a base object or decoded Chord delta tuples.
+  the latest value. Commit sequences identify revisions; `Version` is the
+  document schema version, which defaults to 1 and is preserved on normal
+  updates. The importer can supply a schema version with `CommitVersioned`.
+  A copy takes the source's pre-batch value and version. Changes accept a
+  base object or decoded Chord delta tuples.
 - Register a watch before taking the initial snapshot. Watches receive one
   sequence per committed batch or journal change, including when consumers
   fall behind. Cancel the watch context when done.

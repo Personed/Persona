@@ -100,7 +100,7 @@ func TestCrashProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := &Entry{ID: 51, ConversationID: 50, Data: json.RawMessage(`"` + strings.Repeat("x", 512*1024) + `"`)}
-	if _, err := applyBatch(ctx, tx, Batch{conversationWrite(50), {Type: WriteEntry, Entry: entry}}); err != nil {
+	if _, err := applyBatch(ctx, tx, Batch{conversationWrite(50), {Type: WriteEntry, Entry: entry}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.Stat(wal)

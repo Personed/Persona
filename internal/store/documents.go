@@ -137,10 +137,11 @@ func documentAt(ctx context.Context, db rowQuerier, id DocumentID, at Seq) (Docu
 type documentAction struct {
 	content *Write
 	retire  bool
+	version int
 }
 
-func writeDocuments(ctx context.Context, tx *sql.Tx, seq Seq, writes []Write) error {
-	if len(writes) == 0 {
+func writeDocuments(ctx context.Context, tx *sql.Tx, seq Seq, writes []Write, versions map[DocumentID]int) error {
+	if len(writes) == 0 && len(versions) == 0 {
 		return nil
 	}
 	actions := make(map[DocumentID]documentAction)
@@ -164,16 +165,26 @@ func writeDocuments(ctx context.Context, tx *sql.Tx, seq Seq, writes []Write) er
 		}
 		actions[id] = action
 	}
+	for id, version := range versions {
+		action := actions[id]
+		w := action.content
+		if version <= 0 || w == nil ||
+			(w.Type != WriteDocumentCreate && (w.Type != WriteDocumentChange || len(w.Value) == 0 || len(w.Ops) != 0)) {
+			return fmt.Errorf("store: schema version for document %d requires a positive version and a base value", id)
+		}
+		action.version = version
+		actions[id] = action
+	}
 	// Copies see the pre-batch source. Apply retirements before creations so a
 	// batch can atomically replace the current incarnation of an address.
-	copies := make(map[DocumentID]json.RawMessage)
+	copies := make(map[DocumentID]DocumentValue)
 	for _, id := range order {
 		if w := actions[id].content; w != nil && w.Type == WriteDocumentCopy {
 			source, err := documentAt(ctx, tx, *w.CopyFrom, Current)
 			if err != nil {
 				return fmt.Errorf("store: document %d copy source: %w", id, err)
 			}
-			copies[id] = source.Value
+			copies[id] = source
 		}
 	}
 	for _, id := range order {
@@ -191,18 +202,19 @@ func writeDocuments(ctx context.Context, tx *sql.Tx, seq Seq, writes []Write) er
 		if w == nil || w.Type == WriteDocumentChange {
 			continue
 		}
-		value := w.Value
+		value, version := w.Value, max(action.version, 1)
 		if w.Type == WriteDocumentCopy {
-			value = copies[id]
+			source := copies[id]
+			value, version = source.Value, source.Version
 		}
-		if err := createDocument(ctx, tx, *w.Document, seq, action.retire, value); err != nil {
+		if err := createDocument(ctx, tx, *w.Document, seq, action.retire, version, value); err != nil {
 			return fmt.Errorf("store: create document %d: %w", id, err)
 		}
 	}
 	return nil
 }
 
-func createDocument(ctx context.Context, tx *sql.Tx, doc Document, seq Seq, retire bool, value json.RawMessage) error {
+func createDocument(ctx context.Context, tx *sql.Tx, doc Document, seq Seq, retire bool, version int, value json.RawMessage) error {
 	scope, err := scopeID(doc.Scope)
 	if err != nil {
 		return err
@@ -221,7 +233,7 @@ func createDocument(ctx context.Context, tx *sql.Tx, doc Document, seq Seq, reti
 		doc.ID, doc.Kind, doc.Key, doc.Scope.Kind, scope, doc.History, doc.Fork, seq, retiredAt); err != nil {
 		return err
 	}
-	return insertRevision(ctx, tx, doc.ID, seq, 1, value)
+	return insertRevision(ctx, tx, doc.ID, seq, version, value)
 }
 
 func updateDocument(ctx context.Context, tx *sql.Tx, id DocumentID, seq Seq, action documentAction) error {
@@ -239,7 +251,11 @@ func updateDocument(ctx context.Context, tx *sql.Tx, id DocumentID, seq Seq, act
 				return err
 			}
 		}
-		if err := insertRevision(ctx, tx, id, seq, current.Version+1, value); err != nil {
+		version := action.version
+		if version == 0 {
+			version = current.Version
+		}
+		if err := insertRevision(ctx, tx, id, seq, version, value); err != nil {
 			return err
 		}
 	}
