@@ -242,7 +242,8 @@ func TestReviewSavesWithinLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := strings.Join(r.engine.listed, ","); got != "memory_delete,memory_list,memory_save,memory_search" {
+	// query_result is the gateway's own read of results it shortened, as in TypeScript.
+	if got := strings.Join(r.engine.listed, ","); got != "memory_delete,memory_list,memory_save,memory_search,query_result" {
 		t.Fatalf("review tools = %s", got)
 	}
 	if r.other.runs.Load() != 0 || other == "" {
