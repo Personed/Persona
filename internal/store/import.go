@@ -16,6 +16,7 @@ var ErrNotEmpty = errors.New("store: import target is not empty")
 
 // ImportReport counts imported rows. Unmodeled lists records whose JSON has fields
 // the Go types do not read; their record column still keeps the original JSON.
+// Documents have no record column, so such a document fails the import instead.
 type ImportReport struct {
 	Conversations, Entries, Tasks, Submissions, Documents, Revisions int
 	Unmodeled                                                        []string
@@ -30,6 +31,10 @@ func (s *SQLite) ImportPiDurable(ctx context.Context, src *sql.DB) (ImportReport
 	defer s.writer.Unlock()
 	if s.closed {
 		return ImportReport{}, ErrClosed
+	}
+	if s.watched {
+		// A watcher would receive every imported seq as a new commit.
+		return ImportReport{}, errors.New("store: import requires a store that is not watched")
 	}
 	in, err := src.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -99,19 +104,25 @@ func (im *importer) rows(query string, each func(scan func(...any) error) error,
 	return rows.Err()
 }
 
-// decode reads a record into v and notes it when v does not keep every field.
-func (im *importer) decode(name string, id int64, record []byte, v any) error {
+// decode reads a record into v and reports whether v keeps every field.
+func decode(name string, id int64, record []byte, v any) (bool, error) {
 	if err := json.Unmarshal(record, v); err != nil {
-		return fmt.Errorf("store: import %s %d: %w", name, id, err)
+		return false, fmt.Errorf("store: import %s %d: %w", name, id, err)
 	}
 	out, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if !sameJSON(record, out) {
+	return sameJSON(record, out), nil
+}
+
+// decodeRecord decodes a record whose original JSON is stored alongside it.
+func (im *importer) decodeRecord(name string, id int64, record []byte, v any) error {
+	modeled, err := decode(name, id, record, v)
+	if err == nil && !modeled {
 		im.report.Unmodeled = append(im.report.Unmodeled, fmt.Sprintf("%s %d", name, id))
 	}
-	return nil
+	return err
 }
 
 func sameJSON(a, b []byte) bool {
@@ -153,7 +164,7 @@ func (im *importer) conversations() error {
 		if err := scan(&id, &record); err != nil {
 			return err
 		}
-		if err := im.decode("conversation", id, record, &c); err != nil {
+		if err := im.decodeRecord("conversation", id, record, &c); err != nil {
 			return err
 		}
 		var parent ForkPoint
@@ -178,7 +189,7 @@ func (im *importer) entries() error {
 		if err := scan(&id, &seq, &record); err != nil {
 			return err
 		}
-		if err := im.decode("entry", id, record, &e); err != nil {
+		if err := im.decodeRecord("entry", id, record, &e); err != nil {
 			return err
 		}
 		im.report.Entries++
@@ -194,7 +205,7 @@ func (im *importer) tasks() error {
 		if err := scan(&id, &record); err != nil {
 			return err
 		}
-		if err := im.decode("task", id, record, &t); err != nil {
+		if err := im.decodeRecord("task", id, record, &t); err != nil {
 			return err
 		}
 		im.report.Tasks++
@@ -211,7 +222,7 @@ func (im *importer) submissions() error {
 		if err := scan(&id, &record); err != nil {
 			return err
 		}
-		if err := im.decode("submission", id, record, &sub); err != nil {
+		if err := im.decodeRecord("submission", id, record, &sub); err != nil {
 			return err
 		}
 		im.report.Submissions++
@@ -228,8 +239,11 @@ func (im *importer) documents() error {
 		if err := scan(&id, &record); err != nil {
 			return err
 		}
-		if err := im.decode("document", id, record, &d); err != nil {
+		// An explicit empty key also lands here: the Go store cannot tell it from no key.
+		if modeled, err := decode("document", id, record, &d); err != nil {
 			return err
+		} else if !modeled {
+			return fmt.Errorf("store: import document %d: record %s has fields the Go store cannot keep", id, record)
 		}
 		scope, err := scopeID(d.Scope)
 		if err != nil {

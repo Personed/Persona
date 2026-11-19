@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -131,5 +132,39 @@ func TestImportPiDurableKeepsEveryRecord(t *testing.T) {
 	}
 	if seq := mustCommit(t, s, conversationWrite(17)); seq != expected.LastSeq+1 {
 		t.Errorf("first commit after import = %d, want %d", seq, expected.LastSeq+1)
+	}
+}
+
+func TestImportPiDurableRefusesWhatItCannotKeep(t *testing.T) {
+	ctx := t.Context()
+	for name, c := range map[string]struct {
+		edit  string
+		watch bool
+		want  string
+	}{
+		"explicit empty key": {edit: `UPDATE documents SET family=1, record=json_set(record,'$.key','') WHERE id=4`, want: "document 4"},
+		"unknown field":      {edit: `UPDATE documents SET record=json_set(record,'$.origin','legacy') WHERE id=14`, want: "document 14"},
+		"watched store":      {watch: true, want: "not watched"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := openPiFixture(t)
+			if c.edit != "" {
+				if _, err := src.ExecContext(ctx, c.edit); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s, _ := openTestStore(t)
+			if c.watch {
+				if _, err := s.Watch(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := s.ImportPiDurable(ctx, src); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("import = %v, want error naming %q", err, c.want)
+			}
+			if id, err := s.MintID(ctx); err != nil || id != 1 {
+				t.Fatalf("store changed after refused import: MintID = %d, %v", id, err)
+			}
+		})
 	}
 }
