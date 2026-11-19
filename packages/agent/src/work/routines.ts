@@ -27,10 +27,10 @@ import { routineTimeLabel } from "./schedule-label.ts";
 import { SkillsDoc } from "./skills.ts";
 import { requireRevision, toolResult, WorkError } from "./state.ts";
 
-export type RoutineChange = Partial<RoutineInput> & {
+type RoutineChange = Partial<RoutineInput> & {
   action: "create" | "update" | "pause" | "resume" | "run_now" | "delete";
 };
-export type RoutineConfirm = (
+type RoutineConfirm = (
   title: string,
   detail: string,
   context: Context,

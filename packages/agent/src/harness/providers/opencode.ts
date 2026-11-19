@@ -72,7 +72,7 @@ function completedCompaction(messages: NativeMessage[]) {
   );
 }
 
-export function acpProvider(
+function acpProvider(
   descriptor: Pick<
     EngineProvider,
     "id" | "name" | "command" | "package" | "login"
