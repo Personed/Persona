@@ -69,3 +69,56 @@ func lastBody(t *testing.T, server *clienttest.Server, path string) string {
 	}
 	return string(requests[len(requests)-1].Body)
 }
+
+func workWith(t *testing.T, routines int, height int) tea.Model {
+	t.Helper()
+	m := New(t.Context(), &client.Client{BaseURL: "http://127.0.0.1:1"})
+	m.width, m.height = 100, height
+	m.bots = []client.Bot{{ID: 1, Name: "Ada"}}
+	next, _ := m.Update(key('w', "w"))
+	var w client.Work
+	for i := range routines {
+		w.Routines.Items = append(w.Routines.Items, client.Routine{ID: "r" + itoa(i+1), Title: "Routine " + itoa(i+1), Enabled: true})
+	}
+	next, _ = next.Update(workMsg{botID: 1, work: w})
+	return next
+}
+
+func TestRoutineRetryReusesRequestID(t *testing.T) {
+	m := press(t, workWith(t, 1, 30), key('t', "t"))
+	first := m.(Model).work.pendingID
+	if first == "" || m.(Model).err == nil {
+		t.Fatalf("uncertain failure not kept: id %q err %v", first, m.(Model).err)
+	}
+	m = press(t, m, key('t', "t"))
+	if got := m.(Model).work.pendingID; got != first {
+		t.Fatalf("retry used a new requestId: %s then %s", first, got)
+	}
+	m = press(t, m, key('e', "e"))
+	if got := m.(Model).work.pendingID; got == first || got == "" {
+		t.Fatalf("a different action kept the old requestId %s", got)
+	}
+}
+
+func TestRoutineWindowFollowsCursor(t *testing.T) {
+	m := workWith(t, 20, 20)
+	for range 19 {
+		m = press(t, m, key(tea.KeyDown, ""))
+	}
+	got := content(m)
+	if !strings.Contains(got, "> on   Routine 20") || strings.Contains(got, "Routine 1 ") || !strings.Contains(got, "esc back") {
+		t.Fatalf("window:\n%s", got)
+	}
+	if lines := strings.Count(got, "\n") + 1; lines > 20 {
+		t.Fatalf("Work used %d lines of 20:\n%s", lines, got)
+	}
+}
+
+func TestWorkKeepsChatDraft(t *testing.T) {
+	var m tea.Model = openChat(t, &client.Client{BaseURL: clienttest.Serve(t).URL})
+	m = typeText(m, "half a thought")
+	m = press(t, m, tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl}, key(tea.KeyEscape, ""))
+	if c := m.(Model).chat; c == nil || c.input.Value() != "half a thought" {
+		t.Fatalf("draft lost after Work: %+v", c)
+	}
+}

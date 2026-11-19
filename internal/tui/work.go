@@ -21,6 +21,16 @@ type work struct {
 	cursor int
 	cancel context.CancelFunc
 	back   screen
+	// chat is the chat Work was opened from, kept with its draft and transcript until esc returns to it.
+	chat *chat
+	// pending is the routine action whose outcome is unknown; repeating it reuses its requestId.
+	pending, pendingID string
+}
+
+type routineMsg struct {
+	botID int
+	key   string
+	err   error
 }
 
 type workStreamMsg struct {
@@ -44,10 +54,10 @@ func nextWork(botID int, stream *client.Stream) tea.Cmd {
 	}
 }
 
-func (m Model) openWork(bot client.Bot) (tea.Model, tea.Cmd) {
+func (m Model) openWork(bot client.Bot, from *chat) (tea.Model, tea.Cmd) {
 	m.closeWork()
 	ctx, cancel := context.WithCancel(m.ctx)
-	m.work = &work{bot: bot, cancel: cancel, back: m.screen}
+	m.work = &work{bot: bot, cancel: cancel, back: m.screen, chat: from}
 	m.screen, m.err = screenWork, nil
 	c := m.client
 	return m, func() tea.Msg {
@@ -90,8 +100,32 @@ func (m Model) updateWork(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.work.data, m.work.loaded = msg.work, true
 		m.work.cursor = min(m.work.cursor, max(len(msg.work.Routines.Items)-1, 0))
 		return m, nextWork(msg.botID, msg.stream)
+	case routineMsg:
+		m.err = msg.err
+		if w := m.work; w != nil && w.bot.ID == msg.botID && w.pending == msg.key && (msg.err == nil || rejected(msg.err)) {
+			w.pending, w.pendingID = "", ""
+		}
 	}
 	return m, nil
+}
+
+// routine runs a routine action, reusing the requestId of the same action while its outcome is unknown.
+func (m Model) routine(procedure, key string, input map[string]any) tea.Cmd {
+	w := m.work
+	if w.pending != key {
+		w.pending, w.pendingID = key, requestID()
+	}
+	input["botId"], input["requestId"] = w.bot.ID, w.pendingID
+	c, ctx, id := m.client, m.ctx, w.bot.ID
+	return func() tea.Msg { return routineMsg{id, key, c.Call(ctx, procedure, input, nil)} }
+}
+
+// resumeChat returns to a chat kept while Work was open and reopens its changes stream.
+func (m Model) resumeChat(c *chat) (tea.Model, tea.Cmd) {
+	c.ctx, c.cancel = context.WithCancel(m.ctx)
+	m.chat, m.screen, m.err = c, screenChat, nil
+	m.layout()
+	return m, tea.Batch(c.input.Focus(), m.subscribe())
 }
 
 func (m Model) workKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -99,10 +133,13 @@ func (m Model) workKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	routines := w.data.Routines.Items
 	switch msg.String() {
 	case "esc", "q":
-		back, bot := w.back, w.bot
+		back, bot, kept := w.back, w.bot, w.chat
 		m.closeWork()
 		m.screen, m.err = back, nil
 		if back == screenChat && m.chat == nil {
+			if kept != nil {
+				return m.resumeChat(kept)
+			}
 			return m.openChat(bot)
 		}
 		if back == screenBots {
@@ -115,15 +152,14 @@ func (m Model) workKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		if len(routines) > 0 {
 			r := routines[w.cursor]
-			return m, m.call("work.routines.enable", map[string]any{
-				"botId": w.bot.ID, "id": r.ID, "revision": r.Revision, "enabled": !r.Enabled, "requestId": requestID(),
+			return m, m.routine("work.routines.enable", fmt.Sprintf("enable %s %d %v", r.ID, r.Revision, !r.Enabled), map[string]any{
+				"id": r.ID, "revision": r.Revision, "enabled": !r.Enabled,
 			})
 		}
 	case "t":
 		if len(routines) > 0 {
-			return m, m.call("work.routines.test", map[string]any{
-				"botId": w.bot.ID, "id": routines[w.cursor].ID, "requestId": requestID(),
-			})
+			id := routines[w.cursor].ID
+			return m, m.routine("work.routines.test", "test "+id, map[string]any{"id": id})
 		}
 	}
 	return m, nil
@@ -139,11 +175,17 @@ func (m Model) workView() string {
 		b.WriteString(faint.Render("loading…") + "\n")
 		return b.String() + m.errLine()
 	}
+	rest := m.workRest()
 	b.WriteString(heading.Render("Routines") + "\n")
-	if len(w.data.Routines.Items) == 0 {
+	items := w.data.Routines.Items
+	if len(items) == 0 {
 		b.WriteString(faint.Render("  No routines. Ask the Bot in chat to create one.") + "\n")
 	}
-	for i, r := range w.data.Routines.Items {
+	// Show the window of routines around the cursor that fits above the other sections.
+	rows := max(m.height-3-strings.Count(rest, "\n")-1, 1)
+	start := min(max(w.cursor-rows+1, 0), max(len(items)-rows, 0))
+	for i := start; i < min(start+rows, len(items)); i++ {
+		r := items[i]
 		state := "on "
 		if !r.Enabled {
 			state = "off"
@@ -158,6 +200,13 @@ func (m Model) workView() string {
 			b.WriteString("  " + truncate(line, m.width-2) + "\n")
 		}
 	}
+	return b.String() + rest
+}
+
+// workRest renders the sections below the routines: recent runs, memory and skills, and help.
+func (m Model) workRest() string {
+	w := m.work
+	var b strings.Builder
 	b.WriteString("\n" + heading.Render("Recent runs") + "\n")
 	runs := slices.Clone(w.data.Routines.Runs)
 	slices.Reverse(runs)

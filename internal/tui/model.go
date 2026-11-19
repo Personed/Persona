@@ -211,7 +211,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case answeredMsg:
 		return m.answered(msg), nil
-	case workStreamMsg, workMsg:
+	case workStreamMsg, workMsg, routineMsg:
 		return m.updateWork(msg)
 	case doneMsg:
 		m.err = msg.err
@@ -256,7 +256,7 @@ func (m Model) botsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadBots()
 	case "w":
 		if len(m.bots) > 0 {
-			return m.openWork(m.bots[m.cursor])
+			return m.openWork(m.bots[m.cursor], nil)
 		}
 	case "enter":
 		if len(m.bots) > 0 {
@@ -372,9 +372,9 @@ func (m Model) chatKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "ctrl+o":
-		bot := c.bot
-		m.closeChat()
-		return m.openWork(bot)
+		c.cancel()
+		m.chat = nil
+		return m.openWork(c.bot, c)
 	case "esc":
 		m.closeChat()
 		m.screen, m.err = screenBots, nil
