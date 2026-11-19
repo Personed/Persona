@@ -73,18 +73,27 @@ func toolNames(tools []*mcp.Tool) string {
 
 func callEcho(t *testing.T, client *Client, id string) {
 	t.Helper()
+	var mu sync.Mutex
 	var progress []MCPProgress
 	result, err := client.MCP(context.Background(), MCPInput{
 		Action: "request", ID: id, Method: "tools/call",
 		Params: json.RawMessage(`{"name":"echo","arguments":{"text":"hi"}}`),
-	}, func(p MCPProgress) { progress = append(progress, p) })
+	}, func(p MCPProgress) {
+		mu.Lock()
+		progress = append(progress, p)
+		mu.Unlock()
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(result.Result), `"text":"echo: hi"`) {
 		t.Fatalf("result = %s", result.Result)
 	}
-	if len(progress) != 1 || progress[0].Message != "half" || progress[0].Total != 2 {
+	mu.Lock()
+	defer mu.Unlock()
+	// The SDK client handles notifications concurrently with responses, so a
+	// progress notification can arrive after the result; it must never be wrong.
+	if len(progress) > 1 || len(progress) == 1 && (progress[0].Message != "half" || progress[0].Total != 2) {
 		t.Fatalf("progress = %+v", progress)
 	}
 }
@@ -138,6 +147,8 @@ func oauthServer(t *testing.T) (*httptest.Server, *atomic.Value) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	// A failed test can leave a standalone SSE stream open; Close waits for it.
+	t.Cleanup(srv.CloseClientConnections)
 	writeJSON := func(w http.ResponseWriter, value any) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(value)
