@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -373,13 +372,20 @@ func (s *Schema) validate(v any, path []any) (any, []Issue) {
 		if s.trimmed != nil {
 			return s.trimmed.validate(strings.Trim(str, ecmaSpace), path)
 		}
-		issues = s.checkString(str, path)
+		v, issues = s.checkString(str, path)
 	case "number", "integer":
 		n, ok := v.(json.Number)
 		if !ok {
 			return v, []Issue{invalidType(path, "number", v)}
 		}
 		f, _ := n.Float64()
+		if math.IsInf(f, 0) {
+			received := "Infinity"
+			if f < 0 {
+				received = "-Infinity"
+			}
+			return v, []Issue{newIssue(path, "expected", "number", "code", "invalid_type", "received", received)}
+		}
 		if s.typ == "integer" && f != math.Trunc(f) {
 			return v, []Issue{invalidType(path, "int", v, "format", "safeint")}
 		}
@@ -428,7 +434,7 @@ func (s *Schema) validate(v any, path []any) (any, []Issue) {
 		v, issues = s.validateObject(object, path)
 	case "":
 		if str, ok := v.(string); ok {
-			issues = s.checkString(str, path)
+			v, issues = s.checkString(str, path)
 		}
 	default:
 		return v, []Issue{invalidType(path, s.typ, v)}
@@ -475,8 +481,17 @@ func (s *Schema) lengthChecks(v any, path []any) []Issue {
 	return issues
 }
 
-func (s *Schema) checkString(str string, path []any) []Issue {
-	issues := s.lengthChecks(str, path)
+// checkString returns str as z.string() outputs it: z.url() trims it and
+// removes tabs and newlines before the later checks see it.
+func (s *Schema) checkString(str string, path []any) (string, []Issue) {
+	var issues []Issue
+	if s.format == "uri" {
+		str = stripTabAndNewline(strings.Trim(str, ecmaSpace))
+		if !canParseURL(str) {
+			issues = append(issues, newIssue(path, "code", "invalid_format", "format", "url"))
+		}
+	}
+	issues = append(issues, s.lengthChecks(str, path)...)
 	switch s.format {
 	case "uuid", "date-time":
 		if s.pattern != nil && !s.pattern.MatchString(str) {
@@ -484,25 +499,21 @@ func (s *Schema) checkString(str string, path []any) []Issue {
 			issues = append(issues, newIssue(path, "origin", "string", "code", "invalid_format", "format", format, "pattern", "/"+s.patternText+"/"))
 		}
 	case "uri":
-		if parsed, err := url.Parse(str); err != nil || parsed.Scheme == "" || !strings.Contains(str, ":") {
-			issues = append(issues, newIssue(path, "code", "invalid_format", "format", "url", "note", "Invalid URL format"))
-		}
 	default:
 		if s.pattern != nil && !s.pattern.MatchString(str) {
 			issues = append(issues, newIssue(path, "origin", "string", "code", "invalid_format", "format", "regex", "pattern", "/"+s.patternText+"/"))
 		}
 	}
 	if len(s.protocols) > 0 {
-		parsed, err := url.Parse(str)
 		allowed := false
 		for _, protocol := range s.protocols {
-			allowed = allowed || (err == nil && strings.EqualFold(parsed.Scheme+":", protocol))
+			allowed = allowed || (canParseURL(str) && urlScheme(str)+":" == protocol)
 		}
 		if !allowed {
 			issues = append(issues, newIssue(path, "code", "custom"))
 		}
 	}
-	return issues
+	return str, issues
 }
 
 func (s *Schema) validateBlob(v any, path []any) (any, []Issue) {
