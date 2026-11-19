@@ -59,7 +59,8 @@ func TestRunImportsOnceAndKeepsTheBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	report, err := Run(ctx, dir)
+	t.Chdir(filepath.Dir(dir))
+	report, err := Run(ctx, filepath.Base(dir))
 	if err != nil {
 		t.Fatal(err)
 	}

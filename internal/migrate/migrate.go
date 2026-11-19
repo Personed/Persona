@@ -50,6 +50,11 @@ type FilesReport struct {
 // Run leases dataDir, backs up its pi-durable database once, and imports it into
 // the Go store. The source and its Files root are only read.
 func Run(ctx context.Context, dataDir string) (Report, error) {
+	// SQLite file URIs need an absolute path.
+	dataDir, err := filepath.Abs(dataDir)
+	if err != nil {
+		return Report{}, err
+	}
 	source := filepath.Join(dataDir, SourceName)
 	if _, err := os.Stat(source); err != nil {
 		return Report{}, fmt.Errorf("no pi-durable database: %w", err)
