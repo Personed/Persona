@@ -8,9 +8,10 @@ the TypeScript service or desktop supervisor on its own.
   `PERSONA_STATIC_DIR`, `PERSONA_DEPLOYMENT`, and `PERSONA_PUBLIC_URL` override
   JSON. Relative paths resolve from the config file. With no explicit static
   path, the runtime uses its built-in web assets.
-- A runtime acquires `hosting.AcquireDataLease` before opening stores and
-  releases it only after closing writers. The lease interoperates with the
-  TypeScript service's `runtime.sqlite` lock.
+- The durable Go store acquires the runtime lease on open. Open it before any
+  other writers and close it last. Standalone writers can use
+  `hosting.AcquireDataLease` when no durable store holds the lease. Both use
+  the TypeScript service's `runtime.sqlite` lock.
 - `hosting.OpenCredentials` uses the existing `hosting.sqlite` and 32-byte
   `credentials.key`. Use `Ref{Scope: "provider", Name: providerID}` for a legacy
   provider and `Ref{Scope: "mcp", Name: legacyID}` for a managed MCP ID beginning
@@ -41,7 +42,7 @@ work-computer volumes are not in this archive. Continue using the TypeScript
 restore path for existing `PERSONA001` archives and separately protect remote
 volumes before an upgrade. This Go archive does not rewrite saved TypeScript
 computer records in the agent database; use the TypeScript migration installer
-to relocate those computers to another host.
+to move a profile whose saved computers still reference the original files.
 
 `hosting.UpgradeInstallation` takes three supervisor callbacks: stop and drain
 writers, install, and verify. After stopping writers it takes the lease and

@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/Personed/Persona/internal/store"
 )
 
 const testPassphrase = "generated fixture backup passphrase"
@@ -200,6 +202,26 @@ func TestBackupRefusesMissingOrMismatchedCredentialKey(t *testing.T) {
 	}
 	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("invalid backup was published: %v", err)
+	}
+}
+
+func TestBackupRefusesActiveDurableStore(t *testing.T) {
+	cfg, dir := backupFixture(t)
+	database, err := store.Open(t.Context(), filepath.Join(cfg.DataDir, "persona.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := database.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	archive := filepath.Join(dir, "recovery.age")
+	if err := BackupInstallation(t.Context(), cfg, archive, testPassphrase); err == nil || !strings.Contains(err.Error(), "acquire runtime lease") {
+		t.Fatalf("backup did not honor the durable store lease: %v", err)
+	}
+	if _, err := os.Stat(archive); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("backup published while a writer held the lease: %v", err)
 	}
 }
 
