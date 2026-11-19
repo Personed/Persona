@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"slices"
+
+	"github.com/Personed/Persona/internal/tui"
 )
 
 // ErrNotImplemented is returned by subcommands that later migration phases fill in.
@@ -27,7 +29,7 @@ func pending(context.Context, []string, io.Writer) error { return ErrNotImplemen
 // Commands lists the subcommands in help order.
 var Commands = []Command{
 	{Name: "serve", Summary: "Run the HTTP/RPC service and web UI.", Run: pending},
-	{Name: "tui", Summary: "Open the terminal UI against a local or remote service.", Run: pending},
+	{Name: "tui", Summary: "Open the terminal UI against a local or remote service.", Run: tui.Run},
 	{Name: "chat", Summary: "Send one message to a Bot and stream the reply.", Run: pending},
 	{Name: "worker", Summary: "Run the work-computer process for a Bot.", Run: pending},
 	{Name: "controller", Summary: "Run the authenticated control service for remote sandboxes.", Run: pending},
