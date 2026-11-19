@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -228,5 +229,50 @@ func TestStreamCancel(t *testing.T) {
 	case <-stopped:
 	case <-time.After(5 * time.Second):
 		t.Fatal("stream did not stop after the client left")
+	}
+}
+
+func TestVoidStreamDone(t *testing.T) {
+	s := newServer(t)
+	s.HandleStream("work.subscribe", func(context.Context, json.RawMessage, func(any) error) (any, error) {
+		return Void, nil
+	})
+	w := post(t, s, "/rpc/work/subscribe", `{"json":{"botId":1}}`)
+	if body := w.Body.String(); body != ": \n\nevent: done\ndata: {}\n\n" {
+		t.Errorf("void done body %q", body)
+	}
+}
+
+func TestInfiniteNumber(t *testing.T) {
+	s, _ := CompileSchema(json.RawMessage(`{"type":"object","properties":{"from":{"type":"number","minimum":0}}}`))
+	input, _ := decode([]byte(`{"from":1e309}`))
+	_, issues := s.Validate(input)
+	got, _ := marshal(issues)
+	if want := `[{"expected":"number","code":"invalid_type","received":"Infinity","path":["from"],"message":"Invalid input: expected number, received Infinity"}]`; string(got) != want {
+		t.Errorf("issues %s", got)
+	}
+}
+
+func TestBlobOutput(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeOutput(w, map[string]any{"file": &Blob{Name: `a"b.txt`, Type: "text/plain", Data: []byte("ola")}, "n": 1})
+	_, params, err := mime.ParseMediaType(w.Header().Get("Content-Type"))
+	if err != nil || w.Code != 200 {
+		t.Fatalf("response %d %q", w.Code, w.Header().Get("Content-Type"))
+	}
+	form, err := multipart.NewReader(w.Body, params["boundary"]).ReadForm(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data := form.Value["data"]; len(data) != 1 || data[0] != `{"json":{"file":{},"n":1},"maps":[["file"]]}` {
+		t.Errorf("data %q", data)
+	}
+	file := form.File["0"]
+	if len(file) != 1 || file[0].Filename != "a%22b.txt" || file[0].Header.Get("Content-Type") != "text/plain" {
+		t.Fatalf("file part %+v", file)
+	}
+	f, _ := file[0].Open()
+	if content, _ := io.ReadAll(f); string(content) != "ola" {
+		t.Errorf("content %q", content)
 	}
 }
