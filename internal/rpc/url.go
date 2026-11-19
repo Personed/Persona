@@ -27,6 +27,10 @@ func canParseURL(s string) bool {
 		if end := strings.IndexAny(rest, `/\?#`); end >= 0 {
 			rest = rest[:end]
 		}
+		// A Windows drive letter such as C: starts the path, not a host.
+		if len(rest) == 2 && rest[0]|0x20 >= 'a' && rest[0]|0x20 <= 'z' && (rest[1] == ':' || rest[1] == '|') {
+			return true
+		}
 		if strings.HasPrefix(rest, "[") {
 			return strings.HasSuffix(rest, "]") && validIPv6(rest[1:len(rest)-1])
 		}

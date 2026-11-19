@@ -42,6 +42,13 @@ func TestCanParseURL(t *testing.T) {
 		"file://a@b/":                false,
 		"file:/[::1":                 true,
 		"file://":                    true,
+		"file://C:/dados/a.txt":      true,
+		"file://C|/x":                true,
+		"file://C:":                  true,
+		"file://C:x":                 false,
+		"file://CC:/x":               false,
+		"file://C:5/x":               false,
+		`file:\\C:\x`:                true,
 	} {
 		if got := canParseURL(input); got != want {
 			t.Errorf("canParseURL(%q) = %v, want %v", input, got, want)
