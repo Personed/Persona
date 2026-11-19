@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Personed/Persona/internal/client"
 )
@@ -91,16 +92,7 @@ func firstLine(s string) string {
 	return line
 }
 
+// truncate cuts s to n terminal cells.
 func truncate(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	if n == 1 {
-		return "…"
-	}
-	return string(r[:n-1]) + "…"
+	return ansi.Truncate(s, max(n, 0), "…")
 }

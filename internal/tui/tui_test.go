@@ -141,3 +141,12 @@ func TestRequestID(t *testing.T) {
 		t.Fatalf("requestID = %q", id)
 	}
 }
+
+func TestTruncateWide(t *testing.T) {
+	if got := truncate("已收到：hello", 6); got != "已收…" {
+		t.Fatalf("truncate = %q", got)
+	}
+	if got := truncate("short", 10); got != "short" {
+		t.Fatalf("truncate = %q", got)
+	}
+}
