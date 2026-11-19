@@ -4,6 +4,7 @@ go 1.27
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/robfig/cron/v3 v3.0.1
 	modernc.org/sqlite v1.46.2
 )
 
