@@ -179,6 +179,9 @@ func normalizeJSON(data []byte) (string, error) {
 	if err := dec.Decode(&value); err != nil {
 		return "", err
 	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return "", fmt.Errorf("data after the JSON value")
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
