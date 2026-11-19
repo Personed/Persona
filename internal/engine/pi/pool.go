@@ -15,12 +15,15 @@ var ErrPoolClosed = errors.New("pi: pool closed")
 
 // Instance is a per-Bot engine connection that the pool owns.
 type Instance interface {
+	// Close stops the instance and everything it started. It must be safe to
+	// call after the instance exited on its own.
 	Close() error
 	Done() <-chan struct{}
 }
 
 // Pool keeps at most one Instance per Bot. An Instance lives while it is leased
 // and for the idle timeout after the last release, so an idle Bot has no process.
+// A retiring instance keeps its slot until Close returns, so a Bot never has two.
 type Pool[T Instance] struct {
 	open func(ctx context.Context, botID int64) (T, error)
 	idle time.Duration
@@ -32,11 +35,12 @@ type Pool[T Instance] struct {
 }
 
 type slot[T Instance] struct {
-	ready  chan struct{}
-	value  T
-	err    error
-	leases int
-	timer  *time.Timer
+	ready    chan struct{}
+	value    T
+	err      error
+	leases   int
+	timer    *time.Timer
+	retiring chan struct{}
 }
 
 // NewPool returns a pool that starts instances with open and closes them after idle.
@@ -56,11 +60,19 @@ func (p *Pool[T]) Acquire(ctx context.Context, botID int64) (T, func(), error) {
 		}
 		s, ok := p.slots[botID]
 		if !ok {
-			s = &slot[T]{ready: make(chan struct{})}
+			s = &slot[T]{ready: make(chan struct{}), leases: 1}
 			p.slots[botID] = s
-			s.leases++
 			p.mu.Unlock()
 			return p.start(ctx, botID, s)
+		}
+		if retiring := s.retiring; retiring != nil {
+			p.mu.Unlock()
+			select {
+			case <-retiring:
+				continue
+			case <-ctx.Done():
+				return zero, nil, ctx.Err()
+			}
 		}
 		s.leases++
 		if s.timer != nil {
@@ -77,52 +89,52 @@ func (p *Pool[T]) Acquire(ctx context.Context, botID int64) (T, func(), error) {
 		if s.err == nil {
 			select {
 			case <-s.value.Done():
-				p.mu.Lock()
-				if p.slots[botID] == s {
-					delete(p.slots, botID)
-				}
-				p.mu.Unlock()
 			default:
 				return s.value, p.releaser(botID, s), nil
 			}
 		}
-		// The instance failed to start or already exited; it left the map.
+		// The instance failed to start or exited; wait for it to leave the pool.
 		p.mu.Lock()
 		s.leases--
+		retiring := p.retireLocked(botID, s)
 		p.mu.Unlock()
+		select {
+		case <-retiring:
+		case <-ctx.Done():
+			return zero, nil, ctx.Err()
+		}
 	}
 }
 
 func (p *Pool[T]) start(ctx context.Context, botID int64, s *slot[T]) (T, func(), error) {
+	var zero T
 	value, err := p.open(ctx, botID)
 	p.mu.Lock()
 	s.value, s.err = value, err
+	close(s.ready)
 	if err != nil {
-		delete(p.slots, botID)
+		if p.slots[botID] == s {
+			delete(p.slots, botID)
+		}
+		if s.retiring == nil {
+			s.retiring = make(chan struct{})
+			close(s.retiring)
+		}
 		p.mu.Unlock()
-		close(s.ready)
-		var zero T
 		return zero, nil, err
 	}
-	if p.closed {
-		delete(p.slots, botID)
+	if p.closed || s.retiring != nil {
+		retiring := p.retireLocked(botID, s)
 		p.mu.Unlock()
-		close(s.ready)
-		_ = value.Close()
-		var zero T
+		<-retiring
 		return zero, nil, ErrPoolClosed
 	}
 	p.mu.Unlock()
-	close(s.ready)
 	go func() {
 		<-value.Done()
+		// Pi exited on its own; Close still ends the tools it left running.
 		p.mu.Lock()
-		if p.slots[botID] == s {
-			delete(p.slots, botID)
-			if s.timer != nil {
-				s.timer.Stop()
-			}
-		}
+		p.retireLocked(botID, s)
 		p.mu.Unlock()
 	}()
 	return value, p.releaser(botID, s), nil
@@ -137,44 +149,29 @@ func (p *Pool[T]) release(botID int64, s *slot[T]) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s.leases--
-	if s.leases > 0 || p.slots[botID] != s {
+	if s.leases > 0 || s.retiring != nil || p.slots[botID] != s {
 		return
 	}
 	s.timer = time.AfterFunc(p.idle, func() {
 		p.mu.Lock()
-		if p.slots[botID] != s || s.leases > 0 {
-			p.mu.Unlock()
-			return
+		if s.leases == 0 {
+			p.retireLocked(botID, s)
 		}
-		delete(p.slots, botID)
-		p.closeLocked(s)
 		p.mu.Unlock()
 	})
 }
 
-// Stop closes the Bot's instance now, whether or not it is leased. The next
-// Acquire starts a new one.
-func (p *Pool[T]) Stop(botID int64) {
-	p.mu.Lock()
-	s, ok := p.slots[botID]
-	if ok {
-		delete(p.slots, botID)
-		if s.timer != nil {
-			s.timer.Stop()
-		}
+// retireLocked closes the slot's instance in the background. The slot stays in
+// the map until Close returns; the returned channel closes then.
+func (p *Pool[T]) retireLocked(botID int64, s *slot[T]) <-chan struct{} {
+	if s.retiring != nil {
+		return s.retiring
 	}
-	p.mu.Unlock()
-	if !ok {
-		return
+	s.retiring = make(chan struct{})
+	if s.timer != nil {
+		s.timer.Stop()
+		s.timer = nil
 	}
-	<-s.ready
-	if s.err == nil {
-		_ = s.value.Close()
-	}
-}
-
-// closeLocked closes a ready slot without blocking the pool.
-func (p *Pool[T]) closeLocked(s *slot[T]) {
 	p.closing.Add(1)
 	go func() {
 		defer p.closing.Done()
@@ -182,10 +179,31 @@ func (p *Pool[T]) closeLocked(s *slot[T]) {
 		if s.err == nil {
 			_ = s.value.Close()
 		}
+		p.mu.Lock()
+		if p.slots[botID] == s {
+			delete(p.slots, botID)
+		}
+		p.mu.Unlock()
+		close(s.retiring)
 	}()
+	return s.retiring
 }
 
-// Live returns how many Bots have an instance starting or running.
+// Stop closes the Bot's instance now, whether or not it is leased, and waits
+// for it to exit. The next Acquire starts a new one.
+func (p *Pool[T]) Stop(botID int64) {
+	p.mu.Lock()
+	s, ok := p.slots[botID]
+	if !ok {
+		p.mu.Unlock()
+		return
+	}
+	retiring := p.retireLocked(botID, s)
+	p.mu.Unlock()
+	<-retiring
+}
+
+// Live returns how many Bots have an instance starting, running or stopping.
 func (p *Pool[T]) Live() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -197,11 +215,7 @@ func (p *Pool[T]) Close() {
 	p.mu.Lock()
 	p.closed = true
 	for botID, s := range p.slots {
-		delete(p.slots, botID)
-		if s.timer != nil {
-			s.timer.Stop()
-		}
-		p.closeLocked(s)
+		p.retireLocked(botID, s)
 	}
 	p.mu.Unlock()
 	p.closing.Wait()

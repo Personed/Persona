@@ -13,11 +13,15 @@ type fakeInstance struct {
 	once   sync.Once
 	done   chan struct{}
 	closes atomic.Int32
+	slow   chan struct{}
 }
 
 func newFakeInstance() *fakeInstance { return &fakeInstance{done: make(chan struct{})} }
 
 func (f *fakeInstance) Close() error {
+	if f.slow != nil {
+		<-f.slow
+	}
 	f.closes.Add(1)
 	f.exit()
 	return nil
@@ -218,4 +222,86 @@ func TestPoolLeavesNoProcessWhenIdle(t *testing.T) {
 		}
 		return pool.Live() == 0
 	})
+}
+
+func TestPoolNeverRunsTwoInstancesPerBot(t *testing.T) {
+	o := &opener{}
+	pool := NewPool(time.Hour, o.open)
+	defer pool.Close()
+	a, release, _ := pool.Acquire(context.Background(), 1)
+	release()
+	a.slow = make(chan struct{})
+	stopped := make(chan struct{})
+	go func() { pool.Stop(1); close(stopped) }()
+	waitFor(t, "retiring", func() bool {
+		pool.mu.Lock()
+		defer pool.mu.Unlock()
+		return pool.slots[1] != nil && pool.slots[1].retiring != nil
+	})
+	acquired := make(chan *fakeInstance, 1)
+	go func() {
+		b, release, err := pool.Acquire(context.Background(), 1)
+		if err == nil {
+			release()
+		}
+		acquired <- b
+	}()
+	time.Sleep(30 * time.Millisecond)
+	if o.count() != 1 {
+		t.Fatal("started a second instance while the first was closing")
+	}
+	close(a.slow)
+	<-stopped
+	if b := <-acquired; b == a || o.count() != 2 {
+		t.Fatal("Acquire after Stop did not start a new instance")
+	}
+}
+
+func TestPoolStaleStartFailureKeepsReplacement(t *testing.T) {
+	gate := make(chan struct{})
+	var calls atomic.Int32
+	pool := NewPool(time.Hour, func(_ context.Context, _ int64) (*fakeInstance, error) {
+		if calls.Add(1) == 1 {
+			<-gate
+			return nil, errors.New("first start failed")
+		}
+		return newFakeInstance(), nil
+	})
+	defer pool.Close()
+	failed := make(chan error, 1)
+	go func() { _, _, err := pool.Acquire(context.Background(), 1); failed <- err }()
+	waitFor(t, "first start", func() bool { return calls.Load() == 1 })
+	stopped := make(chan struct{})
+	go func() { pool.Stop(1); close(stopped) }()
+	waitFor(t, "Stop to retire the starting slot", func() bool {
+		pool.mu.Lock()
+		defer pool.mu.Unlock()
+		return pool.slots[1] != nil && pool.slots[1].retiring != nil
+	})
+	close(gate)
+	if err := <-failed; err == nil {
+		t.Fatal("first start succeeded")
+	}
+	<-stopped
+	b, release, err := pool.Acquire(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	pool.mu.Lock()
+	current := pool.slots[1]
+	pool.mu.Unlock()
+	if current == nil || current.value != b {
+		t.Fatal("replacement left the pool")
+	}
+}
+
+func TestPoolClosesExitedInstance(t *testing.T) {
+	o := &opener{}
+	pool := NewPool(time.Hour, o.open)
+	defer pool.Close()
+	a, release, _ := pool.Acquire(context.Background(), 1)
+	defer release()
+	a.exit()
+	waitFor(t, "exited instance to be closed", func() bool { return a.closes.Load() == 1 && pool.Live() == 0 })
 }
