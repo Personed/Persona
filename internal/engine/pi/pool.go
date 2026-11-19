@@ -13,6 +13,9 @@ const IdleTimeout = 5 * time.Minute
 // ErrPoolClosed reports an Acquire after Close.
 var ErrPoolClosed = errors.New("pi: pool closed")
 
+// ErrStopped reports an Acquire whose instance was stopped while it started.
+var ErrStopped = errors.New("pi: bot stopped while starting")
+
 // Instance is a per-Bot engine connection that the pool owns.
 type Instance interface {
 	// Close stops the instance and everything it started. It must be safe to
@@ -124,10 +127,14 @@ func (p *Pool[T]) start(ctx context.Context, botID int64, s *slot[T]) (T, func()
 		return zero, nil, err
 	}
 	if p.closed || s.retiring != nil {
+		closed := p.closed
 		retiring := p.retireLocked(botID, s)
 		p.mu.Unlock()
 		<-retiring
-		return zero, nil, ErrPoolClosed
+		if closed {
+			return zero, nil, ErrPoolClosed
+		}
+		return zero, nil, ErrStopped
 	}
 	p.mu.Unlock()
 	go func() {

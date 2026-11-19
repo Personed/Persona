@@ -305,3 +305,35 @@ func TestPoolClosesExitedInstance(t *testing.T) {
 	a.exit()
 	waitFor(t, "exited instance to be closed", func() bool { return a.closes.Load() == 1 && pool.Live() == 0 })
 }
+
+func TestPoolStopDuringStartIsNotClosed(t *testing.T) {
+	o := &opener{}
+	gate := make(chan struct{})
+	pool := NewPool(time.Hour, func(ctx context.Context, botID int64) (*fakeInstance, error) {
+		<-gate
+		return o.open(ctx, botID)
+	})
+	defer pool.Close()
+	failed := make(chan error, 1)
+	go func() { _, _, err := pool.Acquire(context.Background(), 1); failed <- err }()
+	waitFor(t, "starting", func() bool {
+		pool.mu.Lock()
+		defer pool.mu.Unlock()
+		return pool.slots[1] != nil
+	})
+	go pool.Stop(1)
+	waitFor(t, "retiring", func() bool {
+		pool.mu.Lock()
+		defer pool.mu.Unlock()
+		return pool.slots[1] != nil && pool.slots[1].retiring != nil
+	})
+	close(gate)
+	if err := <-failed; !errors.Is(err, ErrStopped) {
+		t.Fatalf("Acquire during Stop = %v, want ErrStopped", err)
+	}
+	_, release, err := pool.Acquire(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("pool closed after Stop: %v", err)
+	}
+	release()
+}
