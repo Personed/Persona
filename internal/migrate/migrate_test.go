@@ -151,4 +151,18 @@ func TestRunReportsLegacyEngines(t *testing.T) {
 	if want := []string{`conversation 2 uses engine "codex" (model gpt-5)`}; !slices.Equal(report.Engines, want) {
 		t.Fatalf("engines = %q, want %q", report.Engines, want)
 	}
+
+	db, err = sql.Open("sqlite", filepath.Join(dir, SourceName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE documents SET id = 99 WHERE id = 14`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := Run(t.Context(), dir); err != nil || !again.AlreadyImported || len(again.Engines) != 0 {
+		t.Fatalf("run after the source gained an engine document = %+v, %v", again, err)
+	}
 }

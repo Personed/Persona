@@ -103,6 +103,10 @@ func legacyEngines(ctx context.Context, src *sql.DB, s *store.SQLite) ([]string,
 			return nil, err
 		}
 		doc, err := s.Document(ctx, store.DocumentID(id), store.Current)
+		if errors.Is(err, store.ErrNotFound) {
+			// Written to the source after an earlier import.
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read engine document %d: %w", id, err)
 		}
