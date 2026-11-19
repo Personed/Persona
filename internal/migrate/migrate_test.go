@@ -63,6 +63,9 @@ func TestRunImportsOnceAndKeepsTheBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(report.Engines) != 0 {
+		t.Fatalf("engines = %q, want none: the fixture's engine is Pi", report.Engines)
+	}
 	if !report.BackupCreated || report.AlreadyImported || report.Store.Entries != 2 || report.Store.Documents != 6 {
 		t.Fatalf("first run = %+v", report)
 	}
@@ -123,5 +126,28 @@ func TestRunRefusesALeasedDataDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, SourceName+BackupSuffix)); !os.IsNotExist(err) {
 		t.Fatalf("backup written while leased: %v", err)
+	}
+}
+
+func TestRunReportsLegacyEngines(t *testing.T) {
+	dir := legacyDataDir(t)
+	db, err := sql.Open("sqlite", filepath.Join(dir, SourceName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE document_revisions
+		SET content = json_set(content, '$.config', json('{"provider":"codex","model":"gpt-5"}'))
+		WHERE document_id = 14 AND kind = 'base'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Run(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{`conversation 2 uses engine "codex" (model gpt-5)`}; !slices.Equal(report.Engines, want) {
+		t.Fatalf("engines = %q, want %q", report.Engines, want)
 	}
 }

@@ -107,6 +107,9 @@ func runMigrate(ctx context.Context, args []string, stdout io.Writer) error {
 	for _, record := range report.Store.Unmodeled {
 		fmt.Fprintf(&out, "not converted: %s has fields the Go store does not read; its record keeps them\n", record)
 	}
+	for _, engine := range report.Engines {
+		fmt.Fprintf(&out, "needs action: %s; switch the Bot to Pi\n", engine)
+	}
 	f := report.Files
 	fmt.Fprintf(&out, "files: %s kept in place: %d Bots, %d workspace files, %d artifacts\n", f.Root, f.Bots, f.WorkspaceFiles, f.Artifacts)
 	for _, problem := range f.Problems {

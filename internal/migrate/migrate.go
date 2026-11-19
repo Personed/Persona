@@ -33,6 +33,9 @@ type Report struct {
 	AlreadyImported bool
 	Store           store.ImportReport
 	Files           FilesReport
+	// Engines lists Bot conversations whose engine is not Pi yet. The legacy
+	// runtime migration switches them; until then each needs the user's action.
+	Engines []string
 }
 
 // FilesReport describes the Files root, which stays in place beside the source.
@@ -72,8 +75,51 @@ func Run(ctx context.Context, dataDir string) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	if report.Engines, err = legacyEngines(ctx, src, s); err != nil {
+		return Report{}, err
+	}
 	report.Files, err = checkFiles(source + ".files")
 	return report, err
+}
+
+// legacyEngines finds live persona.engine documents through pi-durable's index and
+// reads their imported value from the Go store.
+func legacyEngines(ctx context.Context, src *sql.DB, s *store.SQLite) ([]string, error) {
+	rows, err := src.QueryContext(ctx, `SELECT id, owner_id FROM documents
+		WHERE kind = '"persona.engine"' AND scope_kind = 'conversation' AND retired_at IS NULL ORDER BY owner_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var engines []string
+	for rows.Next() {
+		var id, conversation int64
+		if err := rows.Scan(&id, &conversation); err != nil {
+			return nil, err
+		}
+		doc, err := s.Document(ctx, store.DocumentID(id), store.Current)
+		if err != nil {
+			return nil, fmt.Errorf("read engine document %d: %w", id, err)
+		}
+		var state struct {
+			Config struct {
+				Provider string  `json:"provider"`
+				Model    *string `json:"model"`
+			} `json:"config"`
+		}
+		if err := json.Unmarshal(doc.Value, &state); err != nil {
+			return nil, fmt.Errorf("read engine document %d: %w", id, err)
+		}
+		if state.Config.Provider == "pi" {
+			continue
+		}
+		model := "no model"
+		if state.Config.Model != nil {
+			model = "model " + *state.Config.Model
+		}
+		engines = append(engines, fmt.Sprintf("conversation %d uses engine %q (%s)", conversation, state.Config.Provider, model))
+	}
+	return engines, rows.Err()
 }
 
 func openReadOnly(path string) (*sql.DB, error) {
