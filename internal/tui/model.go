@@ -22,6 +22,7 @@ type screen int
 const (
 	screenBots screen = iota
 	screenChat
+	screenWork
 )
 
 // Model is the root Bubble Tea model.
@@ -35,6 +36,7 @@ type Model struct {
 	cursor int
 	err    error
 	chat   *chat
+	work   *work
 }
 
 type chat struct {
@@ -209,13 +211,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case answeredMsg:
 		return m.answered(msg), nil
+	case workStreamMsg, workMsg:
+		return m.updateWork(msg)
 	case doneMsg:
 		m.err = msg.err
 		return m, nil
 	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" {
 			m.closeChat()
+			m.closeWork()
 			return m, tea.Quit
+		}
+		if m.screen == screenWork {
+			return m.workKey(msg)
 		}
 		if m.screen == screenChat {
 			return m.chatKey(msg)
@@ -246,6 +254,10 @@ func (m Model) botsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cursor = min(m.cursor+1, max(len(m.bots)-1, 0))
 	case "r":
 		return m, m.loadBots()
+	case "w":
+		if len(m.bots) > 0 {
+			return m.openWork(m.bots[m.cursor])
+		}
 	case "enter":
 		if len(m.bots) > 0 {
 			return m.openChat(m.bots[m.cursor])
@@ -359,6 +371,10 @@ func (m Model) chatKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch msg.String() {
+	case "ctrl+o":
+		bot := c.bot
+		m.closeChat()
+		return m.openWork(bot)
 	case "esc":
 		m.closeChat()
 		m.screen, m.err = screenBots, nil
@@ -419,14 +435,18 @@ var (
 	selected      = lipgloss.NewStyle().Reverse(true)
 	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	approvalStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+	heading       = lipgloss.NewStyle().Bold(true).Underline(true)
 )
 
 // View renders the current screen.
 func (m Model) View() tea.View {
 	var body string
-	if m.screen == screenChat {
+	switch m.screen {
+	case screenWork:
+		body = m.workView()
+	case screenChat:
 		body = m.chatView()
-	} else {
+	default:
 		body = m.botsView()
 	}
 	view := tea.NewView(body)
@@ -457,7 +477,7 @@ func (m Model) botsView() string {
 		}
 		b.WriteString(line + "\n")
 	}
-	b.WriteString("\n" + m.errLine() + faint.Render("↑/↓ select · enter open · r refresh · q quit"))
+	b.WriteString("\n" + m.errLine() + faint.Render("↑/↓ select · enter open · w Work · r refresh · q quit"))
 	return b.String()
 }
 
@@ -473,7 +493,7 @@ func (m Model) chatView() string {
 	case c.view.Busy:
 		header += " · working"
 	}
-	help := "enter send · ctrl+j newline · pgup/pgdn scroll · esc Bots · ctrl+c quit"
+	help := "enter send · ctrl+j newline · pgup/pgdn scroll · ctrl+o Work · esc Bots · ctrl+c quit"
 	if c.view.Busy {
 		help = "ctrl+x stop · " + help
 	}
@@ -498,4 +518,9 @@ func requestID() string {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// isEnd reports whether err only means the stream finished or was closed.
+func isEnd(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, context.Canceled)
 }
