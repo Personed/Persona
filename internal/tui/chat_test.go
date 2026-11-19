@@ -52,7 +52,7 @@ func TestSendFailureKeepsDraft(t *testing.T) {
 	if first == "" || m.(Model).chat.input.Value() != "again" {
 		t.Fatalf("unknown outcome: retry=%q input=%q", first, m.(Model).chat.input.Value())
 	}
-	m, cmd = m.Update(key(tea.KeyEnter, ""))
+	_, cmd = m.Update(key(tea.KeyEnter, ""))
 	if msg := cmd().(sendMsg); msg.requestID != first {
 		t.Fatalf("retry used %q, want %q", msg.requestID, first)
 	}
