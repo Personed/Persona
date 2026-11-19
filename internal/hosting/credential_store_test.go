@@ -136,6 +136,51 @@ func verifyLegacyWithNode(t *testing.T, dir string) {
 	}
 }
 
+func TestListShowsLegacyOAuthExpiryWithoutSecrets(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyCredentials(t, dir)
+	ctx := t.Context()
+	store, err := OpenCredentials(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ref := Ref{Scope: "provider", Name: "sample-oauth"}
+	wantExpiry := func(millis int64, goMetadata bool) {
+		t.Helper()
+		list, err := store.List(ctx, ref.Scope, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range list {
+			if c.Ref == ref {
+				if c.Secret != nil || c.ExpiresAt.UnixMilli() != millis || (c.Metadata["source"] == "go") != goMetadata {
+					t.Fatalf("bad OAuth listing: expiry=%v, metadata=%v", c.ExpiresAt, c.Metadata)
+				}
+				return
+			}
+		}
+		t.Fatal("missing OAuth credential in list")
+	}
+	wantExpiry(2147483647123, false)
+	value, err := store.Get(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value.Metadata["source"] = "go"
+	if err := store.Put(ctx, value); err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry(2147483647123, true)
+
+	// TypeScript refreshes the rows without updating the Go side table.
+	refreshed := sealCredential(store.aead, []byte(`{"type":"oauth","expires":2147483647999}`), ref.Name)
+	if _, err := store.db.ExecContext(ctx, "UPDATE credentials SET value=? WHERE provider=?", refreshed, ref.Name); err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry(2147483647999, false)
+}
+
 func TestCredentialStoreCRUD(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data # special")
 	store, err := OpenCredentials(t.Context(), dir)
