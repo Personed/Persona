@@ -20,7 +20,7 @@ import (
 var Version = "dev"
 
 // Features lists operations added after the first release of protocol 1.
-var Features = []string{"listFiles", "process", "launch", "mcp"}
+var Features = []string{"listFiles", "process", "launch", "mcp", "gateway"}
 
 const (
 	pingInterval = 5 * time.Second
@@ -54,11 +54,12 @@ type server struct {
 }
 
 type request struct {
-	cancel context.CancelFunc
-	kill   chan struct{}
-	once   sync.Once
-	input  chan []byte
-	closed bool
+	cancel  context.CancelFunc
+	kill    chan struct{}
+	once    sync.Once
+	input   chan []byte
+	closed  bool
+	gateway *gatewayStream
 }
 
 type operation struct {
@@ -189,6 +190,9 @@ func (s *server) dispatch(ctx context.Context, f frame) {
 	if op.Op == "process" || op.Op == "launch" {
 		r.input = make(chan []byte, 256)
 	}
+	if op.Op == "gateway" {
+		r.gateway = &gatewayStream{pending: map[uint32]gatewayRequest{}}
+	}
 	s.mu.Lock()
 	s.requests[f.ID] = r
 	s.mu.Unlock()
@@ -242,6 +246,10 @@ func (s *server) handle(ctx context.Context, r *request, f frame, op string) (an
 	switch op {
 	case "hello":
 		return hello(), nil, nil
+	case "gateway":
+		return empty, nil, s.serveGateway(ctx, f.ID, r.gateway)
+	case "gatewayReply":
+		return empty, nil, s.replyGateway(f)
 	case "lstat", "realpath", "write", "truncate", "rename", "mkdir", "rm", "mkdtemp", "open", "opendir":
 		request, err := decode[pathRequest](f.JSON)
 		if err != nil {
