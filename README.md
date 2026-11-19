@@ -127,7 +127,7 @@ Persona uses TypeScript, React 19, Vite, and Tauri 3. See [AGENTS.md](AGENTS.md)
 <details>
 <summary>Development and test commands</summary>
 
-For web development, run `pnpm start` and `pnpm web` in separate terminals. Open the address shown by Vite. Use `pnpm chat` for terminal chat.
+For web development, run `pnpm start` and `pnpm web` in separate terminals. Open the address shown by Vite. With `pnpm start` running, use `pnpm chat` (or `persona chat` and `persona tui`) for terminal chat.
 
 ```sh
 pnpm lint
