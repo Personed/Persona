@@ -39,6 +39,18 @@ func (c *countingTool) Run(context.Context, tools.Call) (tools.Result, error) {
 	return tools.Result{Content: []tools.Content{{Type: "text", Text: fmt.Sprint("run ", c.runs.Add(1))}}}, nil
 }
 
+type blockingTool struct{ started chan struct{} }
+
+func (blockingTool) Definition() tools.Definition {
+	return tools.Definition{Name: "block", InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+
+func (b blockingTool) Run(ctx context.Context, _ tools.Call) (tools.Result, error) {
+	close(b.started)
+	<-ctx.Done()
+	return tools.Result{}, context.Cause(ctx)
+}
+
 func open(t *testing.T, approve tools.Approver, extra ...tools.Tool) (*mcpserver.Gateway, *mcp.ClientSession) {
 	t.Helper()
 	ctx := context.Background()
@@ -206,6 +218,54 @@ func TestGatewayApprovalAndContent(t *testing.T) {
 	}
 	if result.Meta[mcpserver.ResultHandleMeta] != "result-1" {
 		t.Fatalf("meta = %+v", result.Meta)
+	}
+}
+
+func TestGatewayCloseEndsSessions(t *testing.T) {
+	ctx := context.Background()
+	blocking := blockingTool{started: make(chan struct{})}
+	registry := tools.NewRegistry()
+	if err := registry.Register(blocking); err != nil {
+		t.Fatal(err)
+	}
+	gateway, err := mcpserver.Open(ctx, mcpserver.Options{Registry: registry, BotID: 1, TaskID: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "pi-test", Version: "0"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: gateway.URL, MaxRetries: -1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		_, _ = session.CallTool(ctx, &mcp.CallToolParams{Name: "block"})
+	}()
+	<-blocking.started
+	if open := gateway.Sessions(); open != 1 {
+		t.Fatalf("sessions before Close = %d", open)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- gateway.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return while a call was running")
+	}
+	if open := gateway.Sessions(); open != 0 {
+		t.Fatalf("sessions after Close = %d", open)
+	}
+	<-returned
+	response, err := http.Post(gateway.URL, "application/json", strings.NewReader(`{}`))
+	if err == nil {
+		_ = response.Body.Close()
+		t.Fatalf("closed gateway answered with status %d", response.StatusCode)
 	}
 }
 

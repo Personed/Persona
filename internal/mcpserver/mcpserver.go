@@ -49,12 +49,17 @@ type Gateway struct {
 	URL string
 
 	server     *http.Server
+	sessions   *mcp.Server
 	listed     chan struct{}
 	listedOnce sync.Once
 	served     chan error
+	closing    context.Context
+	stop       context.CancelFunc
 
-	mu    sync.Mutex
-	calls map[string]*outcome
+	mu       sync.Mutex
+	calls    map[string]*outcome
+	closed   bool
+	requests sync.WaitGroup
 }
 
 // outcome is the recorded result of one call, returned again when the client
@@ -77,6 +82,7 @@ func Open(ctx context.Context, options Options) (*Gateway, error) {
 		return nil, err
 	}
 	gateway := &Gateway{listed: make(chan struct{}), served: make(chan error, 1), calls: map[string]*outcome{}}
+	gateway.closing, gateway.stop = context.WithCancel(context.Background())
 	server := mcp.NewServer(&mcp.Implementation{Name: "persona", Version: "1.0.0"}, &mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}})
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
@@ -96,13 +102,16 @@ func Open(ctx context.Context, options Options) (*Gateway, error) {
 		})
 	}
 
+	gateway.sessions = server
+
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
+		gateway.stop()
 		return nil, err
 	}
 	path := "/mcp/" + hex.EncodeToString(secret)
 	mux := http.NewServeMux()
-	mux.Handle(path, withRequestID(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+	mux.Handle(path, gateway.track(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		JSONResponse:        true,
 		MaxRequestBodyBytes: MaxRequestBytes,
 	})))
@@ -123,11 +132,23 @@ func (g *Gateway) Ready(ctx context.Context) error {
 	}
 }
 
-// Close stops the gateway and its connections.
+// Close stops the gateway, cancels its running calls, and ends its MCP sessions.
+//
+// SDK sessions outlive their HTTP connections, so they are closed here once no request
+// can open another. A session waits for its running calls, which is why tools must
+// return when their context is cancelled.
 func (g *Gateway) Close() error {
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
+	g.stop()
 	err := g.server.Close()
 	if served := <-g.served; !errors.Is(served, http.ErrServerClosed) {
-		return errors.Join(err, served)
+		err = errors.Join(err, served)
+	}
+	g.requests.Wait()
+	for session := range g.sessions.Sessions() {
+		err = errors.Join(err, session.Close())
 	}
 	return err
 }
@@ -149,6 +170,9 @@ func (g *Gateway) call(ctx context.Context, options Options, request *mcp.CallTo
 		}
 	}
 	callID := request.Session.ID() + ":" + requestID
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(g.closing, cancel)()
 	g.mu.Lock()
 	recorded, found := g.calls[callID]
 	if !found {
@@ -183,8 +207,19 @@ func (g *Gateway) call(ctx context.Context, options Options, request *mcp.CallTo
 	return recorded.result, nil
 }
 
-func withRequestID(next http.Handler) http.Handler {
+// track refuses requests once the gateway is closing, lets Close wait for the ones it
+// admitted, and passes the JSON-RPC ID of a tools/call to its handler.
+func (g *Gateway) track(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		if g.closed {
+			g.mu.Unlock()
+			http.Error(w, "gateway closed", http.StatusServiceUnavailable)
+			return
+		}
+		g.requests.Add(1)
+		g.mu.Unlock()
+		defer g.requests.Done()
 		r.Header.Del(requestIDHeader)
 		if r.Method == http.MethodPost {
 			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBytes))
