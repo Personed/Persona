@@ -80,6 +80,8 @@ func TestLoadConfigRejectsInvalidSettings(t *testing.T) {
 	for name, input := range map[string]string{
 		"unknown":       `{"hnost":"127.0.0.1"}`,
 		"port":          `{"port":65536}`,
+		"misnamed port": `{"Port":65536}`,
+		"misnamed url":  `{"PublicURL":"http://example.test"}`,
 		"fraction":      `{"port":4310.5}`,
 		"null port":     `{"port":null}`,
 		"http":          `{"publicUrl":"http://example.test"}`,
