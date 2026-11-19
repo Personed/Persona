@@ -7,7 +7,7 @@ import type { Computers } from "./catalog.ts";
 import { type ComputerRecord, ComputersDoc } from "./state.ts";
 
 type Selection = { botId: number; revision: number; requestId: string };
-export type ComputerMode = "process" | "shared" | "dedicated";
+type ComputerMode = "process" | "shared" | "dedicated";
 
 export class ComputerPreparation {
   private readonly harness: Harness;

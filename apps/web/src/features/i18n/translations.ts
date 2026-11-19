@@ -641,6 +641,18 @@ export const translations: Record<Language, Record<string, string>> = {
     "暂时无法连接到 Persona。":
       "Temporariamente incapaz de conectar ao Persona.",
     "无法加载设备状态。": "Não foi possível carregar o status do dispositivo.",
+    "连接未完成。请重试。": "A conexão não foi concluída. Tente novamente.",
+    "配对码无效或已过期。": "Código de pareamento inválido ou expirado.",
+    "服务器地址不匹配。": "O endereço do servidor não corresponde.",
+    "请求来源不匹配。": "A origem da requisição não corresponde.",
+    "请从 Persona 页面操作。": "Use a página do Persona para esta ação.",
+    "需要同源请求或设备凭据。":
+      "É necessária uma requisição da mesma origem ou credenciais do dispositivo.",
+    "需要管理员权限。": "É necessária permissão de administrador.",
+    "输入请求已更新。": "A solicitação de entrada foi atualizada.",
+    "输入格式无效。": "Formato de entrada inválido.",
+    "操作未完成。请检查设置后重试。":
+      "A operação não foi concluída. Verifique as configurações e tente novamente.",
     一次性配对码: "Código de pareamento único",
     "在另一台设备打开这个 Persona 的地址，再输入配对码。远程连接需要可访问的 HTTPS 地址。":
       "Abra este endereço do Persona em outro dispositivo e insira o código de pareamento. Conexões remotas requerem um endereço HTTPS acessível.",
