@@ -279,7 +279,8 @@ func TestBlobOutput(t *testing.T) {
 
 func TestOutputEdgeCases(t *testing.T) {
 	cyclic := map[string]any{}
-	cyclic["self"] = cyclic
+	cyclic["a"], cyclic["b"] = cyclic, cyclic
+	shared := []any{1}
 	var nilSlice []any
 	var nilBlob *Blob
 	for _, c := range []struct {
@@ -289,6 +290,7 @@ func TestOutputEdgeCases(t *testing.T) {
 	}{
 		{cyclic, 500, `{"json":{"defined":false,"code":"INTERNAL_SERVER_ERROR","status":500,"message":"Internal server error"}}`},
 		{map[string]any{"file": nilBlob, "list": nilSlice}, 200, `{"json":{"file":null,"list":null}}`},
+		{map[string]any{"x": shared, "y": shared}, 200, `{"json":{"x":[1],"y":[1]}}`},
 	} {
 		w := httptest.NewRecorder()
 		writeOutput(w, c.output)
