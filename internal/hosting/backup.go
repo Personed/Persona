@@ -169,8 +169,6 @@ func backupContents(ctx context.Context, archive *tar.Writer, cfg Config) error 
 	cfg.DataDir = "data"
 	if rel, ok := within(originalData, cfg.StaticDir); ok {
 		cfg.StaticDir = path.Join("data", filepath.ToSlash(rel))
-	} else if rel, ok := within(filepath.Dir(cfg.ConfigFile), cfg.StaticDir); ok {
-		cfg.StaticDir = filepath.ToSlash(rel)
 	}
 
 	// Copy only fields owned by the installation, not arbitrary host or Docker
@@ -205,7 +203,11 @@ func backupContents(ctx context.Context, archive *tar.Writer, cfg Config) error 
 		return err
 	}
 
-	data, err := os.OpenRoot(originalData)
+	directory, err := filepath.EvalSymlinks(originalData)
+	if err != nil {
+		return err
+	}
+	data, err := os.OpenRoot(directory)
 	if err != nil {
 		return err
 	}
@@ -217,9 +219,7 @@ func backupContents(ctx context.Context, archive *tar.Writer, cfg Config) error 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		switch name {
-		case "runtime.sqlite", "runtime.sqlite-shm", "runtime.sqlite-wal", "runtime.sqlite-journal",
-			"hosting.sqlite-shm", "agent.sqlite-shm":
+		if skipBackupFile(name) {
 			return nil
 		}
 		destination := path.Join("data", name)
@@ -233,8 +233,60 @@ func backupContents(ctx context.Context, archive *tar.Writer, cfg Config) error 
 		if err != nil {
 			return err
 		}
+		if entry.Type()&fs.ModeSymlink != 0 {
+			return tarDataLink(archive, data, directory, local, destination)
+		}
 		return tarFile(ctx, archive, data, local, destination)
 	})
+}
+
+func skipBackupFile(name string) bool {
+	switch name {
+	case "runtime.sqlite", "runtime.sqlite-shm", "runtime.sqlite-wal", "runtime.sqlite-journal",
+		"hosting.sqlite-shm", "agent.sqlite-shm":
+		return true
+	}
+	return false
+}
+
+func tarDataLink(archive *tar.Writer, root *os.Root, directory, file, name string) error {
+	target, err := root.Readlink(file)
+	if err != nil || filepath.IsAbs(target) || filepath.VolumeName(target) != "" {
+		return errors.Join(errors.New("hosting: backup requires relative data symlinks"), err)
+	}
+	// Resolve the actual target before calculating a portable relative link.
+	// Do not clean the input: "link/../file" can traverse a symlink first.
+	full, err := filepath.EvalSymlinks(filepath.Dir(filepath.Join(directory, file)) + string(filepath.Separator) + target)
+	if err != nil {
+		return fmt.Errorf("hosting: invalid data symlink %q: %w", name, err)
+	}
+	rel, ok := within(directory, full)
+	if !ok || skipBackupFile(filepath.ToSlash(rel)) {
+		return fmt.Errorf("hosting: data symlink %q points outside the snapshot", name)
+	}
+	link, err := filepath.Rel(filepath.Dir(file), rel)
+	if err != nil {
+		return err
+	}
+	link = filepath.ToSlash(link)
+	if _, err := dataLinkTarget(name, link); err != nil {
+		return err
+	}
+	info, err := root.Stat(rel)
+	if err != nil || (!info.IsDir() && !info.Mode().IsRegular()) {
+		return errors.Join(errors.New("hosting: data symlink must target a file or directory"), err)
+	}
+	return archive.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeSymlink, Linkname: link})
+}
+
+func dataLinkTarget(name, link string) (string, error) {
+	target := path.Join(path.Dir(name), link)
+	if !strings.HasPrefix(name, "data/") || !strings.HasPrefix(target, "data/") ||
+		!validArchivePath(target) || path.IsAbs(link) || path.Clean(link) != link ||
+		target == name || strings.HasPrefix(name, target+"/") {
+		return "", errors.New("hosting: unsafe data symlink in backup")
+	}
+	return target, nil
 }
 
 type configCredentialPath struct {
@@ -399,13 +451,15 @@ func extractBackup(ctx context.Context, name, directory, passphrase string) erro
 
 func extractTar(ctx context.Context, root *os.Root, archive *tar.Reader) error {
 	seen := make(map[string]bool)
+	type link struct{ name, target string }
+	var links []link
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		header, err := archive.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			break
 		}
 		if err != nil {
 			return err
@@ -450,10 +504,45 @@ func extractTar(ctx context.Context, root *os.Root, archive *tar.Reader) error {
 			if err := errors.Join(copyErr, output.Close()); err != nil {
 				return err
 			}
+		case tar.TypeSymlink:
+			target, err := dataLinkTarget(name, header.Linkname)
+			if err != nil {
+				return err
+			}
+			links = append(links, link{local, target})
 		default:
-			return errors.New("hosting: backups may not contain links or special files")
+			return errors.New("hosting: backups may not contain hard links or special files")
 		}
 	}
+	// Check all targets before creating any links, so no target or parent can
+	// rely on another archive link to resolve. Rebuild the relative paths.
+	targets := make([]string, len(links))
+	for i, link := range links {
+		target, err := filepath.Localize(link.target)
+		if err != nil {
+			return err
+		}
+		if _, err := root.Stat(target); err != nil {
+			return fmt.Errorf("hosting: missing data symlink target: %w", err)
+		}
+		parent := filepath.Dir(link.name)
+		if info, err := root.Stat(parent); err != nil || !info.IsDir() {
+			return errors.Join(errors.New("hosting: invalid data symlink parent"), err)
+		}
+		targets[i], err = filepath.Rel(parent, target)
+		if err != nil {
+			return err
+		}
+	}
+	for i, link := range links {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := root.Symlink(targets[i], link.name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func verifyBackup(ctx context.Context, directory string) error {

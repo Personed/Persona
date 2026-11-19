@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -54,6 +55,11 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(work, "report.txt"), []byte("private fixture data"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	link := filepath.Join(cfg.DataDir, "work", "current-report")
+	linkErr := os.Symlink(filepath.Join("test bot", "report.txt"), link)
+	if linkErr != nil && (runtime.GOOS != "windows" || !errors.Is(linkErr, os.ErrPermission) && !strings.Contains(linkErr.Error(), "privilege")) {
+		t.Fatal(linkErr)
+	}
 	archive := filepath.Join(dir, "before.tar.gz.age")
 	if err := BackupInstallation(ctx, cfg, archive, testPassphrase); err != nil {
 		t.Fatal(err)
@@ -91,6 +97,12 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(restored.DataDir, "runtime.sqlite")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("runtime lease must not be restored: %v", err)
+	}
+	if linkErr == nil {
+		restoredLink := filepath.Join(restored.DataDir, "work", "current-report")
+		if got, err := os.Readlink(restoredLink); err != nil || filepath.ToSlash(got) != "test bot/report.txt" {
+			t.Fatalf("local workspace link was not restored: %v", err)
+		}
 	}
 	reopened, err := OpenCredentials(ctx, restored.DataDir)
 	if err != nil {
@@ -148,6 +160,7 @@ func TestExtractTarRejectsUnsafeEntries(t *testing.T) {
 		"absolute":  {Name: "/outside", Typeflag: tar.TypeReg, Mode: 0600},
 		"backslash": {Name: `data\outside`, Typeflag: tar.TypeReg, Mode: 0600},
 		"link":      {Name: "data/link", Typeflag: tar.TypeSymlink, Linkname: "../outside"},
+		"missing":   {Name: "data/link", Typeflag: tar.TypeSymlink, Linkname: "not-present"},
 		"hard link": {Name: "data/link", Typeflag: tar.TypeLink, Linkname: "data/file"},
 	} {
 		t.Run(name, func(t *testing.T) {

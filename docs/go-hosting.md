@@ -28,6 +28,10 @@ never writes a plaintext archive, and refuses to overwrite an existing output.
 Keep the passphrase in a separate password manager and keep recovery archives
 outside the data directory.
 
+Local data symlinks must be relative and point to an included in-profile
+file or directory. Other symlinks stop the backup before installation changes
+begin. The restore host must allow symlink creation to restore those links.
+
 `hosting.RestoreInstallation` stages and authenticates all bytes privately,
 validates the profile config and credentials, and publishes a new profile
 directory. Point the runtime at the restored config and clear any environment
@@ -35,7 +39,9 @@ overrides that still point at the old installation. Installation binaries,
 external web assets, separately managed controller configuration, and remote
 work-computer volumes are not in this archive. Continue using the TypeScript
 restore path for existing `PERSONA001` archives and separately protect remote
-volumes before an upgrade.
+volumes before an upgrade. This Go archive does not rewrite saved TypeScript
+computer records in the agent database; use the TypeScript migration installer
+to relocate those computers to another host.
 
 `hosting.UpgradeInstallation` takes three supervisor callbacks: stop and drain
 writers, install, and verify. After stopping writers it takes the lease and
