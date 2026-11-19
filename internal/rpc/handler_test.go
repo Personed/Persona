@@ -276,3 +276,37 @@ func TestBlobOutput(t *testing.T) {
 		t.Errorf("content %q", content)
 	}
 }
+
+func TestOutputEdgeCases(t *testing.T) {
+	cyclic := map[string]any{}
+	cyclic["self"] = cyclic
+	var nilSlice []any
+	var nilBlob *Blob
+	for _, c := range []struct {
+		output any
+		status int
+		body   string
+	}{
+		{cyclic, 500, `{"json":{"defined":false,"code":"INTERNAL_SERVER_ERROR","status":500,"message":"Internal server error"}}`},
+		{map[string]any{"file": nilBlob, "list": nilSlice}, 200, `{"json":{"file":null,"list":null}}`},
+	} {
+		w := httptest.NewRecorder()
+		writeOutput(w, c.output)
+		if w.Code != c.status || w.Body.String() != c.body {
+			t.Errorf("writeOutput: %d %s", w.Code, w.Body)
+		}
+	}
+	w := httptest.NewRecorder()
+	writeOutput(w, map[string]any{"file": &Blob{Data: []byte("x")}, "list": nilSlice, "none": nilBlob})
+	_, params, _ := mime.ParseMediaType(w.Header().Get("Content-Type"))
+	form, err := multipart.NewReader(w.Body, params["boundary"]).ReadForm(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data := form.Value["data"]; len(data) != 1 || data[0] != `{"json":{"file":{},"list":null,"none":null},"maps":[["file"]]}` {
+		t.Errorf("data %q", data)
+	}
+	if file := form.File["0"]; len(file) != 1 || file[0].Filename != "blob" || file[0].Header.Get("Content-Type") != "application/octet-stream" {
+		t.Errorf("file part %+v", file)
+	}
+}
