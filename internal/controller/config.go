@@ -111,7 +111,7 @@ func normalizeJSON(data []byte, integers ...string) ([]byte, error) {
 			continue
 		}
 		float, err := strconv.ParseFloat(number.String(), 64)
-		if err != nil || float != math.Trunc(float) || math.Abs(float) > 1<<53 {
+		if err != nil || float != math.Trunc(float) || math.Abs(float) >= 1<<53 {
 			return nil, fmt.Errorf("%s must be an integer", path)
 		}
 		object[key] = int64(float)

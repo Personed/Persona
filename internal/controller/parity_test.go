@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -19,7 +21,7 @@ func TestHelperOutput(t *testing.T) {
 func TestExecRunnerLimitsOutput(t *testing.T) {
 	t.Setenv("PERSONA_CONTROLLER_OUTPUT", "1")
 	if _, err := ExecRunner(context.Background(), []string{os.Args[0], "-test.run=^TestHelperOutput$"}); !errors.Is(err, ErrCommand) {
-		t.Fatalf("2 MiB output: err = %v, want ErrCommand", err)
+		t.Fatalf("oversized output: err = %v, want ErrCommand", err)
 	}
 }
 
@@ -29,7 +31,7 @@ func TestParseDockerConfigMatchesZod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.MemoryMiB != 1024 || config.Pids != 256 || config.SSH.Port != 22 {
+	if config.MemoryMiB != 1024 || config.Pids != 256 || config.SSH == nil || config.SSH.Port != 22 {
 		t.Fatalf("integers = %+v", config)
 	}
 	for name, data := range map[string]string{
@@ -50,5 +52,37 @@ func TestParseDockerConfigMatchesZod(t *testing.T) {
 	}
 	if _, err := ParseDockerConfig([]byte("{" + base + "}\n\t ")); err != nil {
 		t.Errorf("trailing whitespace rejected: %v", err)
+	}
+}
+
+func TestChannelCommandsResolveDocker(t *testing.T) {
+	want := "docker"
+	if runtime.GOOS == "windows" {
+		dir := t.TempDir()
+		t.Setenv("LOCALAPPDATA", dir)
+		t.Setenv("PATH", dir)
+		t.Setenv("NoDefaultCurrentDirectoryInExePath", "1")
+		want = filepath.Join(dir, "Programs", "DockerDesktop", "resources", "bin", "docker.exe")
+		if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(want, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	docker, err := NewDocker(testConfig(NetworkNone), newFakeHost(t).run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon, err := docker.Daemon()
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := docker.Process(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if daemon[0] != want || process[0] != want {
+		t.Fatalf("programs = %q, %q, want %q", daemon[0], process[0], want)
 	}
 }

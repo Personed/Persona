@@ -185,7 +185,7 @@ func (c *Channel) Start(stdout io.Writer) (*Process, error) {
 	if c.generation != t.generation {
 		return nil, ErrChanged
 	}
-	cmd := exec.Command(program(c.args[0]), c.args[1:]...)
+	cmd := exec.Command(c.args[0], c.args[1:]...)
 	cmd.Stdout = stdout
 	cmd.WaitDelay = 5 * time.Second
 	stdin, err := cmd.StdinPipe()
