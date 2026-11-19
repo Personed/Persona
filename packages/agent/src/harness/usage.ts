@@ -40,8 +40,8 @@ export async function finishUsage(
   doc.items = {};
 }
 
-export const EngineUsageEntry = "persona.engine-usage";
-export type UsageRecord = EngineUsage & {
+const EngineUsageEntry = "persona.engine-usage";
+type UsageRecord = EngineUsage & {
   botId: number;
   harness: EngineId;
   taskId: string;
