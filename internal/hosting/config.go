@@ -96,7 +96,13 @@ func loadConfigFile(name string, lookup func(string) (string, bool)) (Config, er
 			fields[key], _ = json.Marshal(value)
 		}
 	}
-	for _, raw := range fields {
+	for name, raw := range fields {
+		switch name {
+		case "model", "publicUrl", "host", "port", "dataDir", "staticDir",
+			"deployment", "desktopCredentialFile", "computer", "workComputer":
+		default:
+			return Config{}, errors.New("hosting: unknown config field")
+		}
 		if bytes.Equal(raw, []byte("null")) {
 			return Config{}, errors.New("hosting: config fields may not be null")
 		}
