@@ -13,12 +13,6 @@ export type AccountMethod = {
   label: string;
   prompts?: AccountPrompt[];
 };
-export type AccountProvider = {
-  id: string;
-  name: string;
-  connected: boolean;
-  methods: AccountMethod[];
-};
 type NativeProvider = {
   id: string;
   name: string;
