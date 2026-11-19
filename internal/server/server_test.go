@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/Personed/Persona/internal/contract"
 	"github.com/Personed/Persona/internal/rpc"
@@ -306,9 +307,18 @@ func TestProtected(t *testing.T) {
 		do(h, req{method: "POST", path: "/rpc/subscribe", body: `{"json":{"botId":1}}`, header: client})
 		close(done)
 	}()
-	<-started
+	wait(t, started, "stream start")
 	sessions.Logout("c")
-	<-done
+	wait(t, done, "stream cancellation")
+}
+
+func wait(t *testing.T, c <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-c:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
 }
 
 func TestAdminProcedures(t *testing.T) {
