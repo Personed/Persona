@@ -17,7 +17,7 @@ import (
 var fixtures = filepath.Join("..", "..", "contracts", "api")
 
 // drive runs cmd and feeds its messages back into m until no command is left.
-// Cursor blinks are dropped; reads that hit the end of a recorded stream end the loop.
+// Cursor blinks and reconnects are dropped, so the end of a recorded stream ends the loop.
 func drive(t *testing.T, m tea.Model, cmd tea.Cmd) tea.Model {
 	t.Helper()
 	queue := []tea.Cmd{cmd}
@@ -34,7 +34,7 @@ func drive(t *testing.T, m tea.Model, cmd tea.Cmd) tea.Model {
 			queue = append(queue, batch...)
 			continue
 		}
-		if msg == nil || strings.HasPrefix(fmt.Sprintf("%T", msg), "cursor.") {
+		if _, ok := msg.(reconnectMsg); ok || msg == nil || strings.HasPrefix(fmt.Sprintf("%T", msg), "cursor.") {
 			continue
 		}
 		var next tea.Cmd

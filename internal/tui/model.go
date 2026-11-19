@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -37,12 +38,18 @@ type Model struct {
 }
 
 type chat struct {
+	ctx      context.Context
 	bot      client.Bot
 	view     client.ChatView
 	loaded   bool
 	cancel   context.CancelFunc
 	input    textarea.Model
 	viewport viewport.Model
+	// retryText and retryID keep the request ID of a send whose outcome is unknown,
+	// so sending the same text again cannot create a second message.
+	retryText string
+	retryID   string
+	older     bool
 }
 
 type botsMsg struct {
@@ -64,6 +71,24 @@ type changeMsg struct {
 }
 
 type doneMsg struct{ err error }
+
+type reconnectMsg struct{ botID int }
+
+type sendMsg struct {
+	botID     int
+	text      string
+	requestID string
+	err       error
+}
+
+type olderMsg struct {
+	botID int
+	page  client.ChatView
+	err   error
+}
+
+// reconnectDelay is the wait before a dropped changes stream is reopened.
+var reconnectDelay = 2 * time.Second
 
 // New returns the TUI model for the service behind c.
 func New(ctx context.Context, c *client.Client) Model {
@@ -116,18 +141,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.err = msg.err
-			return m, nil
+			return m, m.reconnect()
 		}
 		return m, next(msg.botID, msg.stream)
-	case changeMsg:
+	case reconnectMsg:
 		if m.chat == nil || m.chat.bot.ID != msg.botID {
 			return m, nil
 		}
-		if msg.err != nil {
-			if !errors.Is(msg.err, io.EOF) && !errors.Is(msg.err, context.Canceled) {
-				m.err = msg.err
+		return m, m.subscribe()
+	case changeMsg:
+		if m.chat == nil || m.chat.bot.ID != msg.botID {
+			if msg.stream != nil {
+				_ = msg.stream.Close()
 			}
 			return m, nil
+		}
+		if msg.err != nil {
+			if msg.stream != nil {
+				_ = msg.stream.Close()
+			}
+			if errors.Is(msg.err, context.Canceled) {
+				return m, nil
+			}
+			if !errors.Is(msg.err, io.EOF) {
+				m.err = msg.err
+			}
+			return m, m.reconnect()
+		}
+		if msg.change.Type == "snapshot" {
+			m.err = nil
 		}
 		if err := m.chat.view.Apply(msg.change); err != nil {
 			m.err = err
@@ -135,6 +177,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat.loaded = true
 		m.refresh()
 		return m, next(msg.botID, msg.stream)
+	case sendMsg:
+		c := m.chat
+		if c == nil || c.bot.ID != msg.botID {
+			return m, nil
+		}
+		m.err = msg.err
+		c.retryText, c.retryID = "", ""
+		if msg.err != nil {
+			if c.input.Value() == "" {
+				c.input.SetValue(msg.text)
+			}
+			if !rejected(msg.err) {
+				c.retryText, c.retryID = msg.text, msg.requestID
+			}
+		}
+		return m, nil
+	case olderMsg:
+		c := m.chat
+		if c == nil || c.bot.ID != msg.botID {
+			return m, nil
+		}
+		c.older = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.prepend(msg.page)
+		return m, nil
 	case doneMsg:
 		m.err = msg.err
 		return m, nil
@@ -151,7 +221,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.chat != nil {
 			var cmd tea.Cmd
 			m.chat.viewport, cmd = m.chat.viewport.Update(msg)
-			return m, cmd
+			return m, tea.Batch(cmd, m.loadOlder())
 		}
 	}
 	if m.chat != nil {
@@ -187,15 +257,78 @@ func (m Model) openChat(bot client.Bot) (tea.Model, tea.Cmd) {
 	input.ShowLineNumbers = false
 	input.Prompt = "> "
 	input.KeyMap.InsertNewline.SetKeys("ctrl+j", "alt+enter")
-	m.chat = &chat{bot: bot, cancel: cancel, input: input, viewport: viewport.New()}
+	m.chat = &chat{ctx: ctx, bot: bot, cancel: cancel, input: input, viewport: viewport.New()}
 	m.screen, m.err = screenChat, nil
 	m.layout()
-	c, id := m.client, bot.ID
-	open := func() tea.Msg {
+	return m, tea.Batch(m.chat.input.Focus(), m.subscribe())
+}
+
+// subscribe opens the changes stream of the open chat; its first event is a full snapshot.
+func (m Model) subscribe() tea.Cmd {
+	c, ctx, id := m.client, m.chat.ctx, m.chat.bot.ID
+	return func() tea.Msg {
 		stream, err := c.Subscribe(ctx, "changes", map[string]int{"botId": id})
 		return streamMsg{id, stream, err}
 	}
-	return m, tea.Batch(m.chat.input.Focus(), open)
+}
+
+func (m Model) reconnect() tea.Cmd {
+	id := m.chat.bot.ID
+	return tea.Tick(reconnectDelay, func(time.Time) tea.Msg { return reconnectMsg{id} })
+}
+
+func (m Model) send(text string) tea.Cmd {
+	c := m.chat
+	id := requestID()
+	if text == c.retryText {
+		id = c.retryID
+	}
+	cl, ctx, botID := m.client, m.ctx, c.bot.ID
+	return func() tea.Msg {
+		err := cl.Call(ctx, "send", map[string]any{"botId": botID, "text": text, "requestId": id}, nil)
+		return sendMsg{botID, text, id, err}
+	}
+}
+
+// rejected reports whether the service answered err, so the request certainly did not apply.
+func rejected(err error) bool {
+	var e *client.Error
+	return errors.As(err, &e) && e.Status < 500
+}
+
+// loadOlder reads the page before the oldest loaded message once the transcript is scrolled to the top.
+func (m Model) loadOlder() tea.Cmd {
+	c := m.chat
+	if c == nil || c.older || c.view.Before == "" || !c.viewport.AtTop() {
+		return nil
+	}
+	c.older = true
+	cl, ctx, botID, before := m.client, m.ctx, c.bot.ID, c.view.Before
+	return func() tea.Msg {
+		var page client.ChatView
+		err := cl.Call(ctx, "get", map[string]any{"botId": botID, "before": before}, &page)
+		return olderMsg{botID, page, err}
+	}
+}
+
+// prepend adds an older page above the transcript and keeps the lines in view where they were.
+func (m *Model) prepend(page client.ChatView) {
+	c := m.chat
+	known := map[string]bool{}
+	for _, msg := range c.view.Messages {
+		known[msg.ID] = true
+	}
+	var older []client.Message
+	for _, msg := range page.Messages {
+		if !known[msg.ID] {
+			older = append(older, msg)
+		}
+	}
+	c.view.Messages = append(older, c.view.Messages...)
+	c.view.Before = page.Before
+	lines, offset := c.viewport.TotalLineCount(), c.viewport.YOffset()
+	c.viewport.SetContent(renderMessages(c.view, c.bot.Name, m.width))
+	c.viewport.SetYOffset(offset + c.viewport.TotalLineCount() - lines)
 }
 
 func (m *Model) closeChat() {
@@ -218,7 +351,7 @@ func (m Model) chatKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		c.input.Reset()
-		return m, m.call("send", map[string]any{"botId": c.bot.ID, "text": text, "requestId": requestID()})
+		return m, m.send(text)
 	case "ctrl+x":
 		if c.view.Busy {
 			return m, m.call("stop", map[string]int{"botId": c.bot.ID})
@@ -226,7 +359,7 @@ func (m Model) chatKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "pgup":
 		c.viewport.PageUp()
-		return m, nil
+		return m, m.loadOlder()
 	case "pgdown":
 		c.viewport.PageDown()
 		return m, nil

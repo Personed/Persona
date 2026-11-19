@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 
 	tea "charm.land/bubbletea/v2"
@@ -28,6 +30,9 @@ func Run(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("unexpected argument %q", flags.Arg(0))
 	}
 	c := &client.Client{BaseURL: *server, Token: os.Getenv("PERSONA_TOKEN")}
+	if c.Token != "" && !secure(c.BaseURL) {
+		return fmt.Errorf("refusing to send PERSONA_TOKEN over plain HTTP to %s: use https", c.BaseURL)
+	}
 	_, err := tea.NewProgram(New(ctx, c), tea.WithContext(ctx), tea.WithOutput(stdout)).Run()
 	return err
 }
@@ -37,4 +42,21 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// secure reports whether requests to server are protected in transit: HTTPS, or HTTP to this computer.
+func secure(server string) bool {
+	u, err := url.Parse(server)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return u.Scheme == "http"
+	}
+	ip := net.ParseIP(host)
+	return u.Scheme == "http" && ip != nil && ip.IsLoopback()
 }
