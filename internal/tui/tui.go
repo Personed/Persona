@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -22,26 +24,34 @@ const DefaultServer = "http://127.0.0.1:4310"
 func Run(ctx context.Context, args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("persona tui", flag.ContinueOnError)
 	flags.SetOutput(stdout)
-	server := flags.String("server", envOr("PERSONA_SERVER", DefaultServer), "Persona service URL (env PERSONA_SERVER)")
+	server := flags.String("server", "", "Persona service URL (env PERSONA_SERVER; default the last paired service, else "+DefaultServer+")")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", flags.Arg(0))
 	}
-	c := &client.Client{BaseURL: *server, Token: os.Getenv("PERSONA_TOKEN")}
-	if c.Token != "" && !secure(c.BaseURL) {
-		return fmt.Errorf("refusing to send PERSONA_TOKEN over plain HTTP to %s: use https", c.BaseURL)
+	path, err := serversPath()
+	if err != nil {
+		return err
 	}
-	_, err := tea.NewProgram(New(ctx, c), tea.WithContext(ctx), tea.WithOutput(stdout)).Run()
+	saved, err := loadServers(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	base := strings.TrimRight(cmp.Or(*server, os.Getenv("PERSONA_SERVER"), saved.Current, DefaultServer), "/")
+	c := &client.Client{BaseURL: base, Token: cmp.Or(os.Getenv("PERSONA_TOKEN"), saved.Tokens[base])}
+	if c.Token != "" && !secure(c.BaseURL) {
+		return errInsecure(c.BaseURL)
+	}
+	m := New(ctx, c)
+	m.servers = saved
+	_, err = tea.NewProgram(m, tea.WithContext(ctx), tea.WithOutput(stdout)).Run()
 	return err
 }
 
-func envOr(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
+func errInsecure(server string) error {
+	return fmt.Errorf("refusing to send device credentials over plain HTTP to %s: use https", server)
 }
 
 // secure reports whether requests to server are protected in transit: HTTPS, or HTTP to this computer.
