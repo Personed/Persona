@@ -495,5 +495,3 @@ export function UsageSurface() {
     </ScrollArea>
   );
 }
-
-export const UsagePage = UsageSurface;
