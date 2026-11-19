@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -53,6 +54,14 @@ func TestFixturesMatchContract(t *testing.T) {
 				t.Errorf("%s: %s %s", name, exchange.Request.Method, exchange.Request.Path)
 			}
 			if exchange.Response.Status == 200 {
+				if procedure.Kind == "stream" {
+					var frame string
+					if err := json.Unmarshal(exchange.Response.Body, &frame); err != nil ||
+						exchange.Response.ContentType != "text/event-stream" ||
+						!strings.HasSuffix(frame, "\n\n") {
+						t.Errorf("%s: %s does not record a complete SSE frame", name, exchange.Procedure)
+					}
+				}
 				continue
 			}
 			var failure struct {

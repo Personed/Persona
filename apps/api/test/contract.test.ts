@@ -13,8 +13,10 @@ import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
 import { openAgent } from "@persona/agent";
+import type { Computers } from "@persona/agent/computer/catalog";
 import { Files } from "@persona/agent/files";
 import { expect, onTestFinished, test } from "vitest";
+import { ProtocolProcess } from "../../../packages/agent/test/fixtures/engine-process.ts";
 import { procedures } from "../contract/procedures.ts";
 import { createApp } from "../src/app.ts";
 import type { AppRouter } from "../src/router.ts";
@@ -30,7 +32,7 @@ const context = BACKGROUND_CONTEXT;
 type Exchange = {
   procedure: string;
   request: { method: string; path: string; body: unknown };
-  response: { status: number; body: unknown };
+  response: { status: number; body: unknown; contentType?: string };
 };
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -56,7 +58,7 @@ function normalize(value: unknown, key = ""): unknown {
   return value;
 }
 
-async function setup() {
+async function setup(computers?: Computers) {
   const directory = await mkdtemp(join(tmpdir(), "persona-contract-"));
   onTestFinished(() => rm(directory, { recursive: true, force: true }));
   const faux = fauxProvider();
@@ -72,14 +74,23 @@ async function setup() {
     {
       models,
       registry,
+      computers,
       env: ({ conversationId }: { conversationId: number }) =>
         files.workspace(conversationId),
     },
-    agent,
+    computers ? {} : agent,
     context,
   );
   onTestFinished(() => runtime.harness.close(context));
-  const app = createApp(runtime.bots, models, runtime.files, runtime.work);
+  const app = createApp(
+    runtime.bots,
+    models,
+    runtime.files,
+    runtime.work,
+    undefined,
+    undefined,
+    runtime.engines,
+  );
   const exchanges: Exchange[] = [];
   const client: RouterClient<AppRouter> = createORPCClient(
     new RPCLink({
@@ -106,7 +117,7 @@ async function setup() {
       },
     }),
   );
-  return { runtime, client, faux, exchanges };
+  return { app, runtime, client, faux, exchanges };
 }
 
 async function compare(name: string, exchanges: Exchange[]) {
@@ -184,4 +195,110 @@ test("contract: Bot names are trimmed before validation", async () => {
     "x-persona-trimmed": { minLength: 1, maxLength: 80 },
   });
   await compare("bot-name-validation", exchanges);
+});
+
+function nativeComputer() {
+  return {
+    initialize: async () => {},
+    preflight: async () => {},
+    computerId: async () => "local",
+    tools: { catalog: async () => [], finish: () => {} },
+    process: async () => {
+      const process = new ProtocolProcess();
+      process.receive = (request) => {
+        process.frame({
+          type: "response",
+          id: request.id,
+          success: true,
+          data:
+            request.type === "get_state"
+              ? { sessionFile: "/native/session" }
+              : {},
+        });
+        if (request.type !== "prompt") return;
+        const message = {
+          role: "assistant",
+          timestamp: 100,
+          provider: "test-provider",
+          model: "test-model",
+          stopReason: "stop",
+          content: [{ type: "text", text: "Hello from Pi." }],
+          usage: { input: 12, output: 4, cacheRead: 0, cacheWrite: 0 },
+        };
+        process.frame({ type: "message_start", message });
+        process.frame({ type: "message_end", message });
+        process.frame({ type: "agent_settled" });
+      };
+      return process;
+    },
+  } as unknown as Computers;
+}
+
+test("contract: native conversation and event stream", async () => {
+  const { app, runtime, client, exchanges } = await setup(nativeComputer());
+  expect(runtime.engines).toBeDefined();
+  const botId = runtime.conversation.id;
+  await client.get({ botId });
+  const submission = await client.send({
+    botId,
+    text: "hello",
+    requestId: crypto.randomUUID(),
+  });
+  await (await runtime.harness.submission(submission.id, context))?.wait(
+    context,
+  );
+  const view = await client.get({ botId });
+  expect(view.messages).toContainEqual(
+    expect.objectContaining({ role: "assistant" }),
+  );
+
+  const path = "/rpc/changes";
+  const body = { json: { botId } };
+  const response = await app.fetch(
+    new Request(`http://localhost${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+    }),
+  );
+  expect(response.status).toBe(200);
+  const contentType = response.headers.get("content-type");
+  expect(contentType).toBe("text/event-stream");
+  const reader = response.body?.getReader();
+  if (!reader || !contentType) throw new Error("Event stream missing");
+  const decoder = new TextDecoder();
+  let pending = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error("Event stream closed before snapshot");
+      pending += decoder.decode(value, { stream: true });
+      const frames = pending.split("\n\n");
+      const first = frames
+        .slice(0, -1)
+        .find((frame) => frame.includes("data:"));
+      if (!first) continue;
+      const frame = first.replace(
+        /^data: (.*)$/m,
+        (_, data: string) =>
+          `data: ${JSON.stringify(normalize(JSON.parse(data)))}`,
+      );
+      expect(frame).toContain("event: message\n");
+      expect(frame).toContain('"type":"snapshot"');
+      exchanges.push({
+        procedure: "changes",
+        request: { method: "POST", path, body },
+        response: {
+          status: response.status,
+          contentType,
+          body: `${frame}\n\n`,
+        },
+      });
+      break;
+    }
+  } finally {
+    await reader.cancel();
+  }
+  await compare("native-conversation", exchanges);
 });

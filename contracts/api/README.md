@@ -16,6 +16,7 @@ CI fails when `procedures.json` or a fixture no longer matches the TypeScript AP
 - The request body is `{"json": <input>}`; procedures without input send `{}`. The success body is `{"json": <output>}`. oRPC adds `"meta"` only for values JSON cannot carry (`Date`, `BigInt`, `Map`, `Set`, `undefined` in arrays); the current API sends none.
 - Errors use the HTTP status of the code and the body `{"json": {"defined": false, "code", "status", "message", "data"?}}`. Input validation failures are `400 BAD_REQUEST` with `data.issues`.
 - `stream` procedures answer with `text/event-stream`: `message` events carry `{"json": <value>}`, and the stream ends with `done` or `error`.
+- `fixtures/native-conversation.json` uses the real native runtime and a Pi protocol double. For `changes`, `response.body` is the first snapshot frame as SSE text; the recorder cancels the stream after that frame. It does not record updates or the terminal event.
 
 ## Procedure fields
 

@@ -1,0 +1,182 @@
+[
+  {
+    "procedure": "get",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/get",
+      "body": {
+        "json": {
+          "botId": 1
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "json": {
+          "id": 1,
+          "model": null,
+          "instructions": "",
+          "messages": [],
+          "runs": [],
+          "draft": null,
+          "activeTurnId": null,
+          "busy": false,
+          "processing": false,
+          "failed": false,
+          "approvals": [],
+          "tools": [],
+          "engine": {
+            "provider": "pi",
+            "model": null,
+            "options": {}
+          },
+          "runtime": {},
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "procedure": "send",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/send",
+      "body": {
+        "json": {
+          "botId": 1,
+          "text": "hello",
+          "requestId": "<uuid>"
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "json": {
+          "id": 11
+        }
+      }
+    }
+  },
+  {
+    "procedure": "get",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/get",
+      "body": {
+        "json": {
+          "botId": 1
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "json": {
+          "id": 1,
+          "model": null,
+          "instructions": "",
+          "messages": [
+            {
+              "id": "engine:11",
+              "turnId": "engine:11",
+              "requestId": "<uuid>",
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "hello",
+                  "key": "engine:11"
+                }
+              ],
+              "stopped": false,
+              "timestamp": "<time>",
+              "cursor": "12:0"
+            },
+            {
+              "id": "engine:11:pi:100:message",
+              "turnId": "engine:11",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hello from Pi.",
+                  "key": "engine:11:pi:100:message"
+                }
+              ],
+              "stopped": false,
+              "timestamp": "<time>",
+              "receivedAt": "<time>",
+              "pending": false,
+              "endedAt": "<time>",
+              "cursor": "21:0"
+            }
+          ],
+          "runs": [
+            {
+              "turnId": "engine:11",
+              "provider": "pi",
+              "model": "test-model",
+              "startedAt": "<time>",
+              "status": "ended",
+              "nativeId": "pi:previous",
+              "endedAt": "<time>"
+            }
+          ],
+          "draft": null,
+          "activeTurnId": null,
+          "busy": false,
+          "processing": false,
+          "failed": false,
+          "approvals": [],
+          "tools": [],
+          "engine": {
+            "provider": "pi",
+            "model": null,
+            "options": {}
+          },
+          "runtime": {
+            "processing": false,
+            "contextTokens": null,
+            "contextWindow": null,
+            "context": {
+              "source": "pi.get_session_stats",
+              "basis": "window",
+              "estimated": true,
+              "observedAt": "<time>",
+              "harness": "pi",
+              "sessionId": "/native/session",
+              "model": null,
+              "configuredModel": null
+            },
+            "contextPolicy": {
+              "manual": true,
+              "automatic": "native",
+              "refresh": true
+            },
+            "nativeSkills": []
+          },
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "procedure": "changes",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/changes",
+      "body": {
+        "json": {
+          "botId": 1
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "contentType": "text/event-stream",
+      "body": "event: message\ndata: {\"json\":{\"type\":\"snapshot\",\"view\":{\"id\":1,\"model\":null,\"instructions\":\"\",\"messages\":[{\"id\":\"engine:11\",\"turnId\":\"engine:11\",\"requestId\":\"<uuid>\",\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello\",\"key\":\"engine:11\"}],\"stopped\":false,\"timestamp\":\"<time>\",\"cursor\":\"12:0\"},{\"id\":\"engine:11:pi:100:message\",\"turnId\":\"engine:11\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hello from Pi.\",\"key\":\"engine:11:pi:100:message\"}],\"stopped\":false,\"timestamp\":\"<time>\",\"receivedAt\":\"<time>\",\"pending\":false,\"endedAt\":\"<time>\",\"cursor\":\"21:0\"}],\"runs\":[{\"turnId\":\"engine:11\",\"provider\":\"pi\",\"model\":\"test-model\",\"startedAt\":\"<time>\",\"status\":\"ended\",\"nativeId\":\"pi:previous\",\"endedAt\":\"<time>\"}],\"draft\":null,\"activeTurnId\":null,\"busy\":false,\"processing\":false,\"failed\":false,\"approvals\":[],\"tools\":[],\"engine\":{\"provider\":\"pi\",\"model\":null,\"options\":{}},\"runtime\":{\"processing\":false,\"contextTokens\":null,\"contextWindow\":null,\"context\":{\"source\":\"pi.get_session_stats\",\"basis\":\"window\",\"estimated\":true,\"observedAt\":\"<time>\",\"harness\":\"pi\",\"sessionId\":\"/native/session\",\"model\":null,\"configuredModel\":null},\"contextPolicy\":{\"manual\":true,\"automatic\":\"native\",\"refresh\":true},\"nativeSkills\":[]},\"error\":null}}}\n\n"
+    }
+  }
+]

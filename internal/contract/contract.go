@@ -52,8 +52,9 @@ type Exchange struct {
 		Body   json.RawMessage `json:"body"`
 	} `json:"request"`
 	Response struct {
-		Status int             `json:"status"`
-		Body   json.RawMessage `json:"body"`
+		Status      int             `json:"status"`
+		ContentType string          `json:"contentType,omitempty"`
+		Body        json.RawMessage `json:"body"`
 	} `json:"response"`
 }
 
