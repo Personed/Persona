@@ -49,9 +49,6 @@ importers:
       '@earendil-works/pi-durable':
         specifier: 1.5.2
         version: 1.5.2(patch_hash=7edcfe0aaa1559e2189b76edb1092a653d265e1212d3e4b7c80492018f7a78be)(@aws-sdk/credential-provider-node@3.972.97)(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(@smithy/signature-v4@5.7.5)(esbuild@0.28.2)(undici@8.12.4)(zod@4.6.7)
-      '@earendil-works/pi-env':
-        specifier: 1.5.2
-        version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(@smithy/signature-v4@5.7.5)(esbuild@0.28.2)(undici@8.12.4)(zod@4.6.7)
       '@hono/node-server':
         specifier: 2.1.8
         version: 2.1.8(hono@4.13.18)
