@@ -1,6 +1,6 @@
 import { type EngineModel, type EngineProcess, engineLimits } from "./types.ts";
 
-export type AccountPrompt = {
+type AccountPrompt = {
   type: "text" | "select";
   key: string;
   message: string;
@@ -8,16 +8,10 @@ export type AccountPrompt = {
   options?: { label: string; value: string; hint?: string }[];
   when?: { key: string; op: "eq" | "neq"; value: string };
 };
-export type AccountMethod = {
+type AccountMethod = {
   type: "oauth" | "api";
   label: string;
   prompts?: AccountPrompt[];
-};
-export type AccountProvider = {
-  id: string;
-  name: string;
-  connected: boolean;
-  methods: AccountMethod[];
 };
 type NativeProvider = {
   id: string;

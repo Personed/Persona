@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"slices"
+
+	"github.com/Personed/Persona/internal/controller"
 )
 
 // ErrNotImplemented is returned by subcommands that later migration phases fill in.
@@ -30,7 +32,7 @@ var Commands = []Command{
 	{Name: "tui", Summary: "Open the terminal UI against a local or remote service.", Run: pending},
 	{Name: "chat", Summary: "Send one message to a Bot and stream the reply.", Run: pending},
 	{Name: "worker", Summary: "Run the work-computer process for a Bot.", Run: pending},
-	{Name: "controller", Summary: "Run the authenticated control service for remote sandboxes.", Run: pending},
+	{Name: "controller", Summary: "Run the authenticated control service for remote sandboxes.", Run: controller.Run},
 	{Name: "migrate", Summary: "Import an existing pi-durable database.", Run: pending},
 	{Name: "version", Summary: "Print the build version.", Run: func(_ context.Context, _ []string, stdout io.Writer) error {
 		_, err := fmt.Fprintln(stdout, Version)
