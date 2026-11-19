@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -206,9 +208,13 @@ func envelope(value any) any {
 // with each Blob's path in "maps", and field i holds the i-th Blob. Blobs are
 // found in maps, Objects and slices, not in struct fields.
 func writeOutput(w http.ResponseWriter, output any) {
-	var maps [][]any
-	var blobs []*Blob
-	value := extractBlobs(output, nil, &maps, &blobs)
+	walk := blobWalk{open: map[uintptr]bool{}}
+	value, ok := walk.value(output)
+	if !ok {
+		writeError(w, toError(errors.New("rpc: output contains a cycle")))
+		return
+	}
+	maps, blobs := walk.maps, walk.blobs
 	if len(blobs) == 0 {
 		writeJSON(w, http.StatusOK, envelope(output))
 		return
@@ -242,36 +248,89 @@ func writeOutput(w http.ResponseWriter, output any) {
 	_, _ = w.Write(body.Bytes())
 }
 
-// extractBlobs returns v with each Blob replaced by {}, as JSON.stringify
-// writes a Blob, and records the Blobs and their paths.
-func extractBlobs(v any, path []any, maps *[][]any, blobs *[]*Blob) any {
+// blobWalk copies an output with each Blob replaced by {}, as JSON.stringify
+// writes a Blob, and records the Blobs and their paths. It stops at the first
+// map, Object or slice that contains itself.
+type blobWalk struct {
+	maps  [][]any
+	blobs []*Blob
+	path  []any
+	open  map[uintptr]bool
+}
+
+func (b *blobWalk) value(v any) (any, bool) {
 	switch t := v.(type) {
 	case Blob:
-		return extractBlobs(&t, path, maps, blobs)
+		return b.value(&t)
 	case *Blob:
-		*maps = append(*maps, append([]any{}, path...))
-		*blobs = append(*blobs, t)
-		return struct{}{}
+		if t == nil {
+			return nil, true
+		}
+		b.maps = append(b.maps, append([]any{}, b.path...))
+		b.blobs = append(b.blobs, t)
+		return struct{}{}, true
 	case map[string]any:
+		if t == nil {
+			return v, true
+		}
 		out := make(map[string]any, len(t))
-		for key, item := range t {
-			out[key] = extractBlobs(item, append(path, key), maps, blobs)
-		}
-		return out
+		return out, b.within(reflect.ValueOf(t).Pointer(), func() bool {
+			for key, item := range t {
+				var ok bool
+				if out[key], ok = b.child(key, item); !ok {
+					return false
+				}
+			}
+			return true
+		})
 	case *Object:
+		if t == nil {
+			return v, true
+		}
 		out := &Object{Keys: t.Keys, Values: make(map[string]any, len(t.Values))}
-		for _, key := range t.Keys {
-			out.Values[key] = extractBlobs(t.Values[key], append(path, key), maps, blobs)
-		}
-		return out
+		return out, b.within(reflect.ValueOf(t).Pointer(), func() bool {
+			for _, key := range t.Keys {
+				var ok bool
+				if out.Values[key], ok = b.child(key, t.Values[key]); !ok {
+					return false
+				}
+			}
+			return true
+		})
 	case []any:
-		out := make([]any, len(t))
-		for i, item := range t {
-			out[i] = extractBlobs(item, append(path, i), maps, blobs)
+		if t == nil {
+			return v, true
 		}
-		return out
+		out := make([]any, len(t))
+		if len(t) == 0 {
+			return out, true
+		}
+		return out, b.within(reflect.ValueOf(t).Pointer(), func() bool {
+			for i, item := range t {
+				var ok bool
+				if out[i], ok = b.child(i, item); !ok {
+					return false
+				}
+			}
+			return true
+		})
 	}
-	return v
+	return v, true
+}
+
+func (b *blobWalk) within(container uintptr, walk func() bool) bool {
+	if b.open[container] {
+		return false
+	}
+	b.open[container] = true
+	defer delete(b.open, container)
+	return walk()
+}
+
+func (b *blobWalk) child(key, v any) (any, bool) {
+	b.path = append(b.path, key)
+	defer func() { b.path = b.path[:len(b.path)-1] }()
+	return b.value(v)
 }
 
 func writeError(w http.ResponseWriter, err *Error) {
