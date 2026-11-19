@@ -310,6 +310,89 @@ func TestConnectRunsChannelUntilChange(t *testing.T) {
 	}
 }
 
+func TestConnectHeadPrecedesOutput(t *testing.T) {
+	driver := newFakeDriver(StateRunning)
+	_, server := newTestServer(t, driver)
+	// Give the process time to write before the server replies.
+	beforeHead = func() { time.Sleep(200 * time.Millisecond) }
+	t.Cleanup(func() { beforeHead = func() {} })
+	_, reader, status := dialConnect(t, server, "/work/process",
+		"Authorization: Bearer "+credential, "X-Persona-Bot-Id: 7")
+	if status != "HTTP/1.1 200 Connection Established" {
+		t.Fatalf("status = %q", status)
+	}
+	_, _ = reader.ReadString('\n')
+	if line, _ := reader.ReadString('\n'); line != "args:bot 7\n" {
+		t.Fatalf("first output = %q", line)
+	}
+}
+
+func TestPrepareWaitsForChange(t *testing.T) {
+	t.Setenv("PERSONA_CONTROLLER_HELPER", "1")
+	driver := newFakeDriver(StateRunning)
+	driver.block = make(chan struct{})
+	target := NewTarget(driver)
+	changed := make(chan struct{})
+	go func() {
+		_, _ = target.Change(context.Background(), ActionRebuild)
+		close(changed)
+	}()
+	for !driver.has("rebuild") {
+		time.Sleep(time.Millisecond)
+	}
+	prepared := make(chan *Channel)
+	go func() {
+		channel, _ := target.Prepare(context.Background(), "", 2)
+		prepared <- channel
+	}()
+	select {
+	case <-prepared:
+		t.Fatal("channel prepared during a rebuild")
+	case <-time.After(50 * time.Millisecond):
+	}
+	driver.block <- struct{}{}
+	<-changed
+	channel := <-prepared
+	process, err := channel.Start(io.Discard)
+	if err != nil {
+		t.Fatalf("channel prepared after the rebuild: %v", err)
+	}
+	process.Kill()
+	<-process.Done()
+}
+
+func TestChangeAfterCloseRefused(t *testing.T) {
+	driver := newFakeDriver(StateStopped)
+	target := NewTarget(driver)
+	target.lifecycle.Lock()
+	result := make(chan error)
+	go func() {
+		_, err := target.Change(context.Background(), ActionStart)
+		result <- err
+	}()
+	closed := make(chan error)
+	go func() { closed <- target.Close(context.Background()) }()
+	for {
+		target.mu.Lock()
+		done := target.closed
+		target.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	target.lifecycle.Unlock()
+	if err := <-result; !errors.Is(err, ErrClosed) {
+		t.Fatalf("start admitted before close: err = %v", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	if driver.has("start") {
+		t.Fatal("container started after close")
+	}
+}
+
 func TestChannelRefusedAfterChange(t *testing.T) {
 	t.Setenv("PERSONA_CONTROLLER_HELPER", "1")
 	driver := newFakeDriver(StateRunning)

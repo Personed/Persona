@@ -94,6 +94,10 @@ func (t *Target) Change(ctx context.Context, action Action) (Status, error) {
 	if run == nil {
 		return Status{}, fmt.Errorf("controller: unknown action %q", action)
 	}
+	t.lifecycle.Lock()
+	defer t.lifecycle.Unlock()
+	// The generation moves and channels end in one step under lifecycle, so a
+	// channel is either refused or killed, and Close is seen by changes that waited.
 	t.mu.Lock()
 	if t.closed && action != ActionStop {
 		t.mu.Unlock()
@@ -101,11 +105,8 @@ func (t *Target) Change(ctx context.Context, action Action) (Status, error) {
 	}
 	t.generation++
 	t.used = true
+	t.killLocked()
 	t.mu.Unlock()
-
-	t.lifecycle.Lock()
-	defer t.lifecycle.Unlock()
-	t.killAll()
 	if err := run(ctx); err != nil {
 		return Status{}, err
 	}
@@ -176,13 +177,6 @@ func (p *Process) Done() <-chan struct{} { return p.done }
 // ErrChanged when a lifecycle change began after Prepare.
 func (c *Channel) Start(stdout io.Writer) (*Process, error) {
 	t := c.target
-	cmd := exec.Command(program(c.args[0]), c.args[1:]...)
-	cmd.Stdout = stdout
-	cmd.WaitDelay = 5 * time.Second
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, ErrCommand
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
@@ -190,6 +184,13 @@ func (c *Channel) Start(stdout io.Writer) (*Process, error) {
 	}
 	if c.generation != t.generation {
 		return nil, ErrChanged
+	}
+	cmd := exec.Command(program(c.args[0]), c.args[1:]...)
+	cmd.Stdout = stdout
+	cmd.WaitDelay = 5 * time.Second
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, ErrCommand
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, ErrCommand
@@ -217,6 +218,10 @@ func (t *Target) Processes() int {
 func (t *Target) killAll() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.killLocked()
+}
+
+func (t *Target) killLocked() {
 	for cmd := range t.processes {
 		_ = cmd.Process.Kill()
 	}

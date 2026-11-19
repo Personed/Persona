@@ -151,14 +151,18 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	process, err := channel.Start(conn)
+	// The process may write at once; hold its output until the 200 head is sent.
+	output := &gate{w: conn, open: make(chan struct{})}
+	process, err := channel.Start(output)
 	if err != nil {
 		_, _ = io.WriteString(conn, "HTTP/1.1 503 Service Unavailable\r\n\r\n")
 		return
 	}
+	beforeHead()
 	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		process.Kill()
 	}
+	close(output.open)
 	go func() {
 		// Bytes the client sent after the CONNECT head are already buffered.
 		_, _ = io.Copy(process.Stdin, buffered)
@@ -168,6 +172,19 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 	}()
 	<-process.Done()
 	closeWrite(conn)
+}
+
+// beforeHead lets tests delay the CONNECT reply.
+var beforeHead = func() {}
+
+type gate struct {
+	w    io.Writer
+	open chan struct{}
+}
+
+func (g *gate) Write(p []byte) (int, error) {
+	<-g.open
+	return g.w.Write(p)
 }
 
 func closeWrite(conn net.Conn) {
