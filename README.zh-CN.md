@@ -129,7 +129,7 @@ Persona 使用 TypeScript、React 19、Vite 和 Tauri 3。模块职责与开发�
 <details>
 <summary>开发与测试命令</summary>
 
-开发网页时，在两个终端分别运行 `pnpm start` 和 `pnpm web`，再打开 Vite 输出的地址。`pnpm start` 运行时，终端聊天使用 `pnpm chat`（或 `persona chat` 和 `persona tui`）。
+开发网页时，在两个终端分别运行 `pnpm start` 和 `pnpm web`，再打开 Vite 输出的地址。终端聊天使用 `pnpm chat`。`pnpm start` 运行时，也可以用 `persona chat` 和 `persona tui` 连接服务。
 
 ```sh
 pnpm lint
