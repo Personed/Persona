@@ -61,6 +61,18 @@ func (e *Engine) Login(ctx context.Context, extension string) (*Login, error) {
 		proc: p, client: NewClient(p.Stdout(), p.Stdin()), grace: e.config.StopGrace,
 		done: make(chan struct{}), state: LoginState{State: "waiting"}, changed: make(chan struct{}),
 	}
+	e.loginsMu.Lock()
+	if e.logins == nil {
+		e.logins = map[*Login]struct{}{}
+	}
+	e.logins[l] = struct{}{}
+	e.loginsMu.Unlock()
+	go func() {
+		<-l.done
+		e.loginsMu.Lock()
+		delete(e.logins, l)
+		e.loginsMu.Unlock()
+	}()
 	go l.watch()
 	ctx, cancel := e.bound(ctx)
 	defer cancel()
@@ -215,6 +227,8 @@ func (l *Login) Answer(ctx context.Context, value string) error {
 	}
 	l.request = nil
 	l.state.Prompt, l.state.Options = nil, nil
+	close(l.changed)
+	l.changed = make(chan struct{})
 	l.mu.Unlock()
 	if err := l.client.Send(ctx, map[string]string{"type": "extension_ui_response", "id": r.ID, "value": value}); err != nil {
 		l.finish(false)

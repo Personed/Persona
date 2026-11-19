@@ -45,8 +45,14 @@ func TestLoginOverRPC(t *testing.T) {
 		if err := l.Answer(context.Background(), "openai"); err == nil {
 			t.Fatal("option outside the list accepted")
 		}
+		_, changed := l.State()
 		if err := l.Answer(context.Background(), "anthropic"); err != nil {
 			t.Fatal(err)
+		}
+		select {
+		case <-changed:
+		default:
+			t.Fatal("Answer did not signal the cleared prompt")
 		}
 		s = waitLogin(t, l, func(s LoginState) bool { return s.Prompt != nil && *s.Prompt == "Code" })
 		if s.URL == nil || *s.URL != "https://auth.example/login?x=1" || !s.Secret || *s.Instructions != "Open the link" {
@@ -85,6 +91,18 @@ func TestLoginCancelAndMissingExtension(t *testing.T) {
 		t.Fatalf("cancelled login %q", s.State)
 	}
 	<-l.proc.Done()
+
+	l, err = e.Login(context.Background(), "/ext/pi-auth.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitLogin(t, l, func(s LoginState) bool { return s.Prompt != nil })
+	e.Close()
+	select {
+	case <-l.proc.Done():
+	default:
+		t.Fatal("Engine.Close left a login Pi running")
+	}
 
 	c := fakePiCommand(t, "rpc")
 	e = New(Config{Command: c.Path, Env: append(c.Env, "PERSONA_TEST_NO_AUTH=1")})
