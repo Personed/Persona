@@ -29,7 +29,7 @@ func TestLoadConfig(t *testing.T) {
 		}}
 	}`)
 	for name, value := range map[string]string{
-		"PERSONA_CONFIG": filename, "PERSONA_HOST": "0.0.0.0", "PERSONA_PORT": "4321",
+		"PERSONA_CONFIG": filename, "PERSONA_HOST": "0.0.0.0", "PERSONA_PORT": "4321.0",
 		"PERSONA_DATA_DIR": "new-data", "PERSONA_STATIC_DIR": "web",
 		"PERSONA_DEPLOYMENT": "container", "PERSONA_PUBLIC_URL": "https://persona.test",
 	} {
@@ -62,8 +62,17 @@ func TestLoadConfigDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Host != "127.0.0.1" || cfg.Port != 4310 || cfg.Deployment != "native" ||
-		cfg.Computer.Kind != "process" || filepath.Base(cfg.DataDir) != "data" {
+		cfg.Computer.Kind != "process" || filepath.Base(cfg.DataDir) != "data" || cfg.StaticDir != "" {
 		t.Fatalf("bad defaults: %+v", cfg)
+	}
+}
+
+func TestConfigAcceptsEquivalentPortRepresentations(t *testing.T) {
+	for _, port := range []string{`4310.0`, `4.31e3`, `" 4310.0 "`, `"4.31e3"`, `"0x10d6"`} {
+		cfg, err := loadConfigFile(writeConfig(t, `{"port":`+port+`}`), noEnv)
+		if err != nil || cfg.Port != 4310 {
+			t.Fatalf("port %s: got %d, %v", port, cfg.Port, err)
+		}
 	}
 }
 
@@ -71,6 +80,7 @@ func TestLoadConfigRejectsInvalidSettings(t *testing.T) {
 	for name, input := range map[string]string{
 		"unknown":       `{"hnost":"127.0.0.1"}`,
 		"port":          `{"port":65536}`,
+		"fraction":      `{"port":4310.5}`,
 		"null port":     `{"port":null}`,
 		"http":          `{"publicUrl":"http://example.test"}`,
 		"url secret":    `{"publicUrl":"https://secret-value@example.test"}`,
