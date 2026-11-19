@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRun(t *testing.T) {
@@ -43,9 +44,16 @@ func TestServe(t *testing.T) {
 	go func() {
 		done <- serve(ctx, []string{"--port", "0", "--contract", filepath.Join("..", "..", "contracts", "api"), "--static", t.TempDir()}, writer)
 	}()
-	line, err := bufio.NewReader(reader).ReadString('\n')
-	if err != nil {
-		t.Fatal(err)
+	lines := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(reader).ReadString('\n')
+		lines <- line
+	}()
+	var line string
+	select {
+	case line = <-lines:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not start")
 	}
 	url := strings.TrimSpace(strings.TrimPrefix(line, "persona: listening on "))
 	resp, err := http.Get(url + "/health")
@@ -58,7 +66,12 @@ func TestServe(t *testing.T) {
 		t.Errorf("health: %d %s", resp.StatusCode, body)
 	}
 	cancel()
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not stop")
 	}
 }

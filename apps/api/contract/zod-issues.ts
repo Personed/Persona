@@ -54,15 +54,45 @@ for (const file of await readdir(new URL("fixtures/", contract))) {
       ]);
 }
 
+// Property paths of schema, through nested objects and union alternatives.
+function propertyPaths(schema: unknown, prefix: string[] = []): string[][] {
+  if (!schema || typeof schema !== "object" || prefix.length > 3) return [];
+  const node = schema as Record<string, unknown>;
+  const alternatives = [
+    node,
+    ...((node.anyOf ?? node.oneOf ?? node.allOf ?? []) as unknown[]),
+  ] as Record<string, unknown>[];
+  return alternatives.flatMap((alternative) =>
+    Object.entries(
+      (alternative.properties as Record<string, unknown>) ?? {},
+    ).flatMap(([key, sub]) => [
+      [...prefix, key],
+      ...propertyPaths(sub, [...prefix, key]),
+    ]),
+  );
+}
+
+function withValue(base: unknown, path: string[], value: unknown): unknown {
+  const [key = "", ...rest] = path;
+  const object =
+    base && typeof base === "object" && !Array.isArray(base)
+      ? (base as Record<string, unknown>)
+      : {};
+  return {
+    ...object,
+    [key]: rest.length ? withValue(object[key], rest, value) : value,
+  };
+}
+
 function inputs(path: string, schema: Record<string, unknown>) {
   const list: unknown[] = [undefined, ...samples];
-  const properties = Object.keys(
-    (schema.properties as Record<string, unknown>) ?? {},
-  );
+  const paths = [
+    ...new Map(propertyPaths(schema).map((p) => [p.join("."), p])).values(),
+  ];
   for (const base of [{}, ...(bases.get(path) ?? [])]) {
     list.push(base, { ...base, extra: 1 });
-    for (const key of properties)
-      for (const value of samples) list.push({ ...base, [key]: value });
+    for (const key of paths)
+      for (const value of samples) list.push(withValue(base, key, value));
   }
   return list;
 }
