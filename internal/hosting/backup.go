@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 
@@ -138,7 +139,17 @@ func writeBackup(ctx context.Context, cfg Config, target, passphrase string) err
 		return err
 	}
 	// The temporary file is complete and encrypted before it becomes visible.
-	return os.Link(temp.Name(), target)
+	if err := os.Link(temp.Name(), target); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		return nil // Windows does not support flushing directory handles.
+	}
+	parent, err := os.Open(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	return errors.Join(parent.Sync(), parent.Close())
 }
 
 func backupContents(ctx context.Context, archive *tar.Writer, cfg Config) error {
@@ -280,6 +291,13 @@ func tarFile(ctx context.Context, archive *tar.Writer, root *os.Root, file, name
 		return err
 	}
 	defer func() { _ = input.Close() }()
+	current, err := input.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, current) {
+		return fmt.Errorf("hosting: backup file %q changed identity", name)
+	}
 	mode := int64(0600)
 	if strings.HasPrefix(name, "data/") {
 		mode |= int64(info.Mode().Perm() & 0100)

@@ -7,7 +7,7 @@ the TypeScript service or desktop supervisor on its own.
   working directory. `PERSONA_HOST`, `PERSONA_PORT`, `PERSONA_DATA_DIR`,
   `PERSONA_STATIC_DIR`, `PERSONA_DEPLOYMENT`, and `PERSONA_PUBLIC_URL` override
   JSON. Relative paths resolve from the config file. With no explicit static
-  path, the loader resolves `apps/web/dist` from that directory.
+  path, the runtime uses its built-in web assets.
 - A runtime acquires `hosting.AcquireDataLease` before opening stores and
   releases it only after closing writers. The lease interoperates with the
   TypeScript service's `runtime.sqlite` lock.

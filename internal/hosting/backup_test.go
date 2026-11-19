@@ -190,6 +190,22 @@ func TestBackupRefusesMissingOrMismatchedCredentialKey(t *testing.T) {
 	}
 }
 
+func TestUpgradeDoesNotInstallWithoutABackup(t *testing.T) {
+	cfg, dir := backupFixture(t)
+	seedLegacyCredentials(t, cfg.DataDir)
+	if err := os.Remove(filepath.Join(cfg.DataDir, credentialKey)); err != nil {
+		t.Fatal(err)
+	}
+	err := UpgradeInstallation(t.Context(), cfg, filepath.Join(dir, "recovery.age"), testPassphrase, UpgradeSteps{
+		StopWrites: func(context.Context) error { return nil },
+		Install:    func(context.Context) error { t.Fatal("install ran without a recovery backup"); return nil },
+		Verify:     func(context.Context) error { t.Fatal("verify ran without a recovery backup"); return nil },
+	})
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "recovery backup") {
+		t.Fatalf("expected backup error, got %v", err)
+	}
+}
+
 func TestUpgradeStopsWritesThenBacksUpInstallsAndVerifies(t *testing.T) {
 	cfg, dir := backupFixture(t)
 	ctx := t.Context()
