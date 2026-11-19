@@ -25,7 +25,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	port := flags.Int("port", 4310, "listen port")
 	static := flags.String("static", "apps/web/dist", "web build directory, unless built with -tags embedweb")
 	contractDir := flags.String("contract", "contracts/api", "API contract directory")
-	headless := flags.Bool("headless", false, "serve only the API, without the web UI, for a server reached through persona tui")
+	headless := flags.Bool("headless", false, "serve only the API, without the web UI")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -61,7 +61,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}()
 	fmt.Fprintf(stdout, "persona: listening on http://%s\n", listener.Addr())
 	if *headless {
-		fmt.Fprintf(stdout, "persona: headless, no web UI; connect with persona tui --server http://%s\n", listener.Addr())
+		fmt.Fprintln(stdout, "persona: headless, no web UI")
 	}
 	if err := httpServer.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
 		return err

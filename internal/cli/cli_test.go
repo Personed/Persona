@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -45,6 +46,7 @@ func startServe(t *testing.T, args ...string) string {
 	reader, writer := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
+		defer writer.Close()
 		done <- serve(ctx, append([]string{"--port", "0", "--contract", filepath.Join("..", "..", "contracts", "api")}, args...), writer)
 	}()
 	lines := make(chan string, 1)
@@ -54,13 +56,8 @@ func startServe(t *testing.T, args ...string) string {
 		lines <- line
 		_, _ = io.Copy(io.Discard, r)
 	}()
-	var line string
-	select {
-	case line = <-lines:
-	case <-time.After(10 * time.Second):
-		t.Fatal("serve did not start")
-	}
 	t.Cleanup(func() {
+		defer reader.Close()
 		cancel()
 		select {
 		case err := <-done:
@@ -71,7 +68,17 @@ func startServe(t *testing.T, args ...string) string {
 			t.Error("serve did not stop")
 		}
 	})
-	return strings.TrimSpace(strings.TrimPrefix(line, "persona: listening on "))
+	const prefix = "persona: listening on "
+	var line string
+	select {
+	case line = <-lines:
+		if !strings.HasPrefix(line, prefix) {
+			t.Fatalf("unexpected serve startup output: %q", line)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not start")
+	}
+	return strings.TrimSpace(strings.TrimPrefix(line, prefix))
 }
 
 func get(t *testing.T, url string) (int, string) {
@@ -90,12 +97,20 @@ func TestServe(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(web, "index.html"), []byte("<p>Persona</p>"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	static, err := webFS(web)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := fs.ReadFile(static, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
 	url := startServe(t, "--static", web)
 	if code, body := get(t, url+"/health"); code != http.StatusOK || body != `{"ok":true}` {
 		t.Errorf("health: %d %s", code, body)
 	}
-	if code, body := get(t, url+"/"); code != http.StatusOK || body != "<p>Persona</p>" {
-		t.Errorf("web: %d %s", code, body)
+	if code, body := get(t, url+"/"); code != http.StatusOK || body != string(want) {
+		t.Errorf("web: status %d; expected the selected index.html", code)
 	}
 }
 
