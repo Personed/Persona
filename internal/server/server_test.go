@@ -194,7 +194,7 @@ func TestLocal(t *testing.T) {
 	if w.Header().Get("Cache-Control") != "private, max-age=31536000, immutable" || w.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Errorf("file headers %v", w.Header())
 	}
-	for _, path := range []string{"/files/1/doc", "/files/2/img", "/files/x/img", "/files/1.5/img"} {
+	for _, path := range []string{"/files/1/doc", "/files/2/img", "/files/x/img", "/files/1.5/img", "/files/+0x1/img", "/files/0x_1/img"} {
 		check(t, do(h, req{method: "GET", path: path}), 404, "404 Not Found")
 	}
 
@@ -202,8 +202,23 @@ func TestLocal(t *testing.T) {
 	check(t, do(h, req{method: "GET", path: "/mcp/oauth/callback?state=bad&code=c"}), 400, "授权失败或已取消。请返回 Persona 重试。")
 	check(t, do(h, req{method: "GET", path: "/mcp/oauth/callback"}), 400, "授权未完成。请返回 Persona 重试。")
 
+	if w := do(h, req{method: "GET", path: "/files/0x1/img"}); w.Code != 200 {
+		t.Errorf("hex bot id: %d", w.Code)
+	}
+
 	big := do(h, req{method: "POST", path: "/rpc/files/upload", body: strings.Repeat("x", maxUpload+1)})
 	check(t, big, 413, "Payload Too Large")
+	check(t, chunked(h, "/rpc/files/upload", maxUpload+1), 413, "Payload Too Large")
+}
+
+// chunked posts size bytes with no Content-Length.
+func chunked(h http.Handler, path string, size int) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("POST", "https://persona.example"+path, strings.NewReader(strings.Repeat("x", size)))
+	r.ContentLength, r.TransferEncoding = -1, []string{"chunked"}
+	r.Header.Set("Origin", "https://persona.example")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
 }
 
 func TestOrigin(t *testing.T) {
@@ -218,6 +233,10 @@ func TestOrigin(t *testing.T) {
 	check(t, w, 403, `{"error":"服务器地址不匹配。"}`)
 	info := do(h, req{method: "GET", path: "/hosting/info"})
 	check(t, info, 200, `{"product":"persona","version":"1"}`)
+	if head := do(h, req{method: "HEAD", path: "/hosting/info"}); head.Code != 200 {
+		t.Errorf("HEAD /hosting/info: %d", head.Code)
+	}
+	check(t, chunked(h, "/hosting/logout", hostingLimit+1), 413, "Payload Too Large")
 }
 
 func TestHostingSessions(t *testing.T) {
