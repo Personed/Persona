@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ type Config struct {
 	Host                  string          `json:"host"`
 	Port                  int             `json:"port"`
 	DataDir               string          `json:"dataDir"`
-	StaticDir             string          `json:"staticDir"`
+	StaticDir             string          `json:"staticDir,omitempty"` // Empty selects the application's built-in web assets.
 	Deployment            string          `json:"deployment"`
 	DesktopCredentialFile string          `json:"desktopCredentialFile,omitempty"`
 	Computer              ComputerConfig  `json:"computer"`
@@ -101,14 +102,11 @@ func loadConfigFile(name string, lookup func(string) (string, bool)) (Config, er
 		}
 	}
 	if port, ok := fields["port"]; ok {
-		var value string
-		if len(port) > 0 && port[0] == '"' && json.Unmarshal(port, &value) == nil {
-			number, err := strconv.Atoi(strings.TrimSpace(value))
-			if err != nil {
-				return Config{}, errors.New("hosting: invalid port")
-			}
-			fields["port"] = strconv.AppendInt(nil, int64(number), 10)
+		value, ok := parseConfigPort(port)
+		if !ok {
+			return Config{}, errors.New("hosting: invalid port")
 		}
+		fields["port"] = strconv.AppendInt(nil, int64(value), 10)
 	}
 	data, err = json.Marshal(fields)
 	if err != nil {
@@ -116,14 +114,17 @@ func loadConfigFile(name string, lookup func(string) (string, bool)) (Config, er
 	}
 	cfg := Config{
 		ConfigFile: name, Host: "127.0.0.1", Port: 4310, DataDir: "data",
-		StaticDir: "apps/web/dist", Deployment: "native", Computer: ComputerConfig{Kind: "process"},
+		Deployment: "native", Computer: ComputerConfig{Kind: "process"},
 	}
 	if err := decodeConfig(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("hosting: file %q: %w", name, err)
 	}
-	if cfg.Port < 1 || cfg.Port > 65535 || cfg.Host == "" || cfg.DataDir == "" || cfg.StaticDir == "" ||
+	if cfg.Host == "" || cfg.DataDir == "" ||
 		(cfg.Deployment != "native" && cfg.Deployment != "container") {
-		return Config{}, errors.New("hosting: invalid host, port, dataDir, staticDir, or deployment")
+		return Config{}, errors.New("hosting: invalid host, dataDir, or deployment")
+	}
+	if _, ok := fields["staticDir"]; ok && cfg.StaticDir == "" {
+		return Config{}, errors.New("hosting: invalid staticDir")
 	}
 	if _, ok := fields["desktopCredentialFile"]; ok && cfg.DesktopCredentialFile == "" {
 		return Config{}, errors.New("hosting: invalid desktopCredentialFile")
@@ -145,6 +146,31 @@ func loadConfigFile(name string, lookup func(string) (string, bool)) (Config, er
 		cfg.WorkComputer.resolvePaths(name)
 	}
 	return cfg, nil
+}
+
+func parseConfigPort(raw json.RawMessage) (int, bool) {
+	text := string(raw)
+	if len(raw) != 0 && raw[0] == '"' {
+		if json.Unmarshal(raw, &text) != nil {
+			return 0, false
+		}
+		text = strings.TrimSpace(text)
+	}
+	if len(text) > 2 && text[0] == '0' && strings.ContainsRune("xXbBoO", rune(text[1])) {
+		if strings.Contains(text, "_") {
+			return 0, false
+		}
+		n, err := strconv.ParseUint(text, 0, 16)
+		return int(n), err == nil && n != 0
+	}
+	if strings.ContainsAny(text, "_xXpP") {
+		return 0, false
+	}
+	n, err := strconv.ParseFloat(text, 64)
+	if err != nil || !(n >= 1 && n <= 65535 && math.Trunc(n) == n) {
+		return 0, false
+	}
+	return int(n), true
 }
 
 func decodeConfig(data []byte, out any) error {

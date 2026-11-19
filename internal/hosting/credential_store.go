@@ -283,7 +283,7 @@ func (s *CredentialStore) Get(ctx context.Context, ref Ref) (Credential, error) 
 		return Credential{}, errors.New("hosting: invalid credential reference")
 	}
 	if isLegacyRef(ref) {
-		result, err := s.legacyCredentials(ctx, ref.Name, true)
+		result, err := s.legacyCredentials(ctx, ref.Scope, ref.Name, true)
 		if err != nil {
 			return Credential{}, err
 		}
@@ -306,7 +306,7 @@ func (s *CredentialStore) Get(ctx context.Context, ref Ref) (Credential, error) 
 	return data.credential(ref), err
 }
 
-func (s *CredentialStore) legacyCredentials(ctx context.Context, id string, secrets bool) ([]Credential, error) {
+func (s *CredentialStore) legacyCredentials(ctx context.Context, scope, id string, secrets bool) ([]Credential, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.provider,c.type,c.value,p.legacy_digest,p.value
 		FROM credentials c LEFT JOIN persona_credentials p ON p.owner='' AND p.name=c.provider
@@ -325,6 +325,9 @@ func (s *CredentialStore) legacyCredentials(ctx context.Context, id string, secr
 			return nil, err
 		}
 		ref := legacyRef(name)
+		if scope != "" && ref.Scope != scope {
+			continue
+		}
 		var data credentialData
 		hash := sha256.Sum256(value)
 		// Ignore stale Go metadata after a legacy service updates the row.
@@ -338,17 +341,20 @@ func (s *CredentialStore) legacyCredentials(ctx context.Context, id string, secr
 			data.Metadata = make(map[string]string, 1)
 		}
 		data.Metadata["type"] = kind
-		if secrets {
-			data.Secret, err = openCredential(s.aead, value, name)
+		if secrets || (kind == "oauth" && data.ExpiresAt.IsZero()) {
+			plain, err := openCredential(s.aead, value, name)
 			if err != nil {
 				return nil, errors.New("hosting: cannot decrypt legacy credential")
 			}
-			legacy, err := parseLegacy(data.Secret)
+			legacy, err := parseLegacy(plain)
 			if err != nil || legacy.Type != kind {
 				return nil, errors.New("hosting: invalid legacy credential")
 			}
 			if expires, _ := strconv.ParseInt(string(legacy.Expires), 10, 64); data.ExpiresAt.IsZero() && kind == "oauth" && expires != 0 {
 				data.ExpiresAt = time.UnixMilli(expires).UTC()
+			}
+			if secrets {
+				data.Secret = plain
 			}
 		}
 		result = append(result, data.credential(ref))
@@ -360,15 +366,11 @@ func (s *CredentialStore) legacyCredentials(ctx context.Context, id string, secr
 func (s *CredentialStore) List(ctx context.Context, scope, owner string) ([]Credential, error) {
 	var result []Credential
 	if owner == "" && (scope == "" || scope == "provider" || scope == "mcp") {
-		rows, err := s.legacyCredentials(ctx, "", false)
+		rows, err := s.legacyCredentials(ctx, scope, "", false)
 		if err != nil {
 			return nil, err
 		}
-		for _, row := range rows {
-			if scope == "" || row.Ref.Scope == scope {
-				result = append(result, row)
-			}
-		}
+		result = rows
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT scope,owner,name,value FROM persona_credentials WHERE legacy_digest IS NULL
