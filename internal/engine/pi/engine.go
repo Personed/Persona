@@ -484,7 +484,7 @@ func (s *session) Abort(ctx context.Context) error {
 
 // Answer sends an extension_ui_response. value is the response body without
 // type and id, such as {"value":"Allow"}, {"confirmed":true} or {"cancelled":true}.
-func (s *session) Answer(_ context.Context, requestID string, value json.RawMessage) error {
+func (s *session) Answer(ctx context.Context, requestID string, value json.RawMessage) error {
 	fields := map[string]json.RawMessage{}
 	if len(value) > 0 {
 		if err := json.Unmarshal(value, &fields); err != nil {
@@ -493,7 +493,9 @@ func (s *session) Answer(_ context.Context, requestID string, value json.RawMess
 	}
 	fields["type"], _ = json.Marshal("extension_ui_response")
 	fields["id"], _ = json.Marshal(requestID)
-	return s.conn.client.Send(fields)
+	ctx, cancel := s.engine.bound(ctx)
+	defer cancel()
+	return s.conn.client.Send(ctx, fields)
 }
 
 func (s *session) SetModel(ctx context.Context, model engine.Model, thinkingLevel string) error {
