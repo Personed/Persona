@@ -7,12 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
 )
 
-// The test binary doubles as a fake `pi --mode rpc` when fakeMode is set.
+// The test binary doubles as a fake `pi` when fakeMode is set.
 const fakeMode = "PERSONA_TEST_FAKE_PI"
 
 func TestMain(m *testing.M) {
@@ -24,8 +25,8 @@ func TestMain(m *testing.M) {
 }
 
 // fakePiCommand starts the test binary as a fake Pi in the given mode:
-// "rpc" answers every command and exits on stdin EOF; "stubborn" ignores EOF and
-// SIGTERM; "parent" starts a "sleep" grandchild, prints its pid, then acts as "rpc".
+// "rpc" answers commands like Pi and exits on stdin EOF; "stubborn" ignores EOF
+// and SIGTERM; "parent" starts a "sleep" grandchild, prints its pid, then acts as "rpc".
 func fakePiCommand(t *testing.T, mode string) Command {
 	t.Helper()
 	exe, err := os.Executable()
@@ -36,11 +37,12 @@ func fakePiCommand(t *testing.T, mode string) Command {
 }
 
 func runFakePi(mode string) {
+	if slices.Contains(os.Args[1:], "--version") {
+		fmt.Println("1.5.2-fake")
+		return
+	}
 	switch mode {
-	case "sleep":
-		signal.Ignore(syscall.SIGTERM)
-		time.Sleep(time.Hour)
-	case "stubborn":
+	case "sleep", "stubborn":
 		signal.Ignore(syscall.SIGTERM)
 		time.Sleep(time.Hour)
 	case "parent":
@@ -57,17 +59,78 @@ func runFakePi(mode string) {
 	}
 }
 
+// answer emulates the parts of Pi's RPC mode the tests use.
 func answer() {
+	out := json.NewEncoder(os.Stdout)
+	emit := func(record map[string]any) { _ = out.Encode(record) }
+	file := fmt.Sprintf("/sessions/%d-0.jsonl", os.Getpid())
+	if slices.Contains(os.Args[1:], "--no-session") {
+		file = ""
+	}
+	sessions := 0
+	var model map[string]any
+	level := "medium"
+	cwd, _ := os.Getwd()
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
-		var command struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
-		}
+		var command map[string]any
 		if json.Unmarshal(scanner.Bytes(), &command) != nil {
 			continue
 		}
-		reply, _ := json.Marshal(map[string]any{"id": command.ID, "type": "response", "command": command.Type, "success": true, "data": map[string]int{"pid": os.Getpid()}})
-		fmt.Println(string(reply))
+		id, _ := command["id"].(string)
+		kind, _ := command["type"].(string)
+		data := map[string]any{"pid": os.Getpid()}
+		reply := func() {
+			emit(map[string]any{"id": id, "type": "response", "command": kind, "success": true, "data": data})
+		}
+		switch kind {
+		case "get_state":
+			data["sessionFile"] = file
+			data["thinkingLevel"] = level
+			data["isStreaming"] = false
+			data["pendingMessageCount"] = 0
+			data["argv"] = os.Args[1:]
+			data["cwd"] = cwd
+			data["env"] = os.Getenv("PERSONA_TEST_ENV")
+			if model != nil {
+				data["model"] = model
+			}
+		case "switch_session":
+			file = command["sessionPath"].(string)
+			data["cancelled"] = false
+		case "new_session":
+			sessions++
+			file = fmt.Sprintf("/sessions/%d-%d.jsonl", os.Getpid(), sessions)
+		case "set_model":
+			model = map[string]any{"provider": command["provider"], "id": command["modelId"]}
+		case "set_thinking_level":
+			level = command["level"].(string)
+		case "get_messages":
+			data["messages"] = []map[string]string{{"role": "user"}, {"role": "assistant"}, {"role": "user"}}
+		case "get_session_stats":
+			data["tokens"] = map[string]int{"input": 10, "output": 5, "cacheRead": 2, "cacheWrite": 1, "total": 18}
+			data["cost"] = 0.25
+		case "get_available_models":
+			data["models"] = []map[string]any{{"provider": "anthropic", "id": "claude", "name": "Claude", "input": []string{"text", "image"}, "reasoning": true}}
+		case "extension_ui_response":
+			emit(map[string]any{"type": "answered", "id": id, "value": command["value"]})
+			emit(map[string]any{"type": "agent_settled"})
+			continue
+		case "reject":
+			emit(map[string]any{"id": id, "type": "response", "command": kind, "success": false, "error": "rejected"})
+			continue
+		case "prompt":
+			reply()
+			emit(map[string]any{"type": "agent_start"})
+			emit(map[string]any{"type": "message_update", "text": command["message"], "behavior": command["streamingBehavior"]})
+			if command["message"] == "ask" {
+				emit(map[string]any{"type": "extension_ui_request", "id": "ui-1", "method": "select", "title": "Pick", "options": []string{"a", "b"}})
+				continue
+			}
+			emit(map[string]any{"type": "agent_end"})
+			emit(map[string]any{"type": "agent_settled"})
+			continue
+		}
+		reply()
 	}
 }
