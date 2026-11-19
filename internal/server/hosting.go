@@ -156,7 +156,7 @@ func (h *hosted) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
-	case path == "/hosting/info" && r.Method == http.MethodGet:
+	case path == "/hosting/info" && (r.Method == http.MethodGet || r.Method == http.MethodHead):
 		writeJSON(w, http.StatusOK, map[string]string{"product": "persona", "version": "1"})
 	case path == "/hosting" || strings.HasPrefix(path, "/hosting/"):
 		h.hosting(w, r)
@@ -278,10 +278,7 @@ type result struct {
 func (h *hosted) handle(f func(http.ResponseWriter, *http.Request) (any, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		value, err := f(w, r)
-		var tooLarge *http.MaxBytesError
 		switch {
-		case errors.As(err, &tooLarge):
-			writeText(w, http.StatusRequestEntityTooLarge, "Payload Too Large")
 		case errors.Is(err, errInput):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "输入格式无效。"})
 		case err != nil:

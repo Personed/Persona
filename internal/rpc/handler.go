@@ -1,12 +1,15 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -127,7 +130,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, toError(err))
 			return
 		}
-		writeJSON(w, http.StatusOK, envelope(output))
+		writeOutput(w, output)
 		return
 	}
 	s.serveEvents(w, r, p.stream, inputJSON)
@@ -185,9 +188,7 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request, stream Stre
 	case err != nil:
 		_ = emit("error", map[string]any{"json": toError(err)})
 	default:
-		if _, missing := result.(undefinedValue); !missing {
-			_ = emit("done", envelope(result))
-		}
+		_ = emit("done", envelope(result))
 	}
 	close(writes)
 	<-finished
@@ -199,6 +200,79 @@ func envelope(value any) any {
 		return struct{}{}
 	}
 	return map[string]any{"json": value}
+}
+
+// writeOutput writes a unary result. Like the oRPC serializer, it sends an
+// output holding Blobs as multipart form data: field "data" is the JSON body
+// with each Blob's path in "maps", and field i holds the i-th Blob. Blobs are
+// found in maps, Objects and slices, not in struct fields.
+func writeOutput(w http.ResponseWriter, output any) {
+	var maps [][]any
+	var blobs []*Blob
+	value := extractBlobs(output, nil, &maps, &blobs)
+	if len(blobs) == 0 {
+		writeJSON(w, http.StatusOK, envelope(output))
+		return
+	}
+	data, err := marshal(map[string]any{"json": value, "maps": maps})
+	if err != nil {
+		writeError(w, toError(err))
+		return
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	_ = form.WriteField("data", string(data))
+	escape := strings.NewReplacer("\n", "%0A", "\r", "%0D", `"`, "%22")
+	for i, blob := range blobs {
+		name, kind := blob.Name, blob.Type
+		if name == "" {
+			name = "blob"
+		}
+		if kind == "" {
+			kind = "application/octet-stream"
+		}
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%d"; filename="%s"`, i, escape.Replace(name)))
+		header.Set("Content-Type", kind)
+		part, _ := form.CreatePart(header)
+		_, _ = part.Write(blob.Data)
+	}
+	_ = form.Close()
+	w.Header().Set("Content-Type", form.FormDataContentType())
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body.Bytes())
+}
+
+// extractBlobs returns v with each Blob replaced by {}, as JSON.stringify
+// writes a Blob, and records the Blobs and their paths.
+func extractBlobs(v any, path []any, maps *[][]any, blobs *[]*Blob) any {
+	switch t := v.(type) {
+	case Blob:
+		return extractBlobs(&t, path, maps, blobs)
+	case *Blob:
+		*maps = append(*maps, append([]any{}, path...))
+		*blobs = append(*blobs, t)
+		return struct{}{}
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for key, item := range t {
+			out[key] = extractBlobs(item, append(path, key), maps, blobs)
+		}
+		return out
+	case *Object:
+		out := &Object{Keys: t.Keys, Values: make(map[string]any, len(t.Values))}
+		for _, key := range t.Keys {
+			out.Values[key] = extractBlobs(t.Values[key], append(path, key), maps, blobs)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = extractBlobs(item, append(path, i), maps, blobs)
+		}
+		return out
+	}
+	return v
 }
 
 func writeError(w http.ResponseWriter, err *Error) {

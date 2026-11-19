@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"math"
 	"net/http"
@@ -126,7 +127,15 @@ func safeInteger(s string) (int64, bool) {
 	if s == "" {
 		return 0, true
 	}
-	if strings.ContainsAny(s, "xXoObB_") || strings.EqualFold(strings.TrimLeft(s, "+-"), "infinity") {
+	if len(s) > 2 && s[0] == '0' && strings.ContainsRune("xXoObB", rune(s[1])) {
+		base := map[byte]int{'x': 16, 'o': 8, 'b': 2}[s[1]|0x20]
+		n, err := strconv.ParseUint(s[2:], base, 64)
+		if err != nil || strings.Contains(s, "_") || n > 1<<53-1 {
+			return 0, false
+		}
+		return int64(n), true
+	}
+	if strings.Trim(s, "0123456789+-.eE") != "" {
 		return 0, false
 	}
 	f, err := strconv.ParseFloat(s, 64)
@@ -136,13 +145,29 @@ func safeInteger(s string) (int64, bool) {
 	return int64(f), true
 }
 
-// limitBody answers 413 like Hono's bodyLimit when the body exceeds limit bytes.
+// limitBody answers 413 like Hono's bodyLimit when the body exceeds limit
+// bytes. Like Hono, it reads a body of unknown length before the handler runs.
 func limitBody(w http.ResponseWriter, r *http.Request, limit int64) bool {
-	if r.ContentLength > limit {
+	if r.Body == nil || r.Body == http.NoBody {
+		return true
+	}
+	if r.ContentLength >= 0 && len(r.TransferEncoding) == 0 {
+		if r.ContentLength > limit {
+			writeText(w, http.StatusRequestEntityTooLarge, "Payload Too Large")
+			return false
+		}
+		return true
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		writeText(w, http.StatusBadRequest, "Bad Request")
+		return false
+	}
+	if int64(len(data)) > limit {
 		writeText(w, http.StatusRequestEntityTooLarge, "Payload Too Large")
 		return false
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	r.Body, r.ContentLength = io.NopCloser(bytes.NewReader(data)), int64(len(data))
 	return true
 }
 
