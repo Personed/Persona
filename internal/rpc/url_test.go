@@ -31,6 +31,17 @@ func TestCanParseURL(t *testing.T) {
 		"https://08.0.0.1":           false,
 		"javascript:alert(1)":        true,
 		`https:\\x.com`:              true,
+		"file://[::1":                false,
+		"file://[::1]/x":             true,
+		"file://a:1/":                false,
+		"file://exa mple/":           false,
+		"file:///x":                  true,
+		"file://localhost/x":         true,
+		"file:x":                     true,
+		`file:\\[::1`:                false,
+		"file://a@b/":                false,
+		"file:/[::1":                 true,
+		"file://":                    true,
 	} {
 		if got := canParseURL(input); got != want {
 			t.Errorf("canParseURL(%q) = %v, want %v", input, got, want)
