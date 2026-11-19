@@ -73,14 +73,14 @@ function propertyPaths(schema: unknown, prefix: string[] = []): string[][] {
 }
 
 function withValue(base: unknown, path: string[], value: unknown): unknown {
-  const [key, ...rest] = path;
+  const [key = "", ...rest] = path;
   const object =
     base && typeof base === "object" && !Array.isArray(base)
       ? (base as Record<string, unknown>)
       : {};
   return {
     ...object,
-    [key!]: rest.length ? withValue(object[key!], rest, value) : value,
+    [key]: rest.length ? withValue(object[key], rest, value) : value,
   };
 }
 
