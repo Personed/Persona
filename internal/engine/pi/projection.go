@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Personed/Persona/internal/engine"
@@ -287,13 +288,14 @@ func textContent(content json.RawMessage) string {
 	}
 	var parts []piContent
 	_ = json.Unmarshal(content, &parts)
-	var b []byte
+	// Blocks join with a line break, as textContent in pi.ts does.
+	texts := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if part.Type == "text" {
-			b = append(b, part.Text...)
+			texts = append(texts, part.Text)
 		}
 	}
-	return string(b)
+	return strings.Join(texts, "\n")
 }
 
 func timestampOr(raw json.RawMessage, fallback string) string {

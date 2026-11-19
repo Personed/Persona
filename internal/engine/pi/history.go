@@ -185,7 +185,11 @@ func History(ctx context.Context, st store.Store, conversation store.Conversatio
 		tools = ToolsFull
 	}
 	query := store.EntryQuery{ConversationID: conversation}
-	if o.Before > 0 {
+	if o.Before == 1 {
+		// Nothing precedes the first entry; a zero Max would mean no bound.
+		return "", nil
+	}
+	if o.Before > 1 {
 		query.Max = o.Before - 1
 	}
 	page, err := st.Entries(ctx, query, store.Scan{Limit: HistoryEntries, Descending: true})

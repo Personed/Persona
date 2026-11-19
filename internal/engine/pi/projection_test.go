@@ -200,3 +200,10 @@ func TestContextReading(t *testing.T) {
 		t.Fatalf("got %v", got[1])
 	}
 }
+
+func TestTextContentJoinsBlocks(t *testing.T) {
+	got := textContent(json.RawMessage(`[{"type":"text","text":"12"},{"type":"image"},{"type":"text","text":"34"}]`))
+	if got != "12\n34" {
+		t.Fatalf("textContent = %q", got)
+	}
+}

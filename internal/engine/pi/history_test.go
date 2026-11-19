@@ -87,6 +87,9 @@ func TestHistoryBeforeTurnAfterCursor(t *testing.T) {
 		{"role":"toolResult","toolName":"bash","toolCallId":"c","isError":true,"content":[{"type":"text","text":"denied"}]}]`)
 	st.chat("u2", "user", "now")
 
+	if got, err := History(context.Background(), st, 1, HistoryOptions{Before: 1}); err != nil || got != "" {
+		t.Fatalf("history before the first entry = %q, %v", got, err)
+	}
 	_, p := history(t, st, HistoryOptions{TurnID: "u2"})
 	if p.After != nil || p.From != 1 || p.Through != 3 || p.Excerpt || len(p.Messages) != 4 {
 		t.Fatalf("packet %+v", p)
