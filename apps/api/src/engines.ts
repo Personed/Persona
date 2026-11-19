@@ -6,29 +6,33 @@ import { WorkError } from "@persona/agent/work";
 import { z } from "zod";
 import { botConversation, botTarget } from "./conversation.ts";
 
+const providerIDs = engineCatalog().map(({ id }) => id);
+const noNul = z
+  .custom<string>(
+    (value) => typeof value === "string" && !value.includes("\0"),
+    {
+      abort: false,
+    },
+  )
+  .meta({ apiContract: { not: { pattern: "\\u0000" } } });
+
 const config = z
   .object({
     provider: z
       .string()
       .min(1)
       .max(128)
-      .refine((id) => engineCatalog().some((item) => item.id === id)),
-    model: z.string().min(1).max(256).nullable(),
-    command: z
-      .string()
-      .min(1)
-      .max(4096)
-      .refine((value) => !value.includes("\0"))
-      .optional(),
-    args: z
-      .array(
+      .check(
         z
-          .string()
-          .max(4096)
-          .refine((value) => !value.includes("\0")),
-      )
-      .max(64)
-      .optional(),
+          .custom<string>(
+            (id) => typeof id === "string" && providerIDs.includes(id),
+            { abort: false },
+          )
+          .meta({ apiContract: { enum: providerIDs } }),
+      ),
+    model: z.string().min(1).max(256).nullable(),
+    command: z.string().min(1).max(4096).check(noNul).optional(),
+    args: z.array(z.string().max(4096).check(noNul)).max(64).optional(),
     options: z
       .record(z.string().min(1).max(128), z.string().max(1024))
       .optional(),

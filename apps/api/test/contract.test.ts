@@ -15,6 +15,7 @@ import type { RouterClient } from "@orpc/server";
 import { openAgent } from "@persona/agent";
 import { Files } from "@persona/agent/files";
 import { expect, onTestFinished, test } from "vitest";
+import { procedures } from "../contract/procedures.ts";
 import { createApp } from "../src/app.ts";
 import type { AppRouter } from "../src/router.ts";
 
@@ -158,4 +159,29 @@ test("contract: errors", async () => {
   await expect(client.engines.get({ botId: 999_999 })).rejects.toThrow();
   await expect(client.computer.list()).rejects.toThrow();
   await compare("errors", exchanges);
+});
+
+test("contract: Bot names are trimmed before validation", async () => {
+  const { client, exchanges } = await setup();
+  const name = "x".repeat(80);
+  const input = {
+    model: { provider: "faux", modelId: "faux-1" },
+    requestId: crypto.randomUUID(),
+  };
+  await expect(
+    client.bots.create({ ...input, name: " \t\n " }),
+  ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  const bot = await client.bots.create({
+    ...input,
+    requestId: crypto.randomUUID(),
+    name: `  ${name}  `,
+  });
+  expect(bot.name).toBe(name);
+  expect(
+    procedures().find(({ path }) => path === "bots.create")?.input,
+  ).toHaveProperty("properties.name", {
+    type: "string",
+    "x-persona-trimmed": { minLength: 1, maxLength: 80 },
+  });
+  await compare("bot-name-validation", exchanges);
 });

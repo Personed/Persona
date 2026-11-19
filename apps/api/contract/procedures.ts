@@ -76,6 +76,43 @@ function isProcedure(value: unknown): value is Procedure {
   return typeof value === "object" && value !== null && "~orpc" in value;
 }
 
+// Zod exposes trim as an overwrite check, not as a distinct check kind.
+const trim = String(z.core._trim()._zod.def.tx);
+
+function exportInput(schema: z.ZodType, procedure: string) {
+  return z.toJSONSchema(schema, {
+    io: "input",
+    override({ zodSchema, jsonSchema, path }) {
+      const location = `${procedure}: ${path.join("/")}`;
+      const rules: z.core.JSONSchema.JSONSchema[] = [];
+      let trimmed = false;
+      for (const [index, check] of (
+        zodSchema._zod.def.checks ?? []
+      ).entries()) {
+        if (check instanceof z.core.$ZodCheckOverwrite) {
+          if (index !== 0 || String(check._zod.def.tx) !== trim)
+            throw new Error(`Unmapped input normalization at ${location}`);
+          trimmed = true;
+        } else if (check._zod.def.check === "custom") {
+          const rule = check instanceof z.ZodType && check.meta()?.apiContract;
+          if (!rule || typeof rule !== "object")
+            throw new Error(`Unmapped input refinement at ${location}`);
+          rules.push(rule as z.core.JSONSchema.JSONSchema);
+        }
+      }
+      if (rules.length) jsonSchema.allOf = rules;
+      if (trimmed) {
+        // Constraints apply after trimming, so they cannot sit on the raw string.
+        const { type, default: fallback, ...constraints } = jsonSchema;
+        for (const key of Object.keys(constraints)) delete jsonSchema[key];
+        jsonSchema["x-persona-trimmed"] = constraints;
+        if (fallback !== undefined) jsonSchema.default = fallback;
+        jsonSchema.type = type;
+      }
+    },
+  });
+}
+
 export function procedures() {
   const router = createRouter(
     ...([
@@ -106,12 +143,7 @@ export function procedures() {
             handler.constructor.name === "AsyncGeneratorFunction"
               ? "stream"
               : "unary",
-          input: inputSchema
-            ? z.toJSONSchema(inputSchema, {
-                io: "input",
-                unrepresentable: "any",
-              })
-            : null,
+          input: inputSchema ? exportInput(inputSchema, next.join(".")) : null,
           errors: [
             ...new Set([
               ...(inputSchema ? ["BAD_REQUEST"] : []),

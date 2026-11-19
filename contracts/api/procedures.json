@@ -35,12 +35,15 @@
         "properties": {
           "name": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 80
+            "x-persona-trimmed": {
+              "minLength": 1,
+              "maxLength": 80
+            }
           },
           "instructions": {
             "default": "",
-            "type": "string"
+            "type": "string",
+            "x-persona-trimmed": {}
           },
           "model": {
             "type": "object",
@@ -143,8 +146,10 @@
         "properties": {
           "name": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 80
+            "x-persona-trimmed": {
+              "minLength": 1,
+              "maxLength": 80
+            }
           },
           "config": {
             "oneOf": [
@@ -512,7 +517,14 @@
           },
           "key": {
             "type": "string",
-            "maxLength": 512
+            "x-persona-trimmed": {
+              "maxLength": 512,
+              "allOf": [
+                {
+                  "pattern": "^[\\x21-\\x7E]*$"
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -1299,7 +1311,18 @@
               "provider": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 128
+                "maxLength": 128,
+                "allOf": [
+                  {
+                    "enum": [
+                      "pi",
+                      "codex",
+                      "claude",
+                      "opencode",
+                      "acp"
+                    ]
+                  }
+                ]
               },
               "model": {
                 "anyOf": [
@@ -1316,14 +1339,28 @@
               "command": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 4096
+                "maxLength": 4096,
+                "allOf": [
+                  {
+                    "not": {
+                      "pattern": "\\u0000"
+                    }
+                  }
+                ]
               },
               "args": {
                 "maxItems": 64,
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "maxLength": 4096
+                  "maxLength": 4096,
+                  "allOf": [
+                    {
+                      "not": {
+                        "pattern": "\\u0000"
+                      }
+                    }
+                  ]
                 }
               },
               "options": {
@@ -1437,7 +1474,18 @@
               "provider": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 128
+                "maxLength": 128,
+                "allOf": [
+                  {
+                    "enum": [
+                      "pi",
+                      "codex",
+                      "claude",
+                      "opencode",
+                      "acp"
+                    ]
+                  }
+                ]
               },
               "model": {
                 "anyOf": [
@@ -1454,14 +1502,28 @@
               "command": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 4096
+                "maxLength": 4096,
+                "allOf": [
+                  {
+                    "not": {
+                      "pattern": "\\u0000"
+                    }
+                  }
+                ]
               },
               "args": {
                 "maxItems": 64,
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "maxLength": 4096
+                  "maxLength": 4096,
+                  "allOf": [
+                    {
+                      "not": {
+                        "pattern": "\\u0000"
+                      }
+                    }
+                  ]
                 }
               },
               "options": {
@@ -1486,7 +1548,18 @@
           "provider": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 128
+            "maxLength": 128,
+            "allOf": [
+              {
+                "enum": [
+                  "pi",
+                  "codex",
+                  "claude",
+                  "opencode",
+                  "acp"
+                ]
+              }
+            ]
           },
           "refresh": {
             "type": "boolean"
@@ -1521,7 +1594,18 @@
               "provider": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 128
+                "maxLength": 128,
+                "allOf": [
+                  {
+                    "enum": [
+                      "pi",
+                      "codex",
+                      "claude",
+                      "opencode",
+                      "acp"
+                    ]
+                  }
+                ]
               },
               "model": {
                 "anyOf": [
@@ -1538,14 +1622,28 @@
               "command": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 4096
+                "maxLength": 4096,
+                "allOf": [
+                  {
+                    "not": {
+                      "pattern": "\\u0000"
+                    }
+                  }
+                ]
               },
               "args": {
                 "maxItems": 64,
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "maxLength": 4096
+                  "maxLength": 4096,
+                  "allOf": [
+                    {
+                      "not": {
+                        "pattern": "\\u0000"
+                      }
+                    }
+                  ]
                 }
               },
               "options": {
@@ -1599,7 +1697,18 @@
               "provider": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 128
+                "maxLength": 128,
+                "allOf": [
+                  {
+                    "enum": [
+                      "pi",
+                      "codex",
+                      "claude",
+                      "opencode",
+                      "acp"
+                    ]
+                  }
+                ]
               },
               "model": {
                 "anyOf": [
@@ -1616,14 +1725,28 @@
               "command": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 4096
+                "maxLength": 4096,
+                "allOf": [
+                  {
+                    "not": {
+                      "pattern": "\\u0000"
+                    }
+                  }
+                ]
               },
               "args": {
                 "maxItems": 64,
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "maxLength": 4096
+                  "maxLength": 4096,
+                  "allOf": [
+                    {
+                      "not": {
+                        "pattern": "\\u0000"
+                      }
+                    }
+                  ]
                 }
               },
               "options": {
@@ -2303,7 +2426,15 @@
                   "url": {
                     "type": "string",
                     "maxLength": 8192,
-                    "format": "uri"
+                    "format": "uri",
+                    "allOf": [
+                      {
+                        "x-persona-url-protocols": [
+                          "http:",
+                          "https:"
+                        ]
+                      }
+                    ]
                   },
                   "headers": {
                     "default": {},
@@ -2533,7 +2664,8 @@
             "maximum": 9007199254740991
           },
           "text": {
-            "type": "string"
+            "type": "string",
+            "x-persona-trimmed": {}
           },
           "attachments": {
             "default": [],
@@ -2593,8 +2725,10 @@
                     },
                     "text": {
                       "type": "string",
-                      "minLength": 1,
-                      "maxLength": 16000
+                      "x-persona-trimmed": {
+                        "minLength": 1,
+                        "maxLength": 16000
+                      }
                     }
                   },
                   "required": [
@@ -2993,13 +3127,17 @@
           },
           "title": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 80
+            "x-persona-trimmed": {
+              "minLength": 1,
+              "maxLength": 80
+            }
           },
           "instructions": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 16000
+            "x-persona-trimmed": {
+              "minLength": 1,
+              "maxLength": 16000
+            }
           },
           "schedule": {
             "oneOf": [
@@ -3071,8 +3209,10 @@
           },
           "condition": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 16000
+            "x-persona-trimmed": {
+              "minLength": 1,
+              "maxLength": 16000
+            }
           },
           "executionMs": {
             "type": "integer",
@@ -3428,8 +3568,10 @@
           },
           "name": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 80
+            "x-persona-trimmed": {
+              "minLength": 1,
+              "maxLength": 80
+            }
           },
           "instructions": {
             "type": "string",

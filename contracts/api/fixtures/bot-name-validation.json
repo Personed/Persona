@@ -1,0 +1,72 @@
+[
+  {
+    "procedure": "bots.create",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/bots/create",
+      "body": {
+        "json": {
+          "model": {
+            "provider": "faux",
+            "modelId": "faux-1"
+          },
+          "requestId": "<uuid>",
+          "name": " \t\n "
+        }
+      }
+    },
+    "response": {
+      "status": 400,
+      "body": {
+        "json": {
+          "defined": false,
+          "code": "BAD_REQUEST",
+          "status": 400,
+          "message": "Input validation failed",
+          "data": {
+            "issues": [
+              {
+                "origin": "string",
+                "code": "too_small",
+                "minimum": 1,
+                "inclusive": true,
+                "path": [
+                  "name"
+                ],
+                "message": "Too small: expected string to have >=1 characters"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "procedure": "bots.create",
+    "request": {
+      "method": "POST",
+      "path": "/rpc/bots/create",
+      "body": {
+        "json": {
+          "model": {
+            "provider": "faux",
+            "modelId": "faux-1"
+          },
+          "requestId": "<uuid>",
+          "name": "  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  "
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "json": {
+          "id": 10,
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "avatar": "<uuid>",
+          "createdAt": "<time>"
+        }
+      }
+    }
+  }
+]

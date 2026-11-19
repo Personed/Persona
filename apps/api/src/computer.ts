@@ -9,6 +9,8 @@ import { WorkError } from "@persona/agent/work";
 import { z } from "zod";
 import { botConversation, botTarget } from "./conversation.ts";
 
+const assistantKeyPattern = /^[\x21-\x7E]*$/;
+
 export function computerRouter(bots: Bots, computers?: Computers) {
   async function access<T>(run: (target: Computers) => Promise<T>) {
     if (!computers)
@@ -61,7 +63,15 @@ export function computerRouter(bots: Bots, computers?: Computers) {
             .string()
             .trim()
             .max(512)
-            .refine((key) => !key || /^[\x21-\x7E]+$/.test(key)),
+            .check(
+              z
+                .custom<string>(
+                  (key) =>
+                    typeof key === "string" && assistantKeyPattern.test(key),
+                  { abort: false },
+                )
+                .meta({ apiContract: { pattern: assistantKeyPattern.source } }),
+            ),
         }),
       )
       .handler(async ({ input }) => {
