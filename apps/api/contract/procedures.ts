@@ -113,7 +113,7 @@ function exportInput(schema: z.ZodType, procedure: string) {
   });
 }
 
-export function procedures() {
+function routerEntries() {
   const router = createRouter(
     ...([
       {},
@@ -126,36 +126,46 @@ export function procedures() {
       "http://127.0.0.1/mcp/oauth/callback",
     ] as unknown as Parameters<typeof createRouter>),
   );
-  const list: Array<{
-    path: string;
-    kind: "unary" | "stream";
-    input: unknown;
-    errors: string[];
-  }> = [];
+  const list: Array<{ path: string[]; procedure: Procedure }> = [];
   const visit = (node: object, path: string[]) => {
     for (const [key, value] of Object.entries(node)) {
       const next = [...path, key];
-      if (isProcedure(value)) {
-        const { handler, inputSchema } = value["~orpc"];
-        list.push({
-          path: next.join("."),
-          kind:
-            handler.constructor.name === "AsyncGeneratorFunction"
-              ? "stream"
-              : "unary",
-          input: inputSchema ? exportInput(inputSchema, next.join(".")) : null,
-          errors: [
-            ...new Set([
-              ...(inputSchema ? ["BAD_REQUEST"] : []),
-              ...handlerErrors(handler.toString(), path[0] ?? "models"),
-              "INTERNAL_SERVER_ERROR",
-            ]),
-          ].sort(),
-        });
-      } else if (typeof value === "object" && value !== null)
-        visit(value, next);
+      if (isProcedure(value)) list.push({ path: next, procedure: value });
+      else if (typeof value === "object" && value !== null) visit(value, next);
     }
   };
   visit(router, []);
-  return list.sort((a, b) => a.path.localeCompare(b.path));
+  return list;
+}
+
+export function routerProcedures() {
+  return new Map(
+    routerEntries().map(({ path, procedure }) => [
+      path.join("."),
+      procedure["~orpc"].inputSchema,
+    ]),
+  );
+}
+
+export function procedures() {
+  return routerEntries()
+    .map(({ path, procedure }) => {
+      const { handler, inputSchema } = procedure["~orpc"];
+      return {
+        path: path.join("."),
+        kind:
+          handler.constructor.name === "AsyncGeneratorFunction"
+            ? ("stream" as const)
+            : ("unary" as const),
+        input: inputSchema ? exportInput(inputSchema, path.join(".")) : null,
+        errors: [
+          ...new Set([
+            ...(inputSchema ? ["BAD_REQUEST"] : []),
+            ...handlerErrors(handler.toString(), path[0] ?? "models"),
+            "INTERNAL_SERVER_ERROR",
+          ]),
+        ].sort(),
+      };
+    })
+    .sort((a, b) => a.path.localeCompare(b.path));
 }
