@@ -2,6 +2,7 @@ package pi
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -66,7 +67,7 @@ func TestLoginOverRPC(t *testing.T) {
 		default:
 			t.Fatal("login Pi still running")
 		}
-		if err := l.Answer(context.Background(), "x"); err != ErrLoginOver {
+		if err := l.Answer(context.Background(), "x"); !errors.Is(err, ErrLoginOver) {
 			t.Fatalf("answer after the end: %v", err)
 		}
 	}
