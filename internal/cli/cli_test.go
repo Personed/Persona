@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,17 +38,21 @@ func TestRun(t *testing.T) {
 	}
 }
 
-func TestServe(t *testing.T) {
+// startServe runs serve with args and returns its URL; the server stops when the test ends.
+func startServe(t *testing.T, args ...string) string {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	reader, writer := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, []string{"--port", "0", "--contract", filepath.Join("..", "..", "contracts", "api"), "--static", t.TempDir()}, writer)
+		done <- serve(ctx, append([]string{"--port", "0", "--contract", filepath.Join("..", "..", "contracts", "api")}, args...), writer)
 	}()
 	lines := make(chan string, 1)
 	go func() {
-		line, _ := bufio.NewReader(reader).ReadString('\n')
+		r := bufio.NewReader(reader)
+		line, _ := r.ReadString('\n')
 		lines <- line
+		_, _ = io.Copy(io.Discard, r)
 	}()
 	var line string
 	select {
@@ -55,23 +60,58 @@ func TestServe(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not start")
 	}
-	url := strings.TrimSpace(strings.TrimPrefix(line, "persona: listening on "))
-	resp, err := http.Get(url + "/health")
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("serve did not stop")
+		}
+	})
+	return strings.TrimSpace(strings.TrimPrefix(line, "persona: listening on "))
+}
+
+func get(t *testing.T, url string) (int, string) {
+	t.Helper()
+	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || string(body) != `{"ok":true}` {
-		t.Errorf("health: %d %s", resp.StatusCode, body)
+	return resp.StatusCode, string(body)
+}
+
+func TestServe(t *testing.T) {
+	web := t.TempDir()
+	if err := os.WriteFile(filepath.Join(web, "index.html"), []byte("<p>Persona</p>"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("serve did not stop")
+	url := startServe(t, "--static", web)
+	if code, body := get(t, url+"/health"); code != http.StatusOK || body != `{"ok":true}` {
+		t.Errorf("health: %d %s", code, body)
+	}
+	if code, body := get(t, url+"/"); code != http.StatusOK || body != "<p>Persona</p>" {
+		t.Errorf("web: %d %s", code, body)
+	}
+}
+
+func TestServeHeadless(t *testing.T) {
+	web := t.TempDir()
+	if err := os.WriteFile(filepath.Join(web, "index.html"), []byte("<p>Persona</p>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	url := startServe(t, "--headless", "--static", web)
+	if code, body := get(t, url+"/health"); code != http.StatusOK || body != `{"ok":true}` {
+		t.Errorf("health: %d %s", code, body)
+	}
+	if code, _ := get(t, url+"/"); code != http.StatusNotFound {
+		t.Errorf("headless served the web UI: %d", code)
+	}
+	if code, _ := get(t, url+"/rpc/bots/list"); code == http.StatusNotFound {
+		t.Errorf("headless did not serve the API: %d", code)
 	}
 }
