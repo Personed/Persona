@@ -81,7 +81,9 @@ func runMigrate(ctx context.Context, args []string, stdout io.Writer) error {
 		dataDir = "data"
 	}
 	flags.StringVar(&dataDir, "data-dir", dataDir, "data directory holding "+migrate.SourceName+" (default $PERSONA_DATA_DIR or ./data)")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
+		return nil
+	} else if err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
