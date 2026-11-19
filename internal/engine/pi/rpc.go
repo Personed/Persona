@@ -40,6 +40,11 @@ type response struct {
 	Error   string          `json:"error"`
 }
 
+type write struct {
+	line []byte
+	done chan error
+}
+
 type pending struct {
 	command string
 	done    chan response
@@ -48,8 +53,8 @@ type pending struct {
 // Client speaks Pi's RPC protocol over a pair of streams. Requests are correlated
 // by id, so several may be outstanding. Methods are safe for concurrent use.
 type Client struct {
-	writeMu sync.Mutex
-	w       io.Writer
+	w      io.Writer
+	writes chan write
 
 	mu      sync.Mutex
 	seq     uint64
@@ -65,12 +70,14 @@ type Client struct {
 func NewClient(r io.Reader, w io.Writer) *Client {
 	c := &Client{
 		w:       w,
+		writes:  make(chan write),
 		pending: map[string]pending{},
 		done:    make(chan struct{}),
 		queue:   make(chan Frame),
 		events:  make(chan Frame),
 	}
 	go c.forward()
+	go c.write()
 	go c.read(r)
 	return c
 }
@@ -102,6 +109,9 @@ func (c *Client) Request(ctx context.Context, command string, params any) (json.
 		if err := json.Unmarshal(encoded, &fields); err != nil {
 			return nil, fmt.Errorf("pi: %s params must be an object: %w", command, err)
 		}
+		if fields == nil {
+			fields = map[string]json.RawMessage{}
+		}
 	}
 	c.mu.Lock()
 	if c.err != nil {
@@ -117,38 +127,76 @@ func (c *Client) Request(ctx context.Context, command string, params any) (json.
 
 	fields["id"], _ = json.Marshal(id)
 	fields["type"], _ = json.Marshal(command)
-	if err := c.Send(fields); err != nil {
-		return nil, fmt.Errorf("pi: %s: %w", command, err)
+	var res response
+	if err := c.send(ctx, fields); err != nil {
+		// The write may have landed and been answered just before the connection ended.
+		select {
+		case res = <-call.done:
+			return res.result(command)
+		default:
+			return nil, fmt.Errorf("pi: %s: %w", command, err)
+		}
 	}
 	select {
-	case res := <-call.done:
-		if !res.Success {
-			return nil, &RequestError{Command: command, Message: res.Error}
-		}
-		return res.Data, nil
+	case res = <-call.done:
 	case <-c.done:
-		return nil, fmt.Errorf("pi: %s: %w", command, c.Err())
+		// A response read just before the connection ended still counts.
+		select {
+		case res = <-call.done:
+		default:
+			return nil, fmt.Errorf("pi: %s: %w", command, c.Err())
+		}
 	case <-ctx.Done():
 		return nil, fmt.Errorf("pi: %s: %w", command, ctx.Err())
 	}
+	return res.result(command)
+}
+
+func (r response) result(command string) (json.RawMessage, error) {
+	if !r.Success {
+		return nil, &RequestError{Command: command, Message: r.Error}
+	}
+	return r.Data, nil
 }
 
 // Send writes one record, such as an extension_ui_response, without waiting for a reply.
-func (c *Client) Send(record any) error {
+func (c *Client) Send(ctx context.Context, record any) error { return c.send(ctx, record) }
+
+// send hands the record to the writer goroutine, so a stalled stdin never holds
+// a caller past its context or the end of the connection.
+func (c *Client) send(ctx context.Context, record any) error {
 	line, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
-	line = append(line, '\n')
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	w := write{line: append(line, '\n'), done: make(chan error, 1)}
 	select {
+	case c.writes <- w:
 	case <-c.done:
 		return c.Err()
-	default:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	_, err = c.w.Write(line)
-	return err
+	select {
+	case err := <-w.done:
+		return err
+	case <-c.done:
+		return c.Err()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *Client) write() {
+	for {
+		select {
+		case w := <-c.writes:
+			_, err := c.w.Write(w.line)
+			w.done <- err
+		case <-c.done:
+			return
+		}
+	}
 }
 
 func (c *Client) forget(id string) {
