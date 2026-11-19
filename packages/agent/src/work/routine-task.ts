@@ -22,7 +22,7 @@ export type RoutineDispatch = (
   context: Context,
 ) => ReturnType<Engines["submit"]>;
 
-export type RoutineTaskInput = {
+type RoutineTaskInput = {
   id: string;
   botId: number;
   revision: number;
