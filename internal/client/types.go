@@ -151,6 +151,9 @@ func (v *ChatView) Apply(c Change) error {
 			return err
 		}
 		v.Messages = messages
+		if string(c.State["error"]) == "null" {
+			v.Error = ""
+		}
 	}
 	removed := make(map[string]bool, len(c.Removed))
 	for _, id := range c.Removed {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 )
 
@@ -180,6 +181,10 @@ func (s *Stream) Next(v any) error {
 			}
 			if v == nil {
 				return nil
+			}
+			// Reset v so a reused destination does not share slices with earlier events.
+			if target := reflect.ValueOf(v); target.Kind() == reflect.Pointer && !target.IsNil() {
+				target.Elem().SetZero()
 			}
 			return json.Unmarshal(envelope.JSON, v)
 		case "done":

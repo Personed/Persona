@@ -143,6 +143,42 @@ func TestApplyUpdate(t *testing.T) {
 	}
 }
 
+func TestNextReusedDestination(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message\ndata: {\"json\":{\"type\":\"update\",\"messages\":[{\"id\":\"a\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"first\"}]}]}}\n\nevent: message\ndata: {\"json\":{\"type\":\"update\",\"messages\":[{\"id\":\"b\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]}]}}\n\n")
+	}))
+	defer server.Close()
+	stream, err := (&Client{BaseURL: server.URL}).Subscribe(context.Background(), "changes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var view ChatView
+	var change Change
+	for range 2 {
+		if err := stream.Next(&change); err != nil {
+			t.Fatal(err)
+		}
+		if err := view.Apply(change); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(view.Messages) != 2 || view.Messages[0].Text() != "first" || view.Messages[1].Text() != "second" {
+		t.Fatalf("messages = %+v", view.Messages)
+	}
+}
+
+func TestApplyClearsError(t *testing.T) {
+	view := ChatView{Error: "connection failed", Failed: true}
+	if err := view.Apply(Change{Type: "update", State: map[string]json.RawMessage{"error": json.RawMessage("null"), "failed": json.RawMessage("false")}}); err != nil {
+		t.Fatal(err)
+	}
+	if view.Error != "" || view.Failed {
+		t.Fatalf("view = %+v", view)
+	}
+}
+
 func TestPairing(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /hosting/info", func(w http.ResponseWriter, _ *http.Request) {
