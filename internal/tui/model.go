@@ -53,6 +53,7 @@ type chat struct {
 	retryID   string
 	older     bool
 	answer    *answer
+	picker    *picker
 }
 
 type botsMsg struct {
@@ -211,6 +212,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case answeredMsg:
 		return m.answered(msg), nil
+	case engineMsg:
+		return m.showPicker(msg), nil
 	case workStreamMsg, workMsg, routineMsg:
 		return m.updateWork(msg)
 	case doneMsg:
@@ -356,6 +359,9 @@ func (m *Model) closeChat() {
 
 func (m Model) chatKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	c := m.chat
+	if c.picker != nil {
+		return m.pickerKey(msg)
+	}
 	if c.answer != nil {
 		switch {
 		case !c.answer.typing && msg.String() != "esc" && msg.String() != "ctrl+x":
@@ -371,6 +377,8 @@ func (m Model) chatKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch msg.String() {
+	case "ctrl+l":
+		return m, m.openPicker()
 	case "ctrl+o":
 		c.cancel()
 		m.chat = nil
@@ -413,7 +421,10 @@ func (m *Model) layout() {
 	m.chat.input.SetHeight(inputHeight)
 	m.chat.viewport.SetWidth(m.width)
 	card := 0
-	if m.chat.answer != nil {
+	switch {
+	case m.chat.picker != nil:
+		card = lipgloss.Height(m.pickerView())
+	case m.chat.answer != nil:
 		card = lipgloss.Height(m.answerView())
 	}
 	m.chat.viewport.SetHeight(max(m.height-inputHeight-3-card, 1))
@@ -493,12 +504,16 @@ func (m Model) chatView() string {
 	case c.view.Busy:
 		header += " · working"
 	}
-	help := "enter send · ctrl+j newline · pgup/pgdn scroll · ctrl+o Work · esc Bots · ctrl+c quit"
+	help := "enter send · ctrl+j newline · pgup/pgdn scroll · ctrl+l model · ctrl+o Work · esc Bots"
 	if c.view.Busy {
 		help = "ctrl+x stop · " + help
 	}
 	card := ""
-	if c.answer != nil {
+	switch {
+	case c.picker != nil:
+		card = m.pickerView()
+		help = "↑/↓ model · ←/→ effort · enter save · esc cancel"
+	case c.answer != nil:
 		card = m.answerView()
 		help = m.answerHelp() + "esc Bots"
 	}
