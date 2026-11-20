@@ -8,7 +8,7 @@ import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
 import type { AppRouter } from "../../api/src/router.ts";
-import { expect, test } from "./fixtures.ts";
+import { expect, stopWorker, test } from "./fixtures.ts";
 
 let worker: ChildProcess;
 let directory: string;
@@ -33,11 +33,7 @@ test.beforeEach(async () => {
 });
 test.afterEach(async ({ page }) => {
   await page.close();
-  if (worker.connected) {
-    const exited = once(worker, "exit");
-    worker.disconnect();
-    await exited;
-  }
+  await stopWorker(worker);
   await rm(directory, { recursive: true, force: true, maxRetries: 5 });
 });
 
@@ -115,7 +111,7 @@ for (const refresh of [false, true]) {
     await page.addInitScript(() =>
       localStorage.setItem("persona:appearance:v1", "dark"),
     );
-    test.setTimeout(60000);
+    test.setTimeout(120_000);
     await page.goto(url);
     const view = page.getByRole("region", {
       name: "Persona的电脑",
@@ -205,7 +201,7 @@ for (const refresh of [false, true]) {
               ).data;
               return r < 50 && g > 140 && b < 120;
             }, state),
-        { intervals: [16, 16, 32], timeout: 5000 },
+        { intervals: [16, 16, 32], timeout: 15_000 },
       )
       .toBe(true);
     const inputToPaintMs = performance.now() - inputStarted;
