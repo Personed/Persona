@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"golang.org/x/crypto/ssh"
 
 	"github.com/Personed/Persona/internal/computer"
@@ -27,6 +29,12 @@ func TestMain(m *testing.M) {
 		switch os.Args[1] {
 		case "worker":
 			if err := Main(context.Background(), os.Args[2:], os.Stdin, os.Stdout, os.Stderr); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		case "mcp-stdio":
+			if err := testMCPServer().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}

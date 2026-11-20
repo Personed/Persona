@@ -49,6 +49,8 @@ type Error struct {
 	Path    string `json:"path,omitempty"`
 	// Lost marks a request failed because the connection ended.
 	Lost bool `json:"lost,omitempty"`
+	// MCPCode is the JSON-RPC error code of an MCP_PROTOCOL error.
+	MCPCode int64 `json:"mcpCode,omitempty"`
 }
 
 func (e *Error) Error() string {
