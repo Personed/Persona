@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 
 	"github.com/Personed/Persona/internal/controller"
 	"github.com/Personed/Persona/internal/tui"
+	"github.com/Personed/Persona/internal/worker"
 )
 
 // ErrNotImplemented is returned by subcommands that later migration phases fill in.
@@ -32,7 +34,7 @@ var Commands = []Command{
 	{Name: "serve", Summary: "Run the HTTP/RPC service and web UI.", Run: pending},
 	{Name: "tui", Summary: "Open the terminal UI against a local or remote service.", Run: tui.Run},
 	{Name: "chat", Summary: "Send one message to a Bot and stream the reply.", Run: pending},
-	{Name: "worker", Summary: "Run the work-computer process for a Bot.", Run: pending},
+	{Name: "worker", Summary: "Run the work-computer process for a Bot.", Run: runWorker},
 	{Name: "controller", Summary: "Run the authenticated control service for remote sandboxes.", Run: controller.Run},
 	{Name: "migrate", Summary: "Import an existing pi-durable database.", Run: pending},
 	{Name: "version", Summary: "Print the build version.", Run: func(_ context.Context, _ []string, stdout io.Writer) error {
@@ -69,4 +71,9 @@ func usage(w io.Writer) {
 	for _, command := range Commands {
 		fmt.Fprintf(w, "  %-11s %s\n", command.Name, command.Summary)
 	}
+}
+
+func runWorker(ctx context.Context, args []string, stdout io.Writer) error {
+	worker.Version = Version
+	return worker.Main(ctx, args, os.Stdin, stdout, os.Stderr)
 }
