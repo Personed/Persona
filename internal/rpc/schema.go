@@ -687,3 +687,6 @@ func sameJSON(a, b any) bool {
 	right, err := json.Marshal(b)
 	return err == nil && string(left) == string(right)
 }
+
+// Trim removes leading and trailing whitespace as String.prototype.trim does.
+func Trim(s string) string { return strings.Trim(s, ecmaSpace) }
