@@ -141,7 +141,9 @@ type run struct {
 // Service reads and writes routines through a store.Store.
 type Service struct {
 	// RunNow starts a test run and returns its task. The routine runner sets it
-	// before the service is used; nil refuses run_now.
+	// before the service is used; nil refuses run_now. A redelivered call repeats
+	// its requestID, so RunNow must record the task it starts durably and return
+	// that task, without starting another, when a Bot repeats a requestID.
 	RunNow func(ctx context.Context, routine Routine, requestID string) (store.TaskID, error)
 
 	store store.Store
@@ -212,7 +214,7 @@ func (s *Service) List(ctx context.Context, botID int64) (Listing, error) {
 	now := s.now()
 	listing := Listing{
 		Now:      now.UTC().Format("2006-01-02T15:04:05.000Z"),
-		TimeZone: hostTimeZone(now),
+		TimeZone: hostTimeZone(),
 		Items:    []Routine{},
 		Runs:     []json.RawMessage{},
 	}

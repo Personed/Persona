@@ -90,9 +90,10 @@ func (s Schedule) Next(after time.Time) (*time.Time, error) {
 }
 
 // hostTimeZone names the service computer's zone for routine_list. Go exposes the
-// local zone only as "Local", so the name comes from TZ or the /etc/localtime link;
-// a host that gives neither reports its current UTC offset.
-func hostTimeZone(now time.Time) string {
+// local zone only as "Local", so the name comes from TZ or the /etc/localtime link.
+// A host that gives neither (Windows) reports UTC, the zone of the listed time, so
+// the name is always one a schedule accepts.
+func hostTimeZone() string {
 	if name := os.Getenv("TZ"); timeZonePattern.MatchString(name) {
 		if _, err := time.LoadLocation(name); err == nil {
 			return name
@@ -100,11 +101,10 @@ func hostTimeZone(now time.Time) string {
 	}
 	if target, err := os.Readlink("/etc/localtime"); err == nil {
 		if _, name, found := strings.Cut(target, "zoneinfo/"); found && timeZonePattern.MatchString(name) {
-			return name
+			if _, err := time.LoadLocation(name); err == nil {
+				return name
+			}
 		}
-	}
-	if _, offset := now.Zone(); offset != 0 {
-		return "UTC" + now.Format("-07:00")
 	}
 	return "UTC"
 }

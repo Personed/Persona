@@ -245,8 +245,12 @@ func TestTools(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.Content[0].Text), &listing); err != nil {
 		t.Fatal(err)
 	}
-	if listing.Now != "2026-01-05T00:00:00.000Z" || listing.TimeZone == "" || len(listing.Items) != 1 || listing.Runs == nil {
+	if listing.Now != "2026-01-05T00:00:00.000Z" || len(listing.Items) != 1 || listing.Runs == nil {
 		t.Fatalf("listing = %+v", listing)
+	}
+	listed := routines.Schedule{Type: routines.Cron, Expression: "0 9 * * *", TimeZone: listing.TimeZone}
+	if err := listed.Validate(start); err != nil {
+		t.Fatalf("listed time zone %q is not schedulable: %v", listing.TimeZone, err)
 	}
 
 	if result, err := call("routine_manage", "c3", `{"action":"pause","id":"`+created.ID+`"}`, approve); err != nil || !result.IsError {
