@@ -11,7 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -65,6 +68,10 @@ type DockerConfig struct {
 // ParseDockerConfig decodes a docker computer, applies the schema defaults and
 // rejects unknown fields and invalid values.
 func ParseDockerConfig(data []byte) (DockerConfig, error) {
+	data, err := normalizeJSON(data, "memoryMiB", "pids", "timeoutSeconds", "ssh.port")
+	if err != nil {
+		return DockerConfig{}, fmt.Errorf("controller: invalid docker computer: %w", err)
+	}
 	config := DockerConfig{Network: NetworkNone, CPUs: 2, MemoryMiB: 1024, Pids: 256, TimeoutSeconds: 120}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -72,6 +79,58 @@ func ParseDockerConfig(data []byte) (DockerConfig, error) {
 		return DockerConfig{}, fmt.Errorf("controller: invalid docker computer: %w", err)
 	}
 	return config, config.Validate()
+}
+
+// normalizeJSON gives JSON the meaning JSON.parse and zod give it: one complete
+// value, no null fields (optional fields must be absent), and integer fields
+// written in any notation of an integer, such as 1024.0 or 2.56e2.
+func normalizeJSON(data []byte, integers ...string) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value map[string]any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, errors.New("content after the JSON object")
+	}
+	if value == nil {
+		return nil, errors.New("expected an object")
+	}
+	if err := rejectNulls(value, ""); err != nil {
+		return nil, err
+	}
+	for _, path := range integers {
+		object, key := value, path
+		if parent, child, nested := strings.Cut(path, "."); nested {
+			object, _ = value[parent].(map[string]any)
+			key = child
+		}
+		number, ok := object[key].(json.Number)
+		if !ok {
+			continue
+		}
+		float, err := strconv.ParseFloat(number.String(), 64)
+		if err != nil || float != math.Trunc(float) || math.Abs(float) >= 1<<53 {
+			return nil, fmt.Errorf("%s must be an integer", path)
+		}
+		object[key] = int64(float)
+	}
+	return json.Marshal(value)
+}
+
+func rejectNulls(value map[string]any, prefix string) error {
+	for key, field := range value {
+		switch field := field.(type) {
+		case nil:
+			return fmt.Errorf("%s%s must not be null", prefix, key)
+		case map[string]any:
+			if err := rejectNulls(field, prefix+key+"."); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Validate checks the values the TypeScript schema checks.
