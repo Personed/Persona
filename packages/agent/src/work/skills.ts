@@ -14,7 +14,7 @@ import { SKILL_FILE_BYTES } from "./limits.ts";
 import { SkillPackages, skillPackage } from "./skill-package.ts";
 import { requireRevision, toolResult, WorkError } from "./state.ts";
 
-export type Skill = {
+type Skill = {
   id: string;
   name: string;
   description: string;
@@ -26,7 +26,7 @@ export type Skill = {
   hash?: string;
   versions?: { hash: string; version: number }[];
 };
-export type SkillInput = {
+type SkillInput = {
   id: string;
   content: string;
   revision: number;
@@ -41,7 +41,7 @@ export const SkillsDoc = defineDoc<{ items: Skill[] }>({
   initial: () => ({ items: [] }),
 });
 
-export async function saveSkill(
+async function saveSkill(
   tx: Tx,
   input: SkillInput,
   source: string,

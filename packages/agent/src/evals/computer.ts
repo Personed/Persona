@@ -34,7 +34,6 @@ export const computerTrace = z
       ),
     "Calls must fit inside the task interval",
   );
-export type ComputerTrace = z.infer<typeof computerTrace>;
 
 export function evaluateComputer(input: unknown) {
   const trace = computerTrace.parse(input);

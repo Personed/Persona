@@ -40,18 +40,24 @@ func ExecRunner(ctx context.Context, args []string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// limitedBuffer only implements io.Writer, so io.Copy cannot bypass the limit
+// through bytes.Buffer.ReadFrom.
 type limitedBuffer struct {
-	bytes.Buffer
+	buf      bytes.Buffer
 	overflow bool
 }
 
+const outputLimit = 1 << 20
+
 func (b *limitedBuffer) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > 1<<20 {
+	if b.buf.Len()+len(p) > outputLimit {
 		b.overflow = true
 		return 0, errors.New("output limit")
 	}
-	return b.Buffer.Write(p)
+	return b.buf.Write(p)
 }
+
+func (b *limitedBuffer) String() string { return b.buf.String() }
 
 // program finds Docker Desktop's CLI on Windows, where its directory is often not
 // on PATH for services.
