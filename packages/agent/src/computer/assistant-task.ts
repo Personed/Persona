@@ -40,7 +40,7 @@ export const roleClass = (role: string, platform?: string) => {
   );
 };
 
-export function permitted(input: AssistInput, label: string) {
+function permitted(input: AssistInput, label: string) {
   const risks = {
     destructive:
       /\b(delete|remove|erase|trash|discard|clear all|format|reset)\b|删除|清空|丢弃/i,

@@ -31,7 +31,7 @@ export type MemoryEntry = {
   userAuthored?: boolean;
   requestId: string;
 };
-export type MemoryInput = {
+type MemoryInput = {
   id: string;
   text: string;
   category?: "profile" | "work";
@@ -89,7 +89,7 @@ function memoryLine(entry: MemoryEntry) {
   return `${JSON.stringify({ id: entry.id, scope: entry.botId === null ? "shared" : "bot", revision: entry.revision, text: entry.text })}\n`;
 }
 
-export function visibleMemory(items: readonly MemoryEntry[], botId: number) {
+function visibleMemory(items: readonly MemoryEntry[], botId: number) {
   return items.filter((entry) => entry.botId === null || entry.botId === botId);
 }
 
