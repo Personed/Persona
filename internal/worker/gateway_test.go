@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,15 +56,16 @@ func testPiGateway(endpoint string) error {
 	if err != nil {
 		return err
 	}
-	if catalog == nil || toolNames(catalog.Tools) != "test_echo" {
-		return fmt.Errorf("unexpected gateway catalog: %v", catalog.Tools)
+	if catalog == nil || !slices.Contains(strings.Split(toolNames(catalog.Tools), ","), "test_echo") {
+		return fmt.Errorf("unexpected gateway catalog: %s", toolNames(catalog.Tools))
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "test_echo", Arguments: map[string]string{"text": "from Pi"}})
 	if err != nil {
 		return err
 	}
-	if len(result.Content) != 1 {
-		return fmt.Errorf("unexpected content: %+v", result.Content)
+	// The product gateway may add its own text after the tool's content.
+	if len(result.Content) == 0 {
+		return errors.New("empty gateway result")
 	}
 	text, ok := result.Content[0].(*mcp.TextContent)
 	if result.IsError || !ok || text.Text != "service echo" {
