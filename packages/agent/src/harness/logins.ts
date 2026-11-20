@@ -18,7 +18,7 @@ export type EngineLoginInput = {
   method?: number;
   inputs?: Record<string, string>;
 };
-export type EngineLoginState = {
+type EngineLoginState = {
   state: "waiting" | "done" | "failed";
   url: string | null;
   code: string | null;

@@ -18,8 +18,8 @@
     "eval:computer": "node apps/cli/src/eval-computer.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check apps packages package.json persona.config.json tsconfig.json biome.json vitest.config.ts playwright.config.ts",
-    "contract:export": "node apps/api/contract/export.ts",
-    "contract:check": "node apps/api/contract/export.ts --check"
+    "contract:export": "node apps/api/contract/export.ts && node apps/api/contract/zod-issues.ts",
+    "contract:check": "node apps/api/contract/export.ts --check && node apps/api/contract/zod-issues.ts --check"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.7",
