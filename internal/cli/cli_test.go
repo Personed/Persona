@@ -22,7 +22,7 @@ func TestRun(t *testing.T) {
 		{args: nil, code: 2, stdout: "Usage: persona"},
 		{args: []string{"help"}, code: 0, stdout: "migrate"},
 		{args: []string{"version"}, code: 0, stdout: "dev"},
-		{args: []string{"tui"}, code: 1, stderr: "persona tui: not implemented"},
+		{args: []string{"migrate"}, code: 1, stderr: "persona migrate: not implemented"},
 		{args: []string{"serve", "--contract", "missing"}, code: 1, stderr: "persona serve: open missing"},
 		{args: []string{"unknown"}, code: 2, stderr: `unknown command "unknown"`},
 	}
