@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
@@ -19,7 +20,7 @@ import (
 var Version = "dev"
 
 // Features lists operations added after the first release of protocol 1.
-var Features = []string{"listFiles", "process"}
+var Features = []string{"listFiles", "process", "launch"}
 
 const (
 	pingInterval = 5 * time.Second
@@ -182,7 +183,7 @@ func (s *server) dispatch(ctx context.Context, f frame) {
 	}
 	requestCtx, cancel := context.WithCancel(ctx)
 	r := &request{cancel: cancel, kill: make(chan struct{})}
-	if op.Op == "process" {
+	if op.Op == "process" || op.Op == "launch" {
 		r.input = make(chan []byte, 256)
 	}
 	s.mu.Lock()
@@ -324,6 +325,20 @@ func (s *server) handle(ctx context.Context, r *request, f frame, op string) (an
 		}
 		code, err := s.exec(ctx, r, f.ID, request)
 		return map[string]int{"exitCode": code}, nil, err
+	case "resolve":
+		request, err := decode[resolveRequest](f.JSON)
+		if err != nil {
+			return nil, nil, err
+		}
+		path, err := ResolveProgram(ctx, request.Command, AccountEnvironment(os.Environ(), request.RuntimeHome, request.Env))
+		return map[string]string{"path": path}, nil, err
+	case "launch":
+		request, err := decode[launchRequest](f.JSON)
+		if err != nil {
+			return nil, nil, err
+		}
+		code, err := s.launch(ctx, r, f.ID, request)
+		return map[string]int{"exitCode": code}, nil, err
 	case "process":
 		request, err := decode[execRequest](f.JSON)
 		if err != nil {
@@ -370,6 +385,10 @@ func (s *server) process(ctx context.Context, r *request, id uint32, request exe
 	if err != nil {
 		return 0, err
 	}
+	return s.pipe(ctx, r, id, cmd)
+}
+
+func (s *server) pipe(ctx context.Context, r *request, id uint32, cmd *exec.Cmd) (int, error) {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return 0, err
