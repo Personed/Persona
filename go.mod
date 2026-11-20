@@ -3,6 +3,7 @@ module github.com/Personed/Persona
 go 1.27
 
 require (
+	github.com/jmespath/go-jmespath v0.4.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/crypto v0.59.0
 	golang.org/x/oauth2 v0.38.0
