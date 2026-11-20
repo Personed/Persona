@@ -36,8 +36,9 @@ type SQLite struct {
 	db    *sql.DB
 	lease *sql.DB
 
-	writer sync.Mutex
-	closed bool
+	writer  sync.Mutex
+	closed  bool
+	watched bool
 
 	watchMu sync.Mutex
 	seq     Seq
@@ -253,6 +254,7 @@ func (s *SQLite) Watch(ctx context.Context) (<-chan Seq, error) {
 	default:
 	}
 	out := make(chan Seq)
+	s.watched = true
 	go s.watch(ctx, out, s.seq)
 	return out, nil
 }
