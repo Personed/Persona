@@ -30,7 +30,7 @@ func pending(context.Context, []string, io.Writer) error { return ErrNotImplemen
 
 // Commands lists the subcommands in help order.
 var Commands = []Command{
-	{Name: "serve", Summary: "Run the HTTP/RPC service and web UI.", Run: pending},
+	{Name: "serve", Summary: "Run the HTTP/RPC service and web UI.", Run: serve},
 	{Name: "tui", Summary: "Open the terminal UI against a local or remote service.", Run: pending},
 	{Name: "chat", Summary: "Send one message to a Bot and stream the reply.", Run: pending},
 	{Name: "worker", Summary: "Run the work-computer process for a Bot.", Run: runWorker},
