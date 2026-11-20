@@ -17,6 +17,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/Personed/Persona/internal/computer"
 )
 
 // MaxFileBytes bounds one delivered file.
@@ -140,8 +142,8 @@ func replace(directory, name string, data []byte) error {
 var windowsDrive = regexp.MustCompile(`^[A-Za-z]:/`)
 
 // resolve maps a tool path to an absolute path on the work computer and to its
-// slash-separated path inside the workspace. It is lexical: the Target owns link
-// and permission checks.
+// slash-separated path inside the workspace. It is lexical: Publish checks links
+// and the Target owns permission checks.
 func resolve(goos, dir, input string) (absolute, relative string, err error) {
 	equal := func(a, b string) bool { return a == b }
 	if goos == "windows" {
@@ -167,6 +169,42 @@ func resolve(goos, dir, input string) (absolute, relative string, err error) {
 	return absolute, relative, nil
 }
 
+// stat describes a workspace file. It refuses a path that passes through a symbolic
+// link and a file with more than one hard link, because both can name content
+// outside the workspace. The TypeScript workspace applies the same rule.
+func stat(ctx context.Context, target computer.Target, absolute, relative string) (computer.FileInfo, error) {
+	root := absolute[:len(absolute)-len(relative)]
+	paths := []string{root}
+	// A filesystem or drive root keeps its slash.
+	if directory := strings.TrimSuffix(root, "/"); directory != "" && !strings.HasSuffix(directory, ":") {
+		paths[0] = directory
+	}
+	for i, character := range relative {
+		if character == '/' {
+			paths = append(paths, root+relative[:i])
+		}
+	}
+	var info computer.FileInfo
+	for _, current := range append(paths, absolute) {
+		var err error
+		info, err = target.Stat(ctx, current)
+		if errors.Is(err, fs.ErrNotExist) {
+			return info, &Error{"File not found: " + relative}
+		}
+		if err != nil {
+			return info, err
+		}
+		// Without a link count the Target has not said whether the path is linked.
+		if info.Links == 0 {
+			return info, &Error{"The work computer did not report link information for this path"}
+		}
+		if info.Symlink || (!info.Dir && info.Links > 1) {
+			return info, &Error{"Linked paths are outside the workspace capability"}
+		}
+	}
+	return info, nil
+}
+
 // Publish snapshots a workspace file from the Bot's work computer.
 func (s *Service) Publish(ctx context.Context, botID int64, name string) (Attachment, error) {
 	workspace, err := s.options.Workspace(ctx, botID)
@@ -181,10 +219,7 @@ func (s *Service) Publish(ctx context.Context, botID int64, name string) (Attach
 	if err != nil {
 		return Attachment{}, err
 	}
-	info, err := workspace.Target.Stat(ctx, absolute)
-	if errors.Is(err, fs.ErrNotExist) {
-		return Attachment{}, &Error{"File not found: " + relative}
-	}
+	info, err := stat(ctx, workspace.Target, absolute, relative)
 	if err != nil {
 		return Attachment{}, err
 	}
