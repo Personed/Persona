@@ -111,7 +111,7 @@ func TestGatewayServesMemoryTools(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names = append(names, tool.Name)
 	}
-	if strings.Join(names, ",") != "memory_delete,memory_list,memory_save,memory_search,write_file" {
+	if strings.Join(names, ",") != "memory_delete,memory_list,memory_save,memory_search,query_result,write_file" {
 		t.Fatalf("tools = %v", names)
 	}
 	for _, tool := range listed.Tools {
