@@ -3,6 +3,7 @@ module github.com/Personed/Persona
 go 1.27
 
 require (
+	filippo.io/age v1.3.2
 	github.com/jmespath/go-jmespath v0.4.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/crypto v0.59.0
@@ -10,6 +11,7 @@ require (
 )
 
 require (
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
