@@ -82,16 +82,25 @@ const (
 )
 
 // Task is one durable unit of work with a checkpoint and, once settled, an outcome.
+// Trace and Links are opaque telemetry carriers. StartedAt and EndedAt are Unix ms.
 type Task struct {
-	ID             TaskID                     `json:"id"`
-	ConversationID ConversationID             `json:"conversationId"`
-	Kind           string                     `json:"kind"`
-	Version        int                        `json:"version"`
-	Input          json.RawMessage            `json:"input"`
-	Background     bool                       `json:"background"`
-	AbortRequested bool                       `json:"abortRequested"`
-	State          TaskState                  `json:"state"`
-	Memos          map[string]json.RawMessage `json:"memos,omitempty"`
+	Trace            json.RawMessage            `json:"trace,omitempty"`
+	Links            json.RawMessage            `json:"links,omitempty"`
+	ID               TaskID                     `json:"id"`
+	ConversationID   ConversationID             `json:"conversationId"`
+	Kind             string                     `json:"kind"`
+	Version          int                        `json:"version"`
+	Input            json.RawMessage            `json:"input"`
+	Owner            *TaskID                    `json:"owner,omitempty"`
+	Background       bool                       `json:"background"`
+	AbortRequested   bool                       `json:"abortRequested"`
+	AbortReason      string                     `json:"abortReason,omitempty"` // "restart"
+	AbandonOnRestart bool                       `json:"abandonOnRestart,omitempty"`
+	StartedAt        *int64                     `json:"startedAt,omitempty"`
+	EndedAt          *int64                     `json:"endedAt,omitempty"`
+	Restarts         *int                       `json:"restarts,omitempty"`
+	State            TaskState                  `json:"state"`
+	Memos            map[string]json.RawMessage `json:"memos,omitempty"`
 }
 
 // TaskState holds the fields used by Status: Checkpoint while live, On/Policy while
@@ -105,11 +114,13 @@ type TaskState struct {
 	Outcome    *TaskOutcome    `json:"outcome,omitempty"`
 }
 
-// TaskOutcome is "completed" with a Result or "failed"/"aborted" with an Error.
+// TaskOutcome is "completed" with a Result, "failed" or "faulted" with an Error, or
+// "aborted" or "orphaned" with a Reason. Failed and aborted outcomes may keep a Result.
 type TaskOutcome struct {
 	Status string          `json:"status"`
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  *OutcomeError   `json:"error,omitempty"`
+	Reason string          `json:"reason,omitempty"`
 }
 
 // OutcomeError describes a failed task.
@@ -131,6 +142,7 @@ const (
 
 // Submission is one admitted input. RequestID deduplicates retries within a conversation.
 type Submission struct {
+	Trace          json.RawMessage  `json:"trace,omitempty"`
 	ID             SubmissionID     `json:"id"`
 	ConversationID ConversationID   `json:"conversationId"`
 	RequestID      string           `json:"requestId,omitempty"`

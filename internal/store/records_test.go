@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 )
@@ -165,5 +166,47 @@ func TestChordDeltaPreservesUTF16AcrossCommits(t *testing.T) {
 	got, err = s.Document(t.Context(), doc.ID, Current)
 	if err != nil || string(got.Value) != `{"\ud800":"key!","joined":"🙂","split":"\ude42🙂"}` {
 		t.Fatalf("second revision = %s, %v", got.Value, err)
+	}
+}
+
+func TestPiDurableRecordsRoundTrip(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := t.Context()
+	const task = `{"trace":{"traceparent":"00-a-b-01"},"links":[{"traceparent":"00-c-d-01"}],"id":3,"conversationId":1,"kind":"persona.turn","version":2,"input":{"text":"hi"},"owner":2,"background":false,"abortRequested":true,"abortReason":"restart","abandonOnRestart":true,"startedAt":0,"endedAt":1795111753000,"restarts":0,"state":{"status":"terminal","outcome":{"status":"aborted","reason":"stopped","result":{"partial":true}}}}`
+	const submission = `{"trace":{"traceparent":"00-e-f-01"},"id":4,"conversationId":1,"requestId":"r1","type":"input","status":"queued"}`
+	var tk Task
+	var sub Submission
+	if err := json.Unmarshal([]byte(task), &tk); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(submission), &sub); err != nil {
+		t.Fatal(err)
+	}
+	mustCommit(t, s, Write{Type: WriteTask, Task: &tk}, Write{Type: WriteSubmission, Submission: &sub})
+	for _, c := range []struct {
+		want string
+		read func() (any, error)
+	}{
+		{task, func() (any, error) { return s.Task(ctx, 3) }},
+		{submission, func() (any, error) { return s.Submission(ctx, 4) }},
+	} {
+		record, err := c.read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want, have any
+		if err := json.Unmarshal([]byte(c.want), &want); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(got, &have); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(want, have) {
+			t.Errorf("round trip lost fields:\n got %s\nwant %s", got, c.want)
+		}
 	}
 }

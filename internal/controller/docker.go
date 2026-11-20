@@ -335,7 +335,7 @@ func (d *Docker) Rebuild(ctx context.Context) error {
 
 // Daemon is the command that runs pi-env inside the container on stdio.
 func (d *Docker) Daemon() ([]string, error) {
-	return d.config.HostCommand(d.exec(SandboxHome, SandboxDaemon)...)
+	return d.channel(d.exec(SandboxHome, SandboxDaemon))
 }
 
 // Process is the command that runs a Bot's worker inside the container on stdio.
@@ -343,7 +343,17 @@ func (d *Docker) Process(botID int) ([]string, error) {
 	if botID <= 0 {
 		return nil, errors.New("controller: invalid bot id")
 	}
-	return d.config.HostCommand(d.exec(SandboxHome+"/bots/"+strconv.Itoa(botID), "node", SandboxWorker)...)
+	return d.channel(d.exec(SandboxHome+"/bots/"+strconv.Itoa(botID), "node", SandboxWorker))
+}
+
+// channel resolves the program like ExecRunner does, so callers can run it directly.
+func (d *Docker) channel(command []string) ([]string, error) {
+	args, err := d.config.HostCommand(command...)
+	if err != nil {
+		return nil, err
+	}
+	args[0] = program(args[0])
+	return args, nil
 }
 
 func (d *Docker) exec(workdir string, command ...string) []string {

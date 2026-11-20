@@ -445,11 +445,11 @@ func TestCommandsOverSSH(t *testing.T) {
 	config := testConfig(NetworkNone)
 	d, _ := newTestDocker(t, config)
 	daemon, err := d.Daemon()
-	if err != nil || strings.Join(daemon, " ") != "docker container exec -i --user 1000:1000 --workdir /home/persona persona-work "+SandboxDaemon {
+	if err != nil || daemon[0] != program("docker") || strings.Join(daemon[1:], " ") != "container exec -i --user 1000:1000 --workdir /home/persona persona-work "+SandboxDaemon {
 		t.Fatalf("Daemon() = %q, %v", daemon, err)
 	}
 	process, err := d.Process(7)
-	if err != nil || strings.Join(process, " ") != "docker container exec -i --user 1000:1000 --workdir /home/persona/bots/7 persona-work node "+SandboxWorker {
+	if err != nil || process[0] != program("docker") || strings.Join(process[1:], " ") != "container exec -i --user 1000:1000 --workdir /home/persona/bots/7 persona-work node "+SandboxWorker {
 		t.Fatalf("Process() = %q, %v", process, err)
 	}
 	if _, err := d.Process(0); err == nil {
