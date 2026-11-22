@@ -169,32 +169,37 @@ func (s *SessionStore) Exchange(code, label string) (string, Device, bool, error
 		return "", Device{}, false, errors.New("server: too many pairing attempts")
 	}
 	hash := digest(code)
-	scope := ""
+	var consumed sessionPairing
 	kept := s.pairings[:0]
 	for _, p := range s.pairings {
 		if p.Hash == hash && p.Expires > now {
-			scope = p.Scope
+			consumed = p
 			continue
 		}
 		kept = append(kept, p)
 	}
 	s.pairings = kept
-	if scope == "" {
+	if consumed.Hash == "" {
 		return "", Device{}, false, nil
 	}
 	token, err := token(32)
 	if err != nil {
+		s.pairings = append(s.pairings, consumed)
 		return "", Device{}, false, err
 	}
 	device := Device{
 		ID:      uuid(),
 		Label:   label,
-		Scope:   scope,
+		Scope:   consumed.Scope,
 		Created: now,
 		Expires: now + sessionDuration.Milliseconds(),
 	}
 	s.devices = append(s.devices, sessionDevice{Device: device, Hash: digest(token)})
 	if err := s.saveLocked(); err != nil {
+		// Roll back: the caller got no token, so neither the device nor the
+		// consumed pairing may survive, or bootstrap sees a phantom admin.
+		s.devices = s.devices[:len(s.devices)-1]
+		s.pairings = append(s.pairings, consumed)
 		return "", Device{}, false, err
 	}
 	return token, device, true, nil
@@ -255,7 +260,13 @@ func (s *SessionStore) logoutLocked(id string) error {
 		t.cancel()
 		delete(s.tracked, id)
 	}
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		// Fail closed: a logout/revocation that cannot persist must not let the
+		// stale file resurrect the token on restart.
+		_ = os.Remove(s.filename())
+		return err
+	}
+	return nil
 }
 
 // Track returns the device's context: it ends when the device logs out or

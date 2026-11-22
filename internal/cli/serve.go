@@ -49,6 +49,13 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		listenHost, listenPort = cfg.Host, cfg.Port
+		// Hold the runtime lease so no second service (or maintenance) shares
+		// the data directory, as apps/api's openHostedRuntime does.
+		release, err := hosting.AcquireDataLease(ctx, cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = release() }()
 		sessions, err := server.NewSessionStore(cfg.DataDir)
 		if err != nil {
 			return err
@@ -83,10 +90,22 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// Managed supervisors have no IPC channel: SIGTERM stops the service on
+	// POSIX, and on Windows (or any piped stdin) closing stdin ends it.
+	run := ctx
+	if info, err := os.Stdin.Stat(); err == nil && info.Mode()&os.ModeCharDevice == 0 {
+		stdinCtx, done := context.WithCancel(ctx)
+		defer done()
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			done()
+		}()
+		run = stdinCtx
+	}
 	httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	stopped := make(chan error, 1)
 	go func() {
-		<-ctx.Done()
+		<-run.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		stopped <- httpServer.Shutdown(shutdown)
