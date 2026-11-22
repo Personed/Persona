@@ -25,13 +25,15 @@ func DefaultEndpoints() []Endpoint {
 	ollama := "http://127.0.0.1:11434"
 	if host := strings.TrimSpace(os.Getenv("OLLAMA_HOST")); host != "" {
 		if !strings.Contains(host, "://") {
-			host = "http://" + host
+			// Bare host: use http on Ollama's default port when none is given.
+			if parsed, err := url.Parse("http://" + host); err == nil && parsed.Port() == "" {
+				parsed.Host = net.JoinHostPort(parsed.Hostname(), "11434")
+				host = parsed.String()
+			} else {
+				host = "http://" + host
+			}
 		}
-		// The Ollama CLI defaults to port 11434 when OLLAMA_HOST omits it.
-		if parsed, err := url.Parse(host); err == nil && parsed.Port() == "" {
-			parsed.Host = net.JoinHostPort(parsed.Hostname(), "11434")
-			host = parsed.String()
-		}
+		// An explicit scheme keeps its own default port (http 80, https 443).
 		ollama = host
 	}
 	return []Endpoint{

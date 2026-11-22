@@ -98,6 +98,10 @@ func TestDefaultEndpointsOllamaHost(t *testing.T) {
 	if got := DefaultEndpoints()[0].BaseURL; got != "http://host.docker.internal:9999" {
 		t.Fatalf("expected explicit port kept, got %s", got)
 	}
+	t.Setenv("OLLAMA_HOST", "https://models.example.com")
+	if got := DefaultEndpoints()[0].BaseURL; got != "https://models.example.com" {
+		t.Fatalf("expected scheme default port, got %s", got)
+	}
 }
 
 func TestSyncProviders(t *testing.T) {
