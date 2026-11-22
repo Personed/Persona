@@ -2331,7 +2331,11 @@ test("latest bubbles stay above the composer after typing, resizing, and reloadi
     // Under CPU throttling Chromium can abort a React view transition whose
     // DOM update stalls; the state still applies and only the animation is
     // skipped, so this pageerror is benign noise.
-    if (error.message.includes("Transition was aborted")) return;
+    if (
+      error.message ===
+      "Transition was aborted because of timeout in DOM update. DOM update timed out"
+    )
+      return;
     errors.push(error.message);
   });
   await page.setViewportSize({ width: 1360, height: 700 });
