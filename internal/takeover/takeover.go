@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 
 	"github.com/Personed/Persona/internal/tools"
@@ -92,27 +93,50 @@ func failure(text string) tools.Result {
 }
 
 func parse(call tools.Call) (Request, error) {
-	var args struct {
-		Service *string `json:"service"`
-		Reason  *string `json:"reason"`
-	}
+	// A map keeps the exact key names. Struct decoding matches keys case-insensitively,
+	// which the strict schema does not allow.
+	var args map[string]json.RawMessage
 	decoder := json.NewDecoder(bytes.NewReader(call.Input))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&args); err != nil {
 		return Request{}, err
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return Request{}, errors.New("unexpected data after the arguments")
 	}
-	if args.Service == nil || (*args.Service != Browser && *args.Service != Desktop) {
+	if args == nil {
+		return Request{}, errors.New("arguments must be an object")
+	}
+	for key := range args {
+		if key != "service" && key != "reason" {
+			return Request{}, fmt.Errorf("unknown property %q", key)
+		}
+	}
+	service, ok := text(args["service"])
+	if !ok || (service != Browser && service != Desktop) {
 		return Request{}, fmt.Errorf("service must be %q or %q", Browser, Desktop)
 	}
-	if args.Reason == nil {
-		return Request{}, errors.New("reason is required")
+	reason, ok := text(args["reason"])
+	if !ok {
+		return Request{}, errors.New("reason must be a string")
 	}
-	reason := strings.TrimSpace(*args.Reason)
+	reason = strings.TrimFunc(reason, isJSSpace)
 	if length := len(utf16.Encode([]rune(reason))); length < 1 || length > ReasonLength {
 		return Request{}, fmt.Errorf("reason must have 1 to %d characters", ReasonLength)
 	}
-	return Request{BotID: call.BotID, TaskID: call.TaskID, CallID: call.CallID, Service: *args.Service, Reason: reason}, nil
+	return Request{BotID: call.BotID, TaskID: call.TaskID, CallID: call.CallID, Service: service, Reason: reason}, nil
+}
+
+// text decodes a JSON string. A missing value, null, and other types are not strings.
+func text(raw json.RawMessage) (string, bool) {
+	var value *string
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil || value == nil {
+		return "", false
+	}
+	return *value, true
+}
+
+// isJSSpace reports what JavaScript's String.prototype.trim removes, which is what
+// zod's trim uses. Unlike unicode.IsSpace it includes U+FEFF and excludes U+0085.
+func isJSSpace(r rune) bool {
+	return r == '\uFEFF' || (r != '\u0085' && unicode.IsSpace(r))
 }
