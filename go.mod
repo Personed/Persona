@@ -9,6 +9,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/jmespath/go-jmespath v0.4.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/crypto v0.59.0
 	modernc.org/sqlite v1.46.2
 )
