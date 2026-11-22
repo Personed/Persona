@@ -23,20 +23,24 @@ const (
 	screenBots screen = iota
 	screenChat
 	screenWork
+	screenLogin
 )
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	ctx    context.Context
-	client *client.Client
-	width  int
-	height int
-	screen screen
-	bots   []client.Bot
-	cursor int
-	err    error
-	chat   *chat
-	work   *work
+	ctx     context.Context
+	client  *client.Client
+	width   int
+	height  int
+	screen  screen
+	bots    []client.Bot
+	cursor  int
+	err     error
+	chat    *chat
+	work    *work
+	login   *login
+	saveErr error
+	servers *servers
 }
 
 type chat struct {
@@ -131,6 +135,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout()
 		return m, nil
 	case botsMsg:
+		if unauthorized(msg.err) {
+			m.client.Token = ""
+			return m.openLogin()
+		}
 		m.err = msg.err
 		if msg.err == nil {
 			m.bots = msg.bots
@@ -223,6 +231,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.showPicker(msg), nil
 	case workStreamMsg, workMsg, routineMsg:
 		return m.updateWork(msg)
+	case pairedMsg:
+		return m.paired(msg)
+	case loggedOutMsg:
+		return m.loggedOut(msg)
 	case doneMsg:
 		m.err = msg.err
 		return m, nil
@@ -232,6 +244,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.closeWork()
 			return m, tea.Quit
 		}
+		if m.screen == screenLogin {
+			return m.loginKey(msg)
+		}
 		if m.screen == screenWork {
 			return m.workKey(msg)
 		}
@@ -239,6 +254,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.chatKey(msg)
 		}
 		return m.botsKey(msg)
+	case tea.PasteMsg:
+		if m.screen == screenLogin && m.login != nil {
+			var cmd tea.Cmd
+			m.login.code, cmd = m.login.code.Update(msg)
+			return m, cmd
+		}
 	case tea.MouseWheelMsg:
 		if m.chat != nil {
 			var cmd tea.Cmd
@@ -263,7 +284,12 @@ func (m Model) botsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.cursor = min(m.cursor+1, max(len(m.bots)-1, 0))
 	case "r":
+		m = m.retrySave()
 		return m, m.loadBots()
+	case "L":
+		if m.client.Token != "" {
+			return m, m.logout()
+		}
 	case "w":
 		if len(m.bots) > 0 {
 			return m.openWork(m.bots[m.cursor], nil)
@@ -463,6 +489,8 @@ var (
 func (m Model) View() tea.View {
 	var body string
 	switch m.screen {
+	case screenLogin:
+		body = m.loginView()
 	case screenWork:
 		body = m.workView()
 	case screenChat:
@@ -498,7 +526,7 @@ func (m Model) botsView() string {
 		}
 		b.WriteString(line + "\n")
 	}
-	b.WriteString("\n" + m.errLine() + faint.Render("↑/↓ select · enter open · w Work · r refresh · q quit"))
+	b.WriteString("\n" + m.errLine() + faint.Render("↑/↓ select · enter open · w Work · r refresh · L log out · q quit"))
 	return b.String()
 }
 
@@ -534,10 +562,14 @@ func (m Model) chatView() string {
 }
 
 func (m Model) errLine() string {
-	if m.err == nil {
-		return ""
+	line := ""
+	if m.saveErr != nil {
+		line = errorStyle.Render("pairing not saved, r retries: "+m.saveErr.Error()) + "\n"
 	}
-	return errorStyle.Render(m.err.Error()) + "\n"
+	if m.err != nil {
+		line += errorStyle.Render(m.err.Error()) + "\n"
+	}
+	return line
 }
 
 func requestID() string {
@@ -551,4 +583,10 @@ func requestID() string {
 // isEnd reports whether err only means the stream finished or was closed.
 func isEnd(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, context.Canceled)
+}
+
+// unauthorized reports whether the service refused this device; the hosting guard answers 401 without an oRPC code.
+func unauthorized(err error) bool {
+	var e *client.Error
+	return errors.As(err, &e) && e.Status == 401
 }
