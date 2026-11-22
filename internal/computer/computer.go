@@ -51,12 +51,16 @@ type Process interface {
 	Kill() error
 }
 
-// FileInfo describes one path on the Target.
+// FileInfo describes one path on the Target. Symlink and Links describe the path
+// itself, without following a link. Links is its hard link count; zero means the
+// Target did not report link information, so Symlink is unknown too.
 type FileInfo struct {
 	Path    string `json:"path"`
 	Size    int64  `json:"size"`
 	Dir     bool   `json:"dir"`
 	ModTime int64  `json:"modTime"` // Unix ms
+	Symlink bool   `json:"symlink,omitempty"`
+	Links   int    `json:"links,omitempty"`
 }
 
 // Action is one native desktop or browser action. Name and Arguments are forwarded

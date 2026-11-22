@@ -567,12 +567,51 @@ func exitResult(raw json.RawMessage, err error) (int, error) {
 // Start implements computer.Target: it runs Path with Args directly, with plain
 // pipes, and kills what the program left in its process group when it exits.
 func (c *Client) Start(ctx context.Context, command computer.Command) (computer.Process, error) {
-	argv := append([]string{command.Path}, command.Args...)
 	inherit := true
+	return c.start(ctx, "process", execRequest{
+		Argv: append([]string{command.Path}, command.Args...), Cwd: command.Dir, Env: command.Env, InheritEnv: &inherit,
+	}, command)
+}
+
+// LaunchOptions starts a native Harness process. Program defaults to
+// `pi --mode rpc`. User names the OS user when the worker runs as root.
+type LaunchOptions struct {
+	Program     string
+	Args        []string
+	Dir         string
+	RuntimeHome string
+	Env         map[string]string
+	User        string
+	Stdin       io.Reader
+	Stdout      io.Writer
+	Stderr      io.Writer
+}
+
+// Launch runs a Harness program as the work computer's OS user, with its account
+// environment and the program its login shell resolves. Kill stops the whole tree.
+func (c *Client) Launch(ctx context.Context, options LaunchOptions) (computer.Process, error) {
+	return c.start(ctx, "launch", launchRequest{
+		Program: options.Program, Args: options.Args, Cwd: options.Dir,
+		RuntimeHome: options.RuntimeHome, Env: options.Env, User: options.User,
+	}, computer.Command{Stdin: options.Stdin, Stdout: options.Stdout, Stderr: options.Stderr})
+}
+
+// Resolve returns the path of command for the work computer's OS user, or ""
+// when it is not installed.
+func (c *Client) Resolve(ctx context.Context, command, runtimeHome string) (string, error) {
+	raw, _, err := c.call(ctx, "resolve", resolveRequest{Command: command, RuntimeHome: runtimeHome}, nil, nil)
+	var result struct {
+		Path string `json:"path"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &result)
+	}
+	return result.Path, err
+}
+
+func (c *Client) start(ctx context.Context, op string, args any, command computer.Command) (computer.Process, error) {
 	p := &process{client: c, started: make(chan struct{}), done: make(chan struct{})}
-	id, call, err := c.begin("process", execRequest{
-		Argv: argv, Cwd: command.Dir, Env: command.Env, InheritEnv: &inherit,
-	}, nil, func(raw json.RawMessage, payload []byte) {
+	id, call, err := c.begin(op, args, nil, func(raw json.RawMessage, payload []byte) {
 		var event outputEvent
 		if json.Unmarshal(raw, &event) != nil {
 			return
