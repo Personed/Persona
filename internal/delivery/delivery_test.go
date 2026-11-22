@@ -29,12 +29,13 @@ const (
 	taskID = 9
 )
 
-// target is a work computer holding files by absolute path. A nil value is a directory.
+// target is a work computer holding files by absolute path. A nil value is a
+// directory. stats overrides what Stat reports for a path.
 type target struct {
 	computer.Target
 	info  computer.Info
 	files map[string][]byte
-	sizes map[string]int64
+	stats map[string]computer.FileInfo
 }
 
 func (t *target) Info(context.Context) (computer.Info, error) { return t.info, nil }
@@ -44,11 +45,10 @@ func (t *target) Stat(_ context.Context, path string) (computer.FileInfo, error)
 	if !ok {
 		return computer.FileInfo{}, fs.ErrNotExist
 	}
-	size := int64(len(content))
-	if reported, ok := t.sizes[path]; ok {
-		size = reported
+	if reported, ok := t.stats[path]; ok {
+		return reported, nil
 	}
-	return computer.FileInfo{Path: path, Size: size, Dir: content == nil}, nil
+	return computer.FileInfo{Path: path, Size: int64(len(content)), Dir: content == nil, Links: 1}, nil
 }
 
 func (t *target) ReadFile(_ context.Context, path string) (io.ReadCloser, error) {
@@ -106,12 +106,13 @@ func newFixture(t *testing.T, taskInput string) *fixture {
 			info: computer.Info{ID: "mac-1", OS: "linux"},
 			files: map[string][]byte{
 				"/work/bot":                nil,
+				"/work/bot/out":            nil,
 				"/work/bot/out/report.pdf": []byte("%PDF-1.7 report"),
 				"/work/bot/notes.txt":      []byte("plain notes"),
 				"/work/bot/big.bin":        bytes.Repeat([]byte{1}, delivery.MaxFileBytes+1),
 				"/work/secret.txt":         []byte("other bot"),
 			},
-			sizes: map[string]int64{},
+			stats: map[string]computer.FileInfo{},
 		},
 	}
 	f.service = delivery.NewService(delivery.Options{
@@ -234,7 +235,7 @@ func TestAttachWorkspaceFileOncePerCall(t *testing.T) {
 func TestAttachRejectsWithoutDelivering(t *testing.T) {
 	f := newFixture(t, `{}`)
 	f.target.files["/work/bot/grown.bin"] = bytes.Repeat([]byte{1}, delivery.MaxFileBytes+1)
-	f.target.sizes["/work/bot/grown.bin"] = 4
+	f.target.stats["/work/bot/grown.bin"] = computer.FileInfo{Size: 4, Links: 1}
 	for input, want := range map[string]string{
 		``:                                         "Provide either",
 		`{}`:                                       "Provide either",
@@ -246,7 +247,8 @@ func TestAttachRejectsWithoutDelivering(t *testing.T) {
 		`{"path":"out/../../secret.txt"}`:          "outside this Bot's workspace",
 		`{"path":"notes.txt:stream"}`:              "outside this Bot's workspace",
 		`{"path":"notes.txt."}`:                    "outside this Bot's workspace",
-		`{"path":"out"}`:                           "File not found: out",
+		`{"path":"out"}`:                           "Only files can be attached",
+		`{"path":"gone/notes.txt"}`:                "File not found: gone/notes.txt",
 		`{"path":"."}`:                             "outside this Bot's workspace",
 		`{"path":"missing.txt"}`:                   "File not found: missing.txt",
 		`{"path":"big.bin"}`:                       "File exceeds 10 MiB",
@@ -259,9 +261,54 @@ func TestAttachRejectsWithoutDelivering(t *testing.T) {
 			t.Errorf("%s: result = %+v, want %q", input, result, want)
 		}
 	}
-	f.target.files["/work/bot/out"] = nil
-	if result := f.call(t, "directory", `{"path":"out"}`); !result.IsError || result.Content[0].Text != "Only files can be attached" {
-		t.Errorf("directory: result = %+v", result)
+	if messages := f.messages(t); len(messages) != 0 {
+		t.Fatalf("rejected calls posted %+v", messages)
+	}
+	if _, err := os.Stat(f.root); !os.IsNotExist(err) {
+		t.Fatalf("rejected calls saved files: %v", err)
+	}
+}
+
+// A link inside the workspace can name a file outside it: the work computer reads
+// the other Bot's file through each of these paths.
+func TestAttachRejectsLinkedPaths(t *testing.T) {
+	const linked = "Linked paths are outside the workspace capability"
+	f := newFixture(t, `{}`)
+	secret := f.target.files["/work/secret.txt"]
+	for path, info := range map[string]computer.FileInfo{
+		"/work/bot/symlink.txt":     {Size: int64(len(secret)), Symlink: true, Links: 1},
+		"/work/bot/hardlink.txt":    {Size: int64(len(secret)), Links: 2},
+		"/work/bot/peer":            {Dir: true, Symlink: true, Links: 1},
+		"/work/bot/peer/secret.txt": {Size: int64(len(secret)), Links: 1},
+		"/work/bot/unknown.txt":     {Size: int64(len(secret))},
+		"/work/bot/old":             {Dir: true},
+		"/work/bot/old/secret.txt":  {Size: int64(len(secret)), Links: 1},
+	} {
+		if !info.Dir {
+			f.target.files[path] = secret
+		} else {
+			f.target.files[path] = nil
+		}
+		f.target.stats[path] = info
+	}
+	for input, want := range map[string]string{
+		`{"path":"symlink.txt"}`:               linked,
+		`{"path":"hardlink.txt"}`:              linked,
+		`{"path":"peer/secret.txt"}`:           linked,
+		`{"path":"/work/bot/peer/secret.txt"}`: linked,
+		`{"path":"unknown.txt"}`:               "did not report link information",
+		`{"path":"old/secret.txt"}`:            "did not report link information",
+	} {
+		result := f.call(t, "call "+input, input)
+		if !result.IsError || !strings.Contains(result.Content[0].Text, want) {
+			t.Errorf("%s: result = %+v, want %q", input, result, want)
+		}
+	}
+
+	// A workspace that is itself a link is refused for every file.
+	f.target.stats["/work/bot"] = computer.FileInfo{Dir: true, Symlink: true, Links: 1}
+	if result := f.call(t, "workspace", `{"path":"notes.txt"}`); !result.IsError || result.Content[0].Text != linked {
+		t.Errorf("linked workspace: result = %+v", result)
 	}
 	if messages := f.messages(t); len(messages) != 0 {
 		t.Fatalf("rejected calls posted %+v", messages)
