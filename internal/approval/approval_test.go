@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,47 @@ import (
 )
 
 const bot = 1
+
+// failing refuses commits while fail is set.
+type failing struct {
+	store.Store
+	fail atomic.Bool
+}
+
+func (f *failing) Commit(ctx context.Context, batches []store.Batch) (int, []store.Seq, error) {
+	if f.fail.Load() {
+		return 0, nil, errors.New("disk full")
+	}
+	return f.Store.Commit(ctx, batches)
+}
+
+func TestFailedSettleIsRetried(t *testing.T) {
+	_, records := open(t, 0)
+	flaky := &failing{Store: records}
+	service := approval.NewService(flaky, nil, 0)
+	done := request(t.Context(), t, service, bot, approval.Request{ID: "lost", Title: "Lost"})
+	flaky.fail.Store(true)
+	if err := service.Answer(bot, "lost", approval.Answer{Allow: true}); err != nil {
+		t.Fatal(err)
+	}
+	if result := <-done; result.err == nil || result.answer.Allow {
+		t.Fatalf("Request = %+v", result)
+	}
+	// The answered request is no longer offered, and the Bot's next request stores its outcome.
+	if stored, err := service.Pending(t.Context(), bot); err != nil || len(stored) != 0 {
+		t.Fatalf("Pending = %+v, %v", stored, err)
+	}
+	flaky.fail.Store(false)
+	next := request(t.Context(), t, service, bot, approval.Request{ID: "next", Title: "Next"})
+	if err := service.Answer(bot, "next", approval.Answer{}); err != nil {
+		t.Fatal(err)
+	}
+	<-next
+	cards := messages(t, service, records, bot)
+	if len(cards) != 2 || cards[0].Approval.Request.ID != "lost" || cards[0].Approval.State != "answered" || cards[1].Approval.State != "denied" {
+		t.Fatalf("cards = %+v", cards)
+	}
+}
 
 func open(t *testing.T, timeout time.Duration) (*approval.Service, *store.SQLite) {
 	t.Helper()

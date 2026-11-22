@@ -103,6 +103,13 @@ type Service struct {
 	// mu guards pending and serializes read-modify-write cycles; store.Store has no conditional writes.
 	mu      sync.Mutex
 	pending map[string]*waiter
+	// unsettled holds outcomes the store refused; the Bot's next write retries them.
+	unsettled map[string]outcome
+}
+
+type outcome struct {
+	botID int64
+	data  json.RawMessage
 }
 
 type waiter struct {
@@ -117,7 +124,7 @@ func NewService(records store.Store, now func() time.Time, timeout time.Duration
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{store: records, now: now, timeout: cmp.Or(timeout, Timeout), pending: map[string]*waiter{}}
+	return &Service{store: records, now: now, timeout: cmp.Or(timeout, Timeout), pending: map[string]*waiter{}, unsettled: map[string]outcome{}}
 }
 
 // Request stores the request and blocks until the user answers, the request expires or ctx ends.
@@ -194,10 +201,14 @@ func (s *Service) Pending(ctx context.Context, botID int64) ([]Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	requests := make([]Request, len(doc.approvals))
-	for i, value := range doc.approvals {
-		if err := json.Unmarshal(value, &requests[i]); err != nil {
+	requests := make([]Request, 0, len(doc.approvals))
+	for _, value := range doc.approvals {
+		var request Request
+		if err := json.Unmarshal(value, &request); err != nil {
 			return nil, fmt.Errorf("approval: decode %s: %w", DocKind, err)
+		}
+		if _, settled := s.unsettled[request.ID]; !settled {
+			requests = append(requests, request)
 		}
 	}
 	return requests, nil
@@ -240,6 +251,9 @@ func (s *Service) open(ctx context.Context, botID int64, id string, value json.R
 	if s.pending[id] != nil {
 		return nil, fmt.Errorf("%w: %q", ErrDuplicate, id)
 	}
+	if err := s.flush(ctx, botID); err != nil {
+		return nil, err
+	}
 	meta, doc, err := s.load(ctx, botID)
 	if err != nil {
 		return nil, err
@@ -268,13 +282,6 @@ func (s *Service) settle(ctx context.Context, botID int64, request Request, valu
 		default:
 		}
 	}
-	meta, doc, err := s.load(ctx, botID)
-	if err != nil {
-		return nil, err
-	}
-	if !doc.remove(request.ID) {
-		return answer, nil
-	}
 	state := "expired"
 	if answer != nil {
 		state = "denied"
@@ -293,17 +300,51 @@ func (s *Service) settle(ctx context.Context, botID int64, request Request, valu
 	if err != nil {
 		return nil, err
 	}
-	id, err := s.store.MintID(ctx)
-	if err != nil {
-		return nil, err
+	s.unsettled[request.ID] = outcome{botID: botID, data: data}
+	return answer, s.flush(ctx, botID)
+}
+
+// flush removes the Bot's settled requests and appends their transcript entries in one commit.
+func (s *Service) flush(ctx context.Context, botID int64) error {
+	var ids []string
+	for id, settled := range s.unsettled {
+		if settled.botID == botID {
+			ids = append(ids, id)
+		}
 	}
-	entry := store.Write{Type: store.WriteEntry, Entry: &store.Entry{
-		ID:             store.EntryID(id),
-		ConversationID: store.ConversationID(botID),
-		Kind:           MessageKind,
-		Data:           data,
-	}}
-	return answer, s.save(ctx, botID, meta, doc, entry)
+	if len(ids) == 0 {
+		return nil
+	}
+	slices.Sort(ids)
+	meta, doc, err := s.load(ctx, botID)
+	if err != nil {
+		return err
+	}
+	var entries []store.Write
+	for _, id := range ids {
+		if !doc.remove(id) {
+			continue
+		}
+		entryID, err := s.store.MintID(ctx)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, store.Write{Type: store.WriteEntry, Entry: &store.Entry{
+			ID:             store.EntryID(entryID),
+			ConversationID: store.ConversationID(botID),
+			Kind:           MessageKind,
+			Data:           s.unsettled[id].data,
+		}})
+	}
+	if len(entries) != 0 {
+		if err := s.save(ctx, botID, meta, doc, entries...); err != nil {
+			return err
+		}
+	}
+	for _, id := range ids {
+		delete(s.unsettled, id)
+	}
+	return nil
 }
 
 type message struct {
