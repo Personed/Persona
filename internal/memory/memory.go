@@ -102,10 +102,6 @@ type document struct {
 	Items []Entry `json:"items"`
 }
 
-type reviewDocument struct {
-	Reviewing bool `json:"reviewing"`
-}
-
 // Service reads and writes memory records through a store.Store.
 type Service struct {
 	store store.Store
@@ -124,64 +120,64 @@ func NewService(records store.Store, now func() time.Time) *Service {
 
 var sessionScope = store.Scope{Kind: "session"}
 
-func (s *Service) load(ctx context.Context) (store.Document, document, error) {
-	meta, err := s.store.FindDocument(ctx, DocKind, sessionScope, "", store.Current)
+// read decodes the current document at an address into value. A missing document
+// leaves value untouched and returns a zero Document.
+func (s *Service) read(ctx context.Context, kind string, scope store.Scope, value any) (store.Document, error) {
+	meta, err := s.store.FindDocument(ctx, kind, scope, "", store.Current)
 	if errors.Is(err, store.ErrNotFound) {
-		return store.Document{}, document{}, nil
+		return store.Document{}, nil
 	}
 	if err != nil {
-		return store.Document{}, document{}, err
+		return store.Document{}, err
 	}
-	value, err := s.store.Document(ctx, meta.ID, store.Current)
+	current, err := s.store.Document(ctx, meta.ID, store.Current)
 	if err != nil {
-		return store.Document{}, document{}, err
+		return store.Document{}, err
 	}
+	if err := json.Unmarshal(current.Value, value); err != nil {
+		return store.Document{}, fmt.Errorf("memory: decode %s: %w", kind, err)
+	}
+	return meta, nil
+}
+
+// write replaces a document's value. A zero meta.ID creates the document and sets its ID.
+func (s *Service) write(ctx context.Context, meta *store.Document, value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	write := store.Write{Type: store.WriteDocumentChange, Document: meta, Value: encoded}
+	if meta.ID == 0 {
+		id, err := s.store.MintID(ctx)
+		if err != nil {
+			return err
+		}
+		meta.ID = store.DocumentID(id)
+		write.Type = store.WriteDocumentCreate
+	}
+	_, _, err = s.store.Commit(ctx, []store.Batch{{write}})
+	return err
+}
+
+func (s *Service) load(ctx context.Context) (store.Document, document, error) {
 	var doc document
-	if err := json.Unmarshal(value.Value, &doc); err != nil {
-		return store.Document{}, document{}, fmt.Errorf("memory: decode %s: %w", DocKind, err)
-	}
-	return meta, doc, nil
+	meta, err := s.read(ctx, DocKind, sessionScope, &doc)
+	return meta, doc, err
 }
 
 func (s *Service) save(ctx context.Context, meta store.Document, doc document) error {
 	if doc.Items == nil {
 		doc.Items = []Entry{}
 	}
-	value, err := json.Marshal(doc)
-	if err != nil {
-		return err
-	}
-	write := store.Write{Type: store.WriteDocumentChange, Document: &meta, Value: value}
 	if meta.ID == 0 {
-		id, err := s.store.MintID(ctx)
-		if err != nil {
-			return err
-		}
-		meta = store.Document{ID: store.DocumentID(id), Kind: DocKind, Scope: sessionScope}
-		write = store.Write{Type: store.WriteDocumentCreate, Document: &meta, Value: value}
+		meta = store.Document{Kind: DocKind, Scope: sessionScope}
 	}
-	_, _, err = s.store.Commit(ctx, []store.Batch{{write}})
-	return err
+	return s.write(ctx, &meta, doc)
 }
 
 func (s *Service) reviewing(ctx context.Context, botID int64) (bool, error) {
-	scope := store.Scope{Kind: "conversation", ConversationID: store.ConversationID(botID)}
-	meta, err := s.store.FindDocument(ctx, ReviewDocKind, scope, "", store.Current)
-	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	value, err := s.store.Document(ctx, meta.ID, store.Current)
-	if err != nil {
-		return false, err
-	}
-	var review reviewDocument
-	if err := json.Unmarshal(value.Value, &review); err != nil {
-		return false, fmt.Errorf("memory: decode %s: %w", ReviewDocKind, err)
-	}
-	return review.Reviewing, nil
+	_, review, err := s.loadReview(ctx, botID)
+	return review.Reviewing, err
 }
 
 // List returns the records visible to a Bot: its own and shared ones.
