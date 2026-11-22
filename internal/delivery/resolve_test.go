@@ -1,6 +1,44 @@
 package delivery
 
-import "testing"
+import (
+	"context"
+	"slices"
+	"testing"
+
+	"github.com/Personed/Persona/internal/computer"
+)
+
+// visited records the paths Stat is asked about.
+type visited struct {
+	computer.Target
+	paths []string
+}
+
+func (v *visited) Stat(_ context.Context, path string) (computer.FileInfo, error) {
+	v.paths = append(v.paths, path)
+	return computer.FileInfo{Path: path, Links: 1}, nil
+}
+
+func TestStatChecksEveryPathFromTheWorkspace(t *testing.T) {
+	for _, test := range []struct {
+		goos, dir, input string
+		want             []string
+	}{
+		{"linux", "/work/bot", "out/sub/a.txt", []string{"/work/bot", "/work/bot/out", "/work/bot/out/sub", "/work/bot/out/sub/a.txt"}},
+		{"linux", "/", "etc/hosts", []string{"/", "/etc", "/etc/hosts"}},
+		{"windows", `C:\Users\bot\work`, `out\a.txt`, []string{"C:/Users/bot/work", "C:/Users/bot/work/out", "C:/Users/bot/work/out/a.txt"}},
+		{"windows", `C:\`, `a.txt`, []string{"C:/", "C:/a.txt"}},
+	} {
+		absolute, relative, err := resolve(test.goos, test.dir, test.input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := &visited{}
+		if _, err := stat(t.Context(), target, absolute, relative); err != nil || !slices.Equal(target.paths, test.want) {
+			t.Errorf("stat(%q, %q) visited %q, %v", absolute, relative, target.paths, err)
+		}
+	}
+}
 
 func TestResolve(t *testing.T) {
 	for _, test := range []struct {
