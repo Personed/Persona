@@ -321,6 +321,7 @@ func (c *Client) Stat(ctx context.Context, path string) (computer.FileInfo, erro
 	return computer.FileInfo{
 		Path: path, Size: info.Size, Dir: info.Kind == "directory",
 		ModTime: info.MtimeSec*1000 + info.MtimeNsec/1_000_000,
+		Symlink: info.Kind == "symlink", Links: int(info.Links), //nolint:gosec // Link counts fit in int.
 	}, nil
 }
 
