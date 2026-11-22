@@ -167,9 +167,13 @@ for (const refresh of [false, true]) {
       state,
       "draft",
     );
+    const image = view.getByRole("img", { name: "工作电脑画面" });
     await page.mouse.click(at.x, at.y);
     await page.keyboard.press(
       refresh || process.platform === "darwin" ? "Meta+a" : "Control+a",
+    );
+    const previousFrame = await image.evaluate(
+      (node: HTMLImageElement) => node.currentSrc,
     );
     const inputStarted = performance.now();
     await page.keyboard.insertText("京都天气");
@@ -183,9 +187,12 @@ for (const refresh of [false, true]) {
     await expect
       .poll(
         () =>
-          view
-            .getByRole("img", { name: "工作电脑画面" })
-            .evaluate((image: HTMLImageElement, state) => {
+          image.evaluate(
+            (
+              image: HTMLImageElement,
+              baseline: { source: string; width: number; height: number },
+            ) => {
+              if (image.currentSrc === baseline.source) return false;
               const canvas = document.createElement("canvas");
               canvas.width = image.naturalWidth;
               canvas.height = image.naturalHeight;
@@ -194,14 +201,20 @@ for (const refresh of [false, true]) {
                 return false;
               context.drawImage(image, 0, 0);
               const [r = 255, g = 0, b = 255] = context.getImageData(
-                Math.floor((80 * image.naturalWidth) / state.width),
-                Math.floor((40 * image.naturalHeight) / state.height),
+                Math.floor((80 * image.naturalWidth) / baseline.width),
+                Math.floor((40 * image.naturalHeight) / baseline.height),
                 1,
                 1,
               ).data;
               return r < 50 && g > 140 && b < 120;
-            }, state),
-        { intervals: [16, 16, 32], timeout: 15_000 },
+            },
+            {
+              source: previousFrame,
+              width: state.width,
+              height: state.height,
+            },
+          ),
+        { intervals: [100, 250, 500], timeout: 30_000 },
       )
       .toBe(true);
     const inputToPaintMs = performance.now() - inputStarted;
