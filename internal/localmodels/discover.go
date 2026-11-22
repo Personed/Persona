@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -24,6 +26,11 @@ func DefaultEndpoints() []Endpoint {
 	if host := strings.TrimSpace(os.Getenv("OLLAMA_HOST")); host != "" {
 		if !strings.Contains(host, "://") {
 			host = "http://" + host
+		}
+		// The Ollama CLI defaults to port 11434 when OLLAMA_HOST omits it.
+		if parsed, err := url.Parse(host); err == nil && parsed.Port() == "" {
+			parsed.Host = net.JoinHostPort(parsed.Hostname(), "11434")
+			host = parsed.String()
 		}
 		ollama = host
 	}
@@ -163,14 +170,17 @@ func scanOllama(ctx context.Context, baseURL string) (Server, error) {
 // "llama.context_length"). It returns 0 when unknown.
 func ollamaContextWindow(ctx context.Context, baseURL, name string) int {
 	var show struct {
-		Info map[string]int `json:"model_info"`
+		Info map[string]any `json:"model_info"`
 	}
 	if err := post(ctx, base(baseURL)+"/api/show", map[string]string{"name": name}, &show); err != nil {
 		return 0
 	}
 	for key, value := range show.Info {
-		if strings.HasSuffix(key, ".context_length") && value > 0 {
-			return value
+		if !strings.HasSuffix(key, ".context_length") {
+			continue
+		}
+		if number, ok := value.(float64); ok && number > 0 {
+			return int(number)
 		}
 	}
 	return 0

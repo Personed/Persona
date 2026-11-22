@@ -1,6 +1,7 @@
 package localmodels
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -86,7 +87,8 @@ func (s Server) ProviderConfig() ProviderConfig {
 func SyncProviders(path string, servers []Server) (bool, error) {
 	raw := map[string]json.RawMessage{}
 	if content, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(content, &raw); err != nil {
+		// Pi parses models.json after stripping its BOM and comments.
+		if err := json.Unmarshal(stripJSONComments(content), &raw); err != nil {
 			return false, fmt.Errorf("parse %s: %w", path, err)
 		}
 	} else if !os.IsNotExist(err) {
@@ -131,13 +133,57 @@ func SyncProviders(path string, servers []Server) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, content, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".models-*.tmp")
+	if err != nil {
 		return false, err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// stripJSONComments drops the UTF-8 BOM and // and /* */ comments outside
+// string literals, matching how Pi reads models.json.
+func stripJSONComments(content []byte) []byte {
+	content = bytes.TrimPrefix(content, []byte("\xef\xbb\xbf"))
+	out := make([]byte, 0, len(content))
+	inString, escaped := false, false
+	for i := 0; i < len(content); i++ {
+		c := content[i]
+		switch {
+		case inString && escaped:
+			escaped = false
+		case inString && c == '\\':
+			escaped = true
+		case c == '"':
+			inString = !inString
+		case !inString && c == '/' && i+1 < len(content) && content[i+1] == '/':
+			for i < len(content) && content[i] != '\n' {
+				i++
+			}
+			if i == len(content) {
+				return out
+			}
+			out = append(out, '\n')
+			continue
+		case !inString && c == '/' && i+1 < len(content) && content[i+1] == '*':
+			i += 2
+			for i+1 < len(content) && (content[i] != '*' || content[i+1] != '/') {
+				i++
+			}
+			i++
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }

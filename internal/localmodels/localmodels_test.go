@@ -25,7 +25,7 @@ func fakeOllama(t *testing.T) *httptest.Server {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		if in.Name == "llama3.1:8b" {
-			_, _ = w.Write([]byte(`{"model_info":{"llama.context_length":131072}}`))
+			_, _ = w.Write([]byte(`{"model_info":{"general.architecture":"llama","llama.context_length":131072}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"model_info":{}}`))
@@ -89,10 +89,22 @@ func TestDiscoverLlamaCppAndLMStudio(t *testing.T) {
 	}
 }
 
+func TestDefaultEndpointsOllamaHost(t *testing.T) {
+	t.Setenv("OLLAMA_HOST", "localhost")
+	if got := DefaultEndpoints()[0].BaseURL; got != "http://localhost:11434" {
+		t.Fatalf("expected default port, got %s", got)
+	}
+	t.Setenv("OLLAMA_HOST", "host.docker.internal:9999")
+	if got := DefaultEndpoints()[0].BaseURL; got != "http://host.docker.internal:9999" {
+		t.Fatalf("expected explicit port kept, got %s", got)
+	}
+}
+
 func TestSyncProviders(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "models.json")
-	existing := `{"providers":{"anthropic":{"apiKey":"sk-ant"},"ollama":{"apiKey":"my-key","baseUrl":"old"}}}`
+	existing := "\xef\xbb\xbf" + `{"providers":{ // apiKey per provider
+"anthropic":{"apiKey":"sk-ant"},"ollama":{"apiKey":"my-key","baseUrl":"http://a//b"}}}`
 	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
 		t.Fatal(err)
 	}
