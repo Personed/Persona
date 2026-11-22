@@ -9,10 +9,12 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/Personed/Persona/internal/contract"
+	"github.com/Personed/Persona/internal/hosting"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/server"
 )
@@ -37,17 +39,47 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	service := server.Config{RPC: procedures}
+	listenHost, listenPort := *host, *port
+	// Hosted mode: a config file (PERSONA_CONFIG or persona.config.json) puts the
+	// service behind device authentication, as apps/api's openHostedRuntime does.
+	if _, ok := os.LookupEnv("PERSONA_CONFIG"); ok || fileExists("persona.config.json") {
+		cfg, err := hosting.LoadConfig()
+		if err != nil {
+			return err
+		}
+		listenHost, listenPort = cfg.Host, cfg.Port
+		sessions, err := server.NewSessionStore(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		if err := sessions.Bootstrap(); err != nil {
+			return err
+		}
+		service.Hosting = &server.Hosting{
+			PublicURL:             cfg.PublicURL,
+			Sessions:              sessions,
+			DesktopCredentialFile: cfg.DesktopCredentialFile,
+		}
+		if service.Hosting.PublicURL == "" {
+			service.Hosting.PublicURL = "http://" + net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+		}
+		if cfg.StaticDir != "" {
+			*static = cfg.StaticDir
+		}
+	}
 	var web fs.FS
 	if !*headless {
 		if web, err = webFS(*static); err != nil {
 			return err
 		}
+		service.Static = web
 	}
-	handler, err := server.New(server.Config{RPC: procedures, Static: web})
+	handler, err := server.New(service)
 	if err != nil {
 		return err
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(*host, strconv.Itoa(*port)))
+	listener, err := net.Listen("tcp", net.JoinHostPort(listenHost, strconv.Itoa(listenPort)))
 	if err != nil {
 		return err
 	}
@@ -67,4 +99,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	return <-stopped
+}
+
+func fileExists(name string) bool {
+	info, err := os.Stat(name)
+	return err == nil && info.Mode().IsRegular()
 }
