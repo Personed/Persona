@@ -98,6 +98,12 @@ func TestRunRejectsInvalidInput(t *testing.T) {
 	}, `{"service":"desktop","reason":"`+strings.Repeat("😀", 500)+`"}`); err != nil || result.IsError {
 		t.Fatalf("limit-length reason = %+v, %v", result, err)
 	}
+	// JavaScript trim removes U+FEFF and keeps U+0085, so 999 letters and U+0085 fit.
+	if result, err := call(t, func(_ context.Context, request takeover.Request) (bool, error) {
+		return request.Reason == "\u0085"+strings.Repeat("a", 999), nil
+	}, `{"service":"browser","reason":"\uFEFF\u0085`+strings.Repeat("a", 999)+`\u00a0"}`); err != nil || result.IsError {
+		t.Fatalf("JavaScript trim = %+v, %v", result, err)
+	}
 	for name, input := range map[string]string{
 		"empty":           ``,
 		"not an object":   `[]`,
@@ -107,6 +113,12 @@ func TestRunRejectsInvalidInput(t *testing.T) {
 		"blank reason":    `{"service":"browser","reason":"  "}`,
 		"long reason":     `{"service":"browser","reason":"` + strings.Repeat("😀", 501) + `"}`,
 		"extra property":  `{"service":"browser","reason":"x","botId":2}`,
+		"capital keys":    `{"Service":"browser","Reason":"x"}`,
+		"capital extra":   `{"service":"browser","reason":"x","Reason":"y"}`,
+		"null reason":     `{"service":"browser","reason":null}`,
+		"number reason":   `{"service":"browser","reason":1}`,
+		"null arguments":  `null`,
+		"only U+FEFF":     `{"service":"browser","reason":"\uFEFF \u2028"}`,
 		"trailing data":   `{"service":"browser","reason":"x"}{}`,
 	} {
 		t.Run(name, func(t *testing.T) {
