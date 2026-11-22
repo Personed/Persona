@@ -1,6 +1,7 @@
-import { fork } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -11,6 +12,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { Agent, request } from "node:http";
 import { createServer } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -294,13 +296,81 @@ function savedWorkComputer(profile) {
   return value;
 }
 
+// The Go service binary: an explicit override, then the bundled runtime, then PATH.
+function serviceCommand() {
+  if (process.env.PERSONA_SERVICE_BIN) return process.env.PERSONA_SERVICE_BIN;
+  const name = process.platform === "win32" ? "persona.exe" : "persona";
+  const bundled = fileURLToPath(new URL(`./runtime/${name}`, import.meta.url));
+  return existsSync(bundled) ? bundled : name;
+}
+
+// The oRPC contract the service serves: bundled with the runtime, else the repo.
+function contractDirectory() {
+  if (process.env.PERSONA_CONTRACT_DIR) return process.env.PERSONA_CONTRACT_DIR;
+  const bundled = fileURLToPath(
+    new URL("./runtime/contracts/api", import.meta.url),
+  );
+  if (existsSync(bundled)) return bundled;
+  return fileURLToPath(new URL("../../../contracts/api", import.meta.url));
+}
+
+// Pairing moved from Node IPC to the hosted desktop exchange (POST /hosting/desktop).
+function pairDesktop(origin, credentialFile) {
+  return (async () => {
+    const credential = await readFile(credentialFile, "utf8");
+    const url = new URL("/hosting/desktop", origin);
+    const agent = new Agent({ proxyEnv: {} });
+    try {
+      return await new Promise((resolve, reject) => {
+        const req = request(
+          url,
+          {
+            agent,
+            method: "POST",
+            signal: AbortSignal.timeout(10_000),
+            headers: { authorization: `Bearer ${credential}` },
+          },
+          (response) => {
+            const chunks = [];
+            response.on("error", reject);
+            response.on("data", (chunk) => chunks.push(chunk));
+            response.on("end", () => {
+              try {
+                if (response.statusCode !== 200)
+                  throw new Error("Desktop pairing refused");
+                const session = JSON.parse(
+                  Buffer.concat(chunks).toString("utf8"),
+                );
+                if (
+                  typeof session?.token !== "string" ||
+                  !Number.isFinite(session?.expires)
+                )
+                  throw new Error("Invalid desktop session");
+                resolve({ token: session.token, expires: session.expires });
+              } catch (error) {
+                reject(error);
+              }
+            });
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+    } finally {
+      agent.destroy();
+    }
+  })();
+}
+
 async function startService(directory, retain) {
   let child;
   let exited;
   let stopping;
   const stop = () => {
     stopping ??= (async () => {
-      const graceful = child ? await stopOwnedChild(child, exited) : true;
+      const graceful = child
+        ? await stopOwnedChild(child, exited, 30_000, 5_000, false)
+        : true;
       // A killed writer cannot attest runtime cleanup; retain its disposable evidence.
       if (graceful && !retain)
         await rm(directory, { recursive: true, force: true });
@@ -314,6 +384,13 @@ async function startService(directory, retain) {
     const profile = await savedProfile(directory);
     const model = savedModel(profile);
     const workComputer = savedWorkComputer(profile);
+    // The desktop exchanges this file for an admin session at POST /hosting/desktop.
+    const desktopCredentialFile = join(directory, "desktop-credential");
+    await writeFile(
+      desktopCredentialFile,
+      randomBytes(24).toString("base64url"),
+      { mode: 0o600 },
+    );
     await writeFile(
       config,
       JSON.stringify({
@@ -324,6 +401,7 @@ async function startService(directory, retain) {
         port,
         dataDir: join(directory, "data"),
         staticDir: fileURLToPath(staticDirectory),
+        desktopCredentialFile,
       }),
       { flag: retain ? "w" : "wx" },
     );
@@ -371,14 +449,14 @@ async function startService(directory, retain) {
       "PATHEXT",
     ])
       if (process.env[key]) env[key] = process.env[key];
-    child = fork(
-      fileURLToPath(new URL("./service-child.mjs", import.meta.url)),
-      [],
+    // The Go service stops on SIGTERM; it has no Node IPC channel.
+    child = spawn(
+      serviceCommand(),
+      ["serve", "--contract", contractDirectory()],
       {
         env,
         cwd: directory,
-        execArgv: [],
-        stdio: ["ignore", "pipe", "pipe", "ipc"],
+        stdio: ["pipe", "pipe", "pipe"],
       },
     );
     exited = once(child, "exit");
@@ -393,7 +471,8 @@ async function startService(directory, retain) {
       const fail = () => finish(new Error("Service exited before ready"));
       const receive = (chunk) => {
         output = (output + chunk).slice(-4096);
-        if (output.includes(`Persona: http://127.0.0.1:${port}`)) finish();
+        if (output.includes(`persona: listening on http://127.0.0.1:${port}`))
+          finish();
       };
       const finish = (error) => {
         clearTimeout(timer);
@@ -416,34 +495,18 @@ async function startService(directory, retain) {
       stop,
       pair: () =>
         new Promise((resolve, reject) => {
-          const timer = setTimeout(
-            () => finish(new Error("Pairing timed out")),
-            10_000,
-          );
-          const fail = () => finish(new Error("Service exited during pairing"));
-          const receive = (message) => {
-            if (
-              message?.type === "desktop-session" &&
-              typeof message.token === "string" &&
-              Number.isFinite(message.expires)
-            )
-              finish(undefined, {
-                token: message.token,
-                expires: message.expires,
-              });
-          };
-          const finish = (error, session) => {
-            clearTimeout(timer);
-            child.off("message", receive);
-            child.off("exit", fail);
-            if (error) reject(error);
-            else resolve(session);
-          };
-          child.on("message", receive);
+          const fail = () => reject(new Error("Service exited during pairing"));
           child.once("exit", fail);
-          child.send("pair-desktop", (error) => {
-            if (error) finish(error);
-          });
+          pairDesktop(`http://127.0.0.1:${port}`, desktopCredentialFile).then(
+            (session) => {
+              child.off("exit", fail);
+              resolve(session);
+            },
+            (error) => {
+              child.off("exit", fail);
+              reject(error);
+            },
+          );
         }),
     };
   } catch (error) {
