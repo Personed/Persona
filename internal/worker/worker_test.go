@@ -26,6 +26,10 @@ import (
 // TestMain lets the test binary act as the persona binary and as a portable cat.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 {
+		if os.Args[1] == "mcp" && len(os.Args) > 2 && os.Args[2] == "list" {
+			fmt.Fprintf(os.Stdout, `[{"name":"persona"},{"name":"docs","source":%q,"enabled":false,"state":"disabled"},{"name":"local","state":"connected"}]`, mustGetwd())
+			os.Exit(0)
+		}
 		switch os.Args[1] {
 		case "worker":
 			if err := Main(context.Background(), os.Args[2:], os.Stdin, os.Stdout, os.Stderr); err != nil {
@@ -67,6 +71,15 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(m.Run())
+}
+
+func mustGetwd() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return cwd
 }
 
 func executable(t *testing.T) string {

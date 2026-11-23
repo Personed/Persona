@@ -46,7 +46,7 @@ func (c *Catalog) MCP(ctx context.Context, computerID string, botID int64, input
 	if botID == 0 {
 		return worker.MCPResult{}, rpc.NewError("BAD_REQUEST", "请先为此电脑分配 Bot，再测试 MCP。")
 	}
-	transport, _, err := c.target(*item).transport(botID)
+	transport, workDir, err := c.target(*item).transport(botID)
 	if err != nil {
 		return worker.MCPResult{}, err
 	}
@@ -55,6 +55,9 @@ func (c *Catalog) MCP(ctx context.Context, computerID string, botID int64, input
 		return worker.MCPResult{}, err
 	}
 	defer func() { _ = client.Close() }()
+	if input.Action == "native" {
+		input.Cwd = workDir
+	}
 	return client.MCP(ctx, input, nil)
 }
 
@@ -112,4 +115,29 @@ func present(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return raw
+}
+
+// NativeCatalog reads the Bot's native Harness connections on its work
+// computer, as open-agent.ts nativeCatalog.
+func (c *Catalog) NativeCatalog(ctx context.Context, botID int64) (mcp.NativeCatalog, error) {
+	engine, _, err := agent.Snapshot(ctx, c.h, agent.EngineDoc, botID)
+	if err != nil {
+		return mcp.NativeCatalog{}, err
+	}
+	if engine.ComputerID == nil {
+		return mcp.NativeCatalog{}, errors.New("请先选择 Bot 的工作电脑和 Harness。")
+	}
+	result, err := c.MCP(ctx, *engine.ComputerID, botID, worker.MCPInput{
+		Action: "native",
+		Config: &worker.MCPConfig{Provider: engine.Config.Provider},
+	})
+	if err != nil {
+		return mcp.NativeCatalog{}, err
+	}
+	items := make([]mcp.NativeItem, len(result.Items))
+	for i, item := range result.Items {
+		items[i] = mcp.NativeItem{Name: item.Name, Source: item.Source, Enabled: item.Enabled, Status: item.Status}
+	}
+	return mcp.NativeCatalog{Provider: engine.Config.Provider, ComputerID: *engine.ComputerID,
+		Items: items, Inheritance: result.Inheritance, Readonly: result.Readonly}, nil
 }
