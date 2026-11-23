@@ -279,21 +279,24 @@ jobs:
         run: pnpm exec vitest run packages/agent/test/container.test.ts
       - name: Build and verify application deployment
         run: |
-          docker build -f deploy/Dockerfile -t persona-app:test .
+          docker build -f deploy/node.Dockerfile -t persona-app:test .
+          docker build -f deploy/Dockerfile -t persona-app-go:test .
           docker volume create persona-app-test
           for cycle in 1 2; do
-            docker run -d --name persona-app-test --read-only --cap-drop=ALL --security-opt=no-new-privileges:true --tmpfs /tmp -v persona-app-test:/data -p 127.0.0.1:4310:4310 -e PERSONA_PUBLIC_URL=http://127.0.0.1:4310 persona-app:test
+            docker run -d --name persona-app-test --read-only --cap-drop=ALL --security-opt=no-new-privileges:true --tmpfs /tmp -v persona-app-test:/data -p 127.0.0.1:4310:4310 -e PERSONA_PUBLIC_URL=http://127.0.0.1:4310 persona-app-go:test
             for attempt in $(seq 1 45); do
               if curl --fail --silent http://127.0.0.1:4310/health >/dev/null; then break; fi
               sleep 1
             done
             curl --fail --silent http://127.0.0.1:4310/health
             curl --fail --silent http://127.0.0.1:4310/ >/dev/null
-            docker exec persona-app-test node --input-type=module -e 'import { Computer } from "./packages/agent/src/computer/index.ts"; import { loadConfig } from "./packages/agent/src/runtime/config.ts"; const state=await new Computer(await loadConfig()).status(); if(state.boundary!=="application"||state.os.split(" ")[0]!=="linux")process.exit(1);'
+            docker exec persona-app-test persona version
             if [ "$cycle" = 1 ]; then
-              docker exec persona-app-test node -e 'require("fs").writeFileSync("/data/deployment-check", "durable")'
+              docker cp persona-app-test:/data/owner-code "$RUNNER_TEMP/deployment-check"
+              test -s "$RUNNER_TEMP/deployment-check"
             else
-              docker exec persona-app-test node -e 'if(require("fs").readFileSync("/data/deployment-check","utf8")!=="durable")process.exit(1)'
+              docker cp persona-app-test:/data/owner-code "$RUNNER_TEMP/deployment-check-2"
+              cmp -s "$RUNNER_TEMP/deployment-check" "$RUNNER_TEMP/deployment-check-2"
             fi
             docker stop --time 20 persona-app-test
             docker rm persona-app-test

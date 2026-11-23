@@ -151,7 +151,7 @@ Docker 主机先构建工作镜像及代理镜像，再运行：
 PERSONA_CONTAINER_TESTS=1 pnpm exec vitest run packages/agent/test/container.test.ts
 ```
 
-托管服务测试还须先执行 `docker build -f deploy/Dockerfile -t persona-app:test .`，再运行：
+托管服务测试还须先执行 `docker build -f deploy/node.Dockerfile -t persona-app:test .`（TypeScript 服务测试镜像；生产镜像是 `deploy/Dockerfile` 的 Go 静态镜像），再运行：
 
 ```sh
 PERSONA_CONTAINER_TESTS=1 pnpm exec vitest run apps/api/test/stack-container.test.ts

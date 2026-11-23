@@ -1,7 +1,7 @@
 {
   "version": "0.1.0",
   "serviceImage": "persona-service:0.1.0",
-  "serviceBuild": { "context": ".", "dockerfile": "deploy/Dockerfile" },
+  "serviceBuild": { "context": ".", "dockerfile": "deploy/node.Dockerfile" },
   "workImage": "persona-workspace:3",
   "proxyImage": "persona-egress:1",
   "proxyBuild": { "context": ".", "dockerfile": "deploy/proxy.Dockerfile" },
