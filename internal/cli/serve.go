@@ -111,6 +111,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 	server.RegisterAgent(procedures, bots, runtime)
+	server.RegisterEngines(procedures, bots, runtime)
 	service.Files = server.AgentFiles(bots.Files)
 	if !*headless {
 		if service.Static, err = webFS(*static); err != nil {
