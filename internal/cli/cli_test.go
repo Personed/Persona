@@ -59,6 +59,10 @@ func startServe(t *testing.T, args ...string) string {
 	}()
 	t.Cleanup(func() {
 		defer reader.Close()
+		// The server counts an unused keep-alive connection (one the transport
+		// dialed while another connection came free) as new, and Shutdown
+		// waits 5 s for it, so close the client's idle connections first.
+		http.DefaultClient.CloseIdleConnections()
 		cancel()
 		select {
 		case err := <-done:
