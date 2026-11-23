@@ -2379,11 +2379,9 @@ test("panel transitions preserve the transcript and draft through rapid toggles 
   // getAnimations() can keep reporting a skipped transition's pseudo
   // animations after its own cleanup, and rAF polling stalls while a view
   // transition captures. Wait on the transition itself with interval polling.
-  await page.waitForFunction(
-    () => !document.activeViewTransition,
-    undefined,
-    { polling: 100 },
-  );
+  await page.waitForFunction(() => !document.activeViewTransition, undefined, {
+    polling: 100,
+  });
   const frames = await page.evaluate(() => {
     document.documentElement.dataset.panelRecording = "false";
     return JSON.parse(document.documentElement.dataset.panelFrames ?? "[]") as {
