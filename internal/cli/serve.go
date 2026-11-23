@@ -15,6 +15,7 @@ import (
 
 	"github.com/Personed/Persona/internal/agent"
 	"github.com/Personed/Persona/internal/approval"
+	"github.com/Personed/Persona/internal/computers"
 	"github.com/Personed/Persona/internal/contract"
 	"github.com/Personed/Persona/internal/engine/pi"
 	"github.com/Personed/Persona/internal/hosting"
@@ -119,7 +120,24 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-	server.RegisterAgent(procedures, bots, runtime)
+	catalog := computers.New(computers.ServiceConfig{
+		DataDir:    *dataDir,
+		Deployment: "native",
+		Computer:   computers.Config{Kind: "process"},
+		Legacy:     true,
+	}, bots.Harness)
+	defer catalog.Close(context.Background())
+	var botIDs []int64
+	if contacts, err := bots.Bots.List(ctx); err == nil {
+		for _, contact := range contacts {
+			botIDs = append(botIDs, contact.Bot.ID)
+		}
+	}
+	if err := catalog.Initialize(ctx, botIDs); err != nil {
+		return err
+	}
+	server.RegisterAgent(procedures, bots, runtime, catalog)
+	server.RegisterComputer(procedures, catalog)
 	server.RegisterEngines(procedures, bots, runtime)
 	server.RegisterWork(procedures, bots, runtime, server.Work{
 		Memory:   memory.NewService(records, nil),
