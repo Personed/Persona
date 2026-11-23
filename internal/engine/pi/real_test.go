@@ -5,6 +5,7 @@ package pi
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ func TestRealPiIdleBotsHaveNoProcess(t *testing.T) {
 	}
 	e := New(Config{
 		Command:     command,
+		Extensions:  []string{filepath.Join("..", "..", "..", "packages", "agent", "src", "harness", "pi-tools.mjs")},
 		SessionDir:  t.TempDir(),
 		StateDir:    t.TempDir(),
 		Env:         append(os.Environ(), "PI_CODING_AGENT_DIR="+t.TempDir()),

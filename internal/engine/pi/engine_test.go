@@ -20,8 +20,13 @@ func newTestEngine(t *testing.T) *Engine {
 	if err != nil {
 		t.Fatal(err)
 	}
+	extension := filepath.Join(t.TempDir(), "pi-tools.mjs")
+	if err := os.WriteFile(extension, []byte("// fake extension"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	e := New(Config{
 		Command:     exe,
+		Extensions:  []string{extension},
 		SessionDir:  t.TempDir(),
 		StateDir:    t.TempDir(),
 		Env:         append(os.Environ(), fakeMode+"=rpc"),
@@ -289,6 +294,27 @@ func TestEngineIdleBotsHaveNoProcess(t *testing.T) {
 		}
 		return e.Live() == 0
 	})
+}
+
+func TestEngineRequiresApprovalToolExtension(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New(Config{
+		Command:    exe,
+		SessionDir: t.TempDir(),
+		StateDir:   t.TempDir(),
+		Env:        append(os.Environ(), fakeMode+"=rpc"),
+		StopGrace:  200 * time.Millisecond,
+	})
+	t.Cleanup(e.Close)
+	if _, err := e.Start(context.Background(), engine.SessionOptions{BotID: 1}); err == nil {
+		t.Fatal("session started without the approval/tool extension")
+	}
+	if e.Live() != 0 {
+		t.Fatal("a Pi process was started without the extension")
+	}
 }
 
 func TestWriteToolsFile(t *testing.T) {
