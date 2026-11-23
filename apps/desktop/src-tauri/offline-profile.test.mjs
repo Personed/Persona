@@ -47,9 +47,7 @@ async function snapshot(directory) {
 }
 
 test("offline synthetic Electron-equivalent backup: imported key, device, Bot and history survive pilot restart", {
-  // The Go service still answers app RPCs with NOT_IMPLEMENTED; restore once
-  // its handlers land (G13). Until then this roundtrip cannot run anywhere.
-  skip: "Go service app RPCs are stubs until G13",
+  skip: process.platform !== "win32",
   timeout: 300_000,
 }, async () => {
   const source = await createPersistentTestProfile();
