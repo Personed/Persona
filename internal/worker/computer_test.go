@@ -276,6 +276,7 @@ func TestComputerBrowserRestart(t *testing.T) {
 		closed, _ := os.ReadFile(filepath.Join(dir, "closed"))
 		socket, session, _ := strings.Cut(string(closed), "\n")
 		daemon := exec.Command(executable(t), "linger")
+		isolate(daemon)
 		if err := daemon.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -292,6 +293,28 @@ func TestComputerBrowserRestart(t *testing.T) {
 		case <-exited:
 		case <-time.After(5 * time.Second):
 			t.Fatal("restart reconnected while the old browser daemon ran")
+		}
+
+		// A crashed daemon's pid file whose pid now names another program.
+		other := exec.Command("sleep", "60")
+		if runtime.GOOS == "windows" {
+			other = exec.Command("ping", "-n", "60", "127.0.0.1")
+		}
+		if err := other.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = other.Process.Kill(); _ = other.Wait() })
+		if err := os.WriteFile(filepath.Join(socket, session+".pid"), []byte(strconv.Itoa(other.Process.Pid)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.RestartBrowser(ctx, dir, 7); code(err) != "EIO" {
+			t.Fatalf("restart over another program's pid: %v", err)
+		}
+		if !processAlive(other.Process.Pid) {
+			t.Fatal("restart stopped a program that is not the browser daemon")
+		}
+		if _, err := act(client, dir, "c", "browser", "agent_browser_click"); code(err) != "COMPUTER_UNCERTAIN" {
+			t.Fatalf("action after an unconfirmed restart: %v", err)
 		}
 	})
 }
