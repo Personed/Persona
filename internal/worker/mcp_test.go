@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -142,6 +143,9 @@ func TestMCPNativeCatalog(t *testing.T) {
 	for name, client := range clients {
 		t.Run(name, func(t *testing.T) {
 			cwd := t.TempDir()
+			if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+				cwd = resolved
+			}
 			result, err := client.MCP(context.Background(), MCPInput{
 				Action: "native",
 				Config: &MCPConfig{Provider: "pi", Command: executable(t)},
