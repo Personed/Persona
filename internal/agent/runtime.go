@@ -627,6 +627,16 @@ func (r *Runtime) executeEngine(ctx context.Context, bot int64, w *worker, task 
 		sections["skills"] = text
 	}
 	sections["messaging"] = "Send updates and final results through native assistant messages. Ask for decisions with the Harness native question tool. Wait for the user's answer before dependent work. Do not repeat an update as the final answer. Keep reasoning in the thinking channel. Use short natural paragraphs unless the user requests a structured document."
+	definitions, err := r.tools.List(ctx, bot)
+	if err != nil {
+		return err.Error()
+	}
+	names := make([]string, len(definitions))
+	specs := make([]engine.ToolSpec, len(definitions))
+	for i, definition := range definitions {
+		names[i] = definition.Name
+		specs[i] = engine.ToolSpec{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema}
+	}
 	instructions := joinInstructions(append(append([]string{profile.Instructions()}, sectionTexts(sections)...), toolInstructions)...)
 	if err := r.h.Commit(ctx, func(tx *Tx) error {
 		if !ok {
@@ -640,7 +650,7 @@ func (r *Runtime) executeEngine(ctx context.Context, bot int64, w *worker, task 
 		if err != nil {
 			return err
 		}
-		doc.Prompt, err = json.Marshal(map[string]any{"text": instructions, "sections": sections, "tools": []string{}})
+		doc.Prompt, err = json.Marshal(map[string]any{"text": instructions, "sections": sections, "tools": names})
 		return err
 	}); err != nil {
 		return err.Error()
@@ -654,7 +664,7 @@ func (r *Runtime) executeEngine(ctx context.Context, bot int64, w *worker, task 
 		return err.Error()
 	}
 	defer func() { _ = gateway.Close() }()
-	options := engine.SessionOptions{BotID: bot, SessionID: sessionID, SystemPrompt: instructions,
+	options := engine.SessionOptions{BotID: bot, SessionID: sessionID, SystemPrompt: instructions, Tools: specs,
 		Env: map[string]string{"PERSONA_PI_MCP_URL": gateway.URL}}
 	if config.Model != nil {
 		if provider, model, ok := strings.Cut(*config.Model, "/"); ok {
