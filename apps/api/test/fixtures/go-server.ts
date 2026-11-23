@@ -402,7 +402,6 @@ service.on("exit", () => process.exit(1));
 await configure();
 process.send?.({ type: "ready", port, toolName });
 
-
 // web-server.ts opens every Bot with the faux model and prepares its engine;
 // here each Bot is configured through engines.configure instead.
 async function call(path: string, json: unknown) {
