@@ -87,6 +87,8 @@ type conversationView struct {
 	before  store.EntryID
 	live    LiveState
 	agent   Config
+	// approvals are the pending requests of persona.computer-requests.
+	approvals []json.RawMessage
 }
 
 func (h *Harness) conversationDocs(ctx context.Context, id int64) (conversationView, error) {
@@ -95,7 +97,11 @@ func (h *Harness) conversationDocs(ctx context.Context, id int64) (conversationV
 	if view.live, _, err = Snapshot(ctx, h, LiveDoc, id); err != nil {
 		return view, err
 	}
-	view.agent, _, err = Snapshot(ctx, h, AgentDoc, id)
+	if view.agent, _, err = Snapshot(ctx, h, AgentDoc, id); err != nil {
+		return view, err
+	}
+	requests, _, err := Snapshot(ctx, h, RequestsDoc, id)
+	view.approvals = requests.Approvals
 	return view, err
 }
 
@@ -428,7 +434,13 @@ func projectChat(view conversationView) ChatView {
 		pendingTool = pendingTool || tool.Status != "done"
 		chat.Tools = append(chat.Tools, LiveTool(tool))
 	}
-	chat.Processing = running && (view.live.Generation != nil || pendingTool)
+	for _, request := range view.approvals {
+		if message := pendingApproval(request, turnID); message != nil {
+			chat.Messages = append(chat.Messages, message)
+			chat.Approvals = append(chat.Approvals, request)
+		}
+	}
+	chat.Processing = running && len(chat.Approvals) == 0 && (view.live.Generation != nil || pendingTool)
 	chat.Failed = failed && !running
 	return chat
 }
@@ -440,4 +452,50 @@ func (c ChatView) Attachments() []string {
 		ids = append(ids, messageAttachments(message)...)
 	}
 	return ids
+}
+
+// pendingApproval is approvalMessage(request, "pending") in messages.ts, the
+// card of a request still waiting for its answer.
+func pendingApproval(raw json.RawMessage, turnID *string) map[string]any {
+	var request struct {
+		ID          string                     `json:"id"`
+		Detail      string                     `json:"detail"`
+		RequestedAt *int64                     `json:"requestedAt"`
+		Takeover    map[string]json.RawMessage `json:"takeover"`
+		Preview     map[string]json.RawMessage `json:"preview"`
+	}
+	if json.Unmarshal(raw, &request) != nil || request.ID == "" {
+		return nil
+	}
+	requestedAt := int64(0)
+	if request.RequestedAt != nil {
+		requestedAt = *request.RequestedAt
+	}
+	message := map[string]any{
+		"id": fmt.Sprintf("approval:%s:%d", request.ID, requestedAt), "role": "assistant",
+		"content": []any{}, "pending": true, "stopped": false,
+	}
+	if request.RequestedAt != nil {
+		message["timestamp"] = *request.RequestedAt
+	}
+	if turnID != nil {
+		message["turnId"] = *turnID
+	}
+	if request.Takeover == nil {
+		message["approval"] = map[string]any{"request": raw, "state": "pending"}
+		return message
+	}
+	content := []any{map[string]any{"type": "text", "text": request.Detail, "key": request.ID}}
+	if request.Preview != nil {
+		preview := map[string]any{"key": request.ID + ":preview"}
+		for key, value := range request.Preview {
+			if key != "key" {
+				preview[key] = value
+			}
+		}
+		content = append(content, preview)
+	}
+	message["content"] = content
+	message["takeover"] = request.Takeover
+	return message
 }
