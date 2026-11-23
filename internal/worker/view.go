@@ -22,14 +22,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// ViewInput is one view request: open a view, or read from, send to or close
-// the open view ID.
-type ViewInput struct {
-	ID      string       `json:"id,omitempty"`
-	Action  string       `json:"action"` // open, next, send, close
-	Message *ViewMessage `json:"message,omitempty"`
-}
-
 // ViewMessage is a viewer message, as in browser-view.mjs and desktop-view.mjs.
 type ViewMessage struct {
 	Type string `json:"type"` // ack, text, key, pointer, back
@@ -75,15 +67,18 @@ type openView struct {
 
 var errViewClosed = codeError("ENOENT", "the view connection is closed; reconnect", "")
 
+// viewFrames answers a view's next request: the frames ready for the viewer.
+type viewFrames struct {
+	Messages []*ViewFrame `json:"messages"`
+}
+
+// view serves the view sub-operations (open, next, send, close) of the view
+// ViewID the service chose. A reopened ID replaces the view it named.
 func (s *server) view(ctx context.Context, input ComputerInput, key, marker string) (*ComputerResult, error) {
-	request := input.View
-	if request == nil {
-		return nil, codeError("EINVAL", "a view request is required", "")
+	if input.ViewID == "" {
+		return nil, codeError("EINVAL", "a view ID is required", "")
 	}
-	if request.Action == "open" {
-		id := make([]byte, 16)
-		_, _ = rand.Read(id)
-		viewID := hex.EncodeToString(id)
+	if input.View == "open" {
 		var view computerView
 		if input.Service == "browser" {
 			browser, err := s.openBrowserView(ctx, input, key, marker)
@@ -96,45 +91,51 @@ func (s *server) view(ctx context.Context, input ComputerInput, key, marker stri
 			if err != nil {
 				return nil, mcpError(ctx, err)
 			}
-			view = &desktopView{driver: driver, id: viewID, closed: make(chan struct{})}
+			view = &desktopView{driver: driver, id: input.ViewID, closed: make(chan struct{})}
 		}
 		s.viewsMu.Lock()
 		if s.views == nil {
 			s.views = map[string]openView{}
 		}
-		s.views[viewID] = openView{key: key, view: view}
+		replaced, ok := s.views[input.ViewID]
+		s.views[input.ViewID] = openView{key: key, view: view}
 		s.viewsMu.Unlock()
-		return &ComputerResult{ViewID: viewID}, nil
+		if ok {
+			replaced.view.close()
+		}
+		return &ComputerResult{}, nil
 	}
 	s.viewsMu.Lock()
-	open, ok := s.views[request.ID]
+	open, ok := s.views[input.ViewID]
 	if ok && open.key != key {
 		ok = false
 	}
-	if ok && request.Action == "close" {
-		delete(s.views, request.ID)
+	if ok && input.View == "close" {
+		delete(s.views, input.ViewID)
 	}
 	s.viewsMu.Unlock()
 	if !ok {
 		return nil, errViewClosed
 	}
-	switch request.Action {
+	switch input.View {
 	case "next":
 		frame, err := open.view.next(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return &ComputerResult{Frame: frame}, nil
+		data, err := json.Marshal(viewFrames{Messages: []*ViewFrame{frame}})
+		return &ComputerResult{Result: data}, err
 	case "send":
-		if request.Message == nil {
+		var message ViewMessage
+		if err := json.Unmarshal(input.Message, &message); err != nil {
 			return nil, codeError("EINVAL", "a view message is required", "")
 		}
-		return &ComputerResult{}, open.view.send(ctx, *request.Message)
+		return &ComputerResult{}, open.view.send(ctx, message)
 	case "close":
 		open.view.close()
 		return &ComputerResult{}, nil
 	}
-	return nil, codeError("EINVAL", "unknown view action "+request.Action, "")
+	return nil, codeError("EINVAL", "unknown view operation "+input.View, "")
 }
 
 func (s *server) closeViews() {
@@ -658,33 +659,42 @@ type ComputerView struct {
 	id      string
 }
 
-func (v *ComputerView) request(ctx context.Context, view ViewInput) (ComputerResult, error) {
-	view.ID = v.id
-	return v.client.computerCall(ctx, ComputerInput{Action: "view", Service: v.service, Dir: v.dir, View: &view})
+func (v *ComputerView) request(ctx context.Context, view string, message json.RawMessage) (ComputerResult, error) {
+	return v.client.computerCall(ctx, ComputerInput{Action: "view", View: view, Service: v.service, Dir: v.dir, ViewID: v.id, Message: message})
 }
 
 // OpenView connects to service's screen: agent-browser's viewport stream for
 // the Bot browser, or cua-driver captures of the primary display.
 func (c *Client) OpenView(ctx context.Context, dir, service string) (*ComputerView, error) {
-	result, err := c.computerCall(ctx, ComputerInput{Action: "view", Service: service, Dir: dir, View: &ViewInput{Action: "open"}})
-	if err != nil {
+	id := make([]byte, 16)
+	_, _ = rand.Read(id)
+	view := &ComputerView{client: c, dir: dir, service: service, id: hex.EncodeToString(id)}
+	if _, err := view.request(ctx, "open", nil); err != nil {
 		return nil, err
 	}
-	return &ComputerView{client: c, dir: dir, service: service, id: result.ViewID}, nil
+	return view, nil
 }
 
 // Next waits for the newest frame. Acknowledge it with Send before the next.
 func (v *ComputerView) Next(ctx context.Context) (ViewFrame, error) {
-	result, err := v.request(ctx, ViewInput{Action: "next"})
-	if err != nil || result.Frame == nil {
+	result, err := v.request(ctx, "next", nil)
+	if err != nil {
 		return ViewFrame{}, err
 	}
-	return *result.Frame, nil
+	var frames viewFrames
+	if err := json.Unmarshal(result.Result, &frames); err != nil || len(frames.Messages) == 0 || frames.Messages[0] == nil {
+		return ViewFrame{}, codeError("EIO", "the view returned no frame", "")
+	}
+	return *frames.Messages[0], nil
 }
 
 // Send delivers one viewer message: a frame acknowledgement or user input.
 func (v *ComputerView) Send(ctx context.Context, message ViewMessage) error {
-	_, err := v.request(ctx, ViewInput{Action: "send", Message: &message})
+	data, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	_, err = v.request(ctx, "send", data)
 	return err
 }
 
@@ -692,6 +702,6 @@ func (v *ComputerView) Send(ctx context.Context, message ViewMessage) error {
 func (v *ComputerView) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := v.request(ctx, ViewInput{Action: "close"})
+	_, err := v.request(ctx, "close", nil)
 	return err
 }

@@ -83,8 +83,23 @@ type Request struct {
 	Options      []Option       `json:"options,omitempty"`
 	// Automatic lets the Bot's "auto" approval mode allow the request without asking.
 	Automatic bool `json:"automatic,omitempty"`
+	// Takeover marks a computer-request takeover card: the grant a viewer holds.
+	Takeover *Takeover `json:"takeover,omitempty"`
+	// Preview is the captured screenshot shown on the takeover card.
+	Preview json.RawMessage `json:"preview,omitempty"`
 	// RequestedAt is set by Request, in Unix milliseconds.
 	RequestedAt int64 `json:"requestedAt,omitempty"`
+}
+
+// Takeover is the pending request's takeover card payload (runtime.ts
+// approval.takeover): the grant whose viewer owns control.
+type Takeover struct {
+	ID         string `json:"id"`
+	Service    string `json:"service"`
+	ComputerID string `json:"computerId"`
+	Revision   int64  `json:"revision"`
+	State      string `json:"state"` // waiting | granted | expired
+	URL        string `json:"url,omitempty"`
 }
 
 // Answer is the user's reply.
