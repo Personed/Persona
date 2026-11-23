@@ -11,8 +11,7 @@ export const goGaps: Record<string, string[]> = {
       "takeover card first click opens the browser and resumes after completion",
       "takeover controls the Agent browser and preserves its layout through fullscreen",
     ],
-  // Owned by the memory/delivery tool registration session.
-  "product tools: Go registers no approved, file-publishing product tool for scripted calls (attach_file delivery)":
+  "fixture tool: web-server.ts scripts a gated, file-publishing test tool; Go serve has no counterpart and the fixture scripts Pi's ls":
     [
       "Bot identity stays consistent and image previews work in drafts and history",
       "attachment retry keeps its request and draft after a lost receipt",
@@ -22,7 +21,6 @@ export const goGaps: Record<string, string[]> = {
       "image thumbnails scroll horizontally and keep the selected image in view",
       "message media leads captions and bubble tails follow both themes",
       "published files wait for the complete reply",
-      "structured messages keep Markdown and private tool results across reloads",
       "typing follows the Bot and failures retain their error message",
     ],
   "routine runner: persona.routine tasks and work.routines.test are unported (Go only runs engine/chat turns)":
@@ -35,25 +33,25 @@ export const goGaps: Record<string, string[]> = {
       "large histories render a bounded window and retain the earlier reading anchor",
       "panel transitions preserve the transcript and draft through rapid toggles and reduced motion",
     ],
-  "routine tools: serve does not offer routine_* to Pi's native MCP catalog":
-    ["chat routine changes require confirmation and link runs to Work"],
-  "native questions: Pi's ask_user is not stored as a shared question card":
-    [
-      "native questions use the shared card and native replies persist",
-      "shared question and approval cards persist answers and terminal states",
-    ],
-  "native Work records: work.records does not yet project native turns":
-    [
-      "Work follows a native turn, opens its record and preserves it after stop and reload",
-      "monitoring stays quiet, delivers one result and opens the native Work record",
-    ],
+  "routine tools: serve does not offer routine_* to Pi's native MCP catalog": [
+    "chat routine changes require confirmation and link runs to Work",
+  ],
+  "native questions: Pi's ask_user is not stored as a shared question card": [
+    "native questions use the shared card and native replies persist",
+    "shared question and approval cards persist answers and terminal states",
+  ],
+  "native Work records: work.records does not yet project native turns": [
+    "Work follows a native turn, opens its record and preserves it after stop and reload",
+    "monitoring stays quiet, delivers one result and opens the native Work record",
+  ],
   "MCP apps: Go has no application catalog, connection runner, or OAuth callback composed into serve":
     [
       "Apps completes and cancels browser OAuth with stored state",
       "Apps manages a real MCP connection and Bot grants across reloads and themes",
     ],
-  "native Harness controls: unhosted persona serve offers no device pairing":
-    ["native Harness controls persist and client accounts retain model access"],
+  "native Harness controls: unhosted persona serve offers no device pairing": [
+    "native Harness controls persist and client accounts retain model access",
+  ],
 };
 
 export const goGapPatterns = Object.values(goGaps)

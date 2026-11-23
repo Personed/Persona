@@ -11,11 +11,11 @@ import {
   spawn,
 } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
-import { DatabaseSync } from "node:sqlite";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 const database = process.argv[2];
@@ -58,7 +58,8 @@ function replyOf(item: {
   errorMessage?: string;
 }): Reply | undefined {
   const { content, stopReason, errorMessage } = item;
-  if (typeof content === "string") return { text: content, stopReason, errorMessage };
+  if (typeof content === "string")
+    return { text: content, stopReason, errorMessage };
   if (!Array.isArray(content)) return undefined;
   const reply: Reply = { text: "", toolCalls: [], stopReason, errorMessage };
   for (const part of content) {
@@ -96,7 +97,12 @@ function seed(botId: number, records: unknown[]) {
         id,
         botId,
         seq,
-        JSON.stringify({ id, conversationId: botId, kind: "persona.engine-message", data }),
+        JSON.stringify({
+          id,
+          conversationId: botId,
+          kind: "persona.engine-message",
+          data,
+        }),
       );
     }
     db.prepare("UPDATE store_state SET last_id=?").run(id);
@@ -173,7 +179,10 @@ async function complete(
           index,
           id: call.id,
           type: "function",
-          function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+          function: {
+            name: call.name,
+            arguments: JSON.stringify(call.arguments),
+          },
         },
       ],
     });
@@ -184,7 +193,11 @@ async function complete(
       created: Math.floor(Date.now() / 1000),
       model,
       choices: [
-        { index: 0, delta: {}, finish_reason: calls.length ? "tool_calls" : "stop" },
+        {
+          index: 0,
+          delta: {},
+          finish_reason: calls.length ? "tool_calls" : "stop",
+        },
       ],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     })}\n\ndata: [DONE]\n\n`,
