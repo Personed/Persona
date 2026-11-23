@@ -414,24 +414,30 @@ func (s *SessionStore) Bootstrap() error {
 	if err != nil {
 		return err
 	}
-	admins := 0
+	var adminIDs []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			return err
 		}
-		s.mu.Lock()
-		if !s.revoked[id] {
-			admins++
-		}
-		s.mu.Unlock()
+		adminIDs = append(adminIDs, id)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return err
 	}
 	rows.Close()
+	// Take the mutex only after releasing the connection: Exchange holds the
+	// mutex while it waits for this single SQLite connection.
+	s.mu.Lock()
+	admins := 0
+	for _, id := range adminIDs {
+		if !s.revoked[id] {
+			admins++
+		}
+	}
+	s.mu.Unlock()
 	if admins > 0 {
 		return nil
 	}
