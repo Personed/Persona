@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -94,6 +96,8 @@ type Service struct {
 	store     store.Store
 	packages  fs.FS
 	workspace Workspace
+	// packageDir, when set, lets Save store new package zips there.
+	packageDir string
 	// mu serializes read-modify-write cycles; store.Store has no conditional writes.
 	mu sync.Mutex
 }
@@ -103,6 +107,72 @@ type Service struct {
 // bodies without materializing supporting files.
 func NewService(records store.Store, packages fs.FS, workspace Workspace) *Service {
 	return &Service{store: records, packages: packages, workspace: workspace}
+}
+
+// UsePackageDir lets the service read and store package zips under dir, as
+// SkillPackages over the Files "skills" directory.
+func (s *Service) UsePackageDir(dir string) { s.packageDir = dir }
+
+// readPackage returns a stored "<hash>.zip", preferring the package directory.
+func (s *Service) readPackage(hash string) ([]byte, error) {
+	if s.packageDir != "" {
+		return os.ReadFile(filepath.Join(s.packageDir, hash+".zip"))
+	}
+	if s.packages == nil {
+		return nil, fmt.Errorf("skills: package store unavailable")
+	}
+	file, err := s.packages.Open(hash + ".zip")
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(file)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	return data, err
+}
+
+// storePackage writes a bundle's zip under "<hash>.zip", as SkillPackages.store:
+// the write fails silently when the name already exists (packages are immutable).
+func (s *Service) storePackage(bundle Bundle) error {
+	if s.packageDir == "" {
+		return nil
+	}
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	for _, name := range bundle.Paths {
+		file, err := writer.Create(name)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write(bundle.Files[name]); err != nil {
+			return err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.packageDir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(s.packageDir, bundle.Hash+".zip")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(archive.Bytes()); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 func (s *Service) list(ctx context.Context) ([]Skill, error) {
@@ -197,14 +267,7 @@ type packageFile struct {
 }
 
 func (s *Service) unpack(hash string) ([]packageFile, error) {
-	file, err := s.packages.Open(hash + ".zip")
-	if err != nil {
-		return nil, fmt.Errorf("skills: package %s: %w", hash, err)
-	}
-	archive, err := io.ReadAll(io.LimitReader(file, archiveBytes+1))
-	if closeErr := file.Close(); err == nil {
-		err = closeErr
-	}
+	archive, err := s.readPackage(hash)
 	if err != nil {
 		return nil, fmt.Errorf("skills: package %s: %w", hash, err)
 	}

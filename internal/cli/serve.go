@@ -18,6 +18,7 @@ import (
 	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/computers"
 	"github.com/Personed/Persona/internal/contract"
+	"github.com/Personed/Persona/internal/delivery"
 	"github.com/Personed/Persona/internal/engine/pi"
 	"github.com/Personed/Persona/internal/hosting"
 	"github.com/Personed/Persona/internal/localmodels"
@@ -147,6 +148,10 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	catalog := computers.New(serviceCfg, bots.Harness)
 	approvals := approval.NewService(records, nil, 0)
+	// Work services shared by the RPC layer and the product tools below.
+	memorySvc := memory.NewService(records, nil)
+	skillSvc := skills.NewService(records, os.DirFS(filepath.Join(filesRoot, "skills")), catalog.Workspace)
+	skillSvc.UsePackageDir(filepath.Join(filesRoot, "skills"))
 	var runtime *agent.Runtime
 	if *piExtension != "" {
 		// An idle Bot has no Pi: each closes with the last session of its task.
@@ -155,6 +160,18 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		defer engine.Close()
 		registry := tools.NewRegistry()
 		if err := takeover.Register(registry, catalog.Handoff(approvals)); err != nil {
+			return err
+		}
+		if err := memory.Register(registry, memorySvc); err != nil {
+			return err
+		}
+		if err := delivery.Register(registry, delivery.NewService(delivery.Options{
+			Store: records, Root: filesRoot,
+			Workspace: func(ctx context.Context, botID int64) (delivery.Workspace, error) {
+				target, dir, err := catalog.Workspace(ctx, botID)
+				return delivery.Workspace{Target: target, Dir: dir}, err
+			},
+		})); err != nil {
 			return err
 		}
 		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
@@ -179,9 +196,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	// The takeover card lifecycle is the computers slice's part of engines.*.
 	server.RegisterComputerTakeover(procedures, catalog, approvals)
 	server.RegisterWork(procedures, bots, runtime, server.Work{
-		Memory:   memory.NewService(records, nil),
+		Memory:   memorySvc,
 		Routines: routines.NewService(records, nil),
-		Skills:   skills.NewService(records, os.DirFS(filepath.Join(filesRoot, "skills")), nil),
+		Skills:   skillSvc,
 	})
 	// Until the computer runtime is composed, managed MCP connections have no
 	// Runner or native catalog, and no OAuth callback route is served.

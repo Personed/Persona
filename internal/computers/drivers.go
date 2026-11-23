@@ -104,7 +104,7 @@ func (d *dockerDriver) daemon(botID int64) ([]string, error) {
 		return nil, errors.New("configuração do computador inválida")
 	}
 	config := d.docker.Config()
-	workdir := d.directory() + "/bots/" + strconv.FormatInt(botID, 10) + "/workspace"
+	workdir := d.directory() + "/bots/" + strconv.FormatInt(botID, 10)
 	return config.HostCommand("docker", "container", "exec", "-i", "--user", controller.SandboxUser,
 		"--workdir", workdir, config.Names().Container, "persona", "worker", "serve")
 }

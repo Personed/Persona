@@ -1,13 +1,11 @@
 package skills
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
 	"slices"
 
 	"github.com/Personed/Persona/internal/store"
@@ -137,38 +135,219 @@ func (s *Service) Export(ctx context.Context, id, hash string) (Export, error) {
 		return Export{}, &Error{NotFound, "技能版本不存在。"}
 	}
 	skill := items[index]
-	if s.packages == nil {
+	if s.packages == nil && s.packageDir == "" {
 		return Export{}, &Error{BadRequest, "技能包存储不可用。"}
 	}
 	if hash == "" {
 		hash = skill.Hash
 	}
 	if hash == "" {
-		var archive bytes.Buffer
-		w := zip.NewWriter(&archive)
-		f, err := w.Create("SKILL.md")
-		if err == nil {
-			_, err = f.Write([]byte(skill.Content))
-		}
-		if err == nil {
-			err = w.Close()
-		}
+		// A skill saved before packages existed exports its SKILL.md alone,
+		// stored under its own hash (skills.ts export).
+		bundle, err := packageBundle(skill.Content, "")
 		if err != nil {
 			return Export{}, err
 		}
-		return Export{Name: skill.Name, Archive: base64.StdEncoding.EncodeToString(archive.Bytes())}, nil
+		if err := s.storePackage(bundle); err != nil {
+			return Export{}, err
+		}
+		hash = bundle.Hash
 	}
 	if !hashPattern.MatchString(hash) {
 		return Export{}, &Error{BadRequest, "版本哈希无效。"}
 	}
-	file, err := s.packages.Open(hash + ".zip")
-	if err != nil {
-		return Export{}, err
-	}
-	defer func() { _ = file.Close() }()
-	data, err := io.ReadAll(file)
+	data, err := s.readPackage(hash)
 	if err != nil {
 		return Export{}, err
 	}
 	return Export{Name: skill.Name, Archive: base64.StdEncoding.EncodeToString(data)}, nil
+}
+
+// SaveInput is a work.skills.save call, as SkillInput in skills.ts.
+type SaveInput struct {
+	ID        string
+	Content   string
+	Archive   string
+	Revision  int
+	RequestID string
+}
+
+// Save upserts a skill at its current revision, parsing its SKILL.md and
+// storing the package version, as saveSkill in skills.ts.
+func (s *Service) Save(ctx context.Context, input SaveInput) (Skill, error) {
+	var saved Skill
+	err := s.change(ctx, func(items []Skill) ([]Skill, bool, error) {
+		index := slices.IndexFunc(items, func(skill Skill) bool { return skill.ID == input.ID })
+		var previous *Skill
+		if index >= 0 {
+			previous = &items[index]
+		}
+		if previous != nil && previous.RequestID == input.RequestID {
+			saved = *previous
+			return items, false, nil
+		}
+		revision := 0
+		if previous != nil {
+			revision = previous.Revision
+		}
+		if err := requireRevision(revision, input.Revision); err != nil {
+			return nil, false, err
+		}
+		archive := input.Archive
+		if archive == "" && previous != nil && previous.Hash != "" && (s.packages != nil || s.packageDir != "") {
+			data, err := s.readPackage(previous.Hash)
+			if err == nil {
+				archive = base64.StdEncoding.EncodeToString(data)
+			}
+		}
+		bundle, err := packageBundle(input.Content, archive)
+		if err != nil {
+			return nil, false, err
+		}
+		if slices.ContainsFunc(items, func(skill Skill) bool {
+			return skill.Name == bundle.Name && skill.ID != input.ID
+		}) {
+			return nil, false, &Error{Conflict, "技能名已存在。"}
+		}
+		if err := s.storePackage(bundle); err != nil {
+			return nil, false, err
+		}
+		var versions []Version
+		if previous != nil {
+			versions = slices.Clone(previous.Versions)
+			if versions == nil {
+				prior, err := packageBundle(previous.Content, "")
+				if err == nil {
+					versions = []Version{{Hash: prior.Hash, Version: 1}}
+					if previous.Hash == "" {
+						if err := s.storePackage(prior); err != nil {
+							return nil, false, err
+						}
+					}
+				}
+			}
+		}
+		if len(versions) == 0 || versions[len(versions)-1].Hash != bundle.Hash {
+			last := 0
+			if len(versions) > 0 {
+				last = versions[len(versions)-1].Version
+			}
+			versions = append(versions, Version{Hash: bundle.Hash, Version: last + 1})
+		}
+		skill := Skill{
+			ID: input.ID, Name: bundle.Name, Description: bundle.Description,
+			Content: bundle.Content, Hash: bundle.Hash, Versions: versions,
+			Revision: input.Revision + 1,
+			Source:   "user", RequestID: input.RequestID,
+		}
+		if previous != nil {
+			skill.EnabledBots = previous.EnabledBots
+			*previous = skill
+		} else {
+			skill.EnabledBots = []int64{}
+			items = append(items, skill)
+		}
+		saved = skill
+		return items, true, nil
+	})
+	return saved, err
+}
+
+// PreviewChange is one file difference work.skills.preview returns.
+type PreviewChange struct {
+	Path   string  `json:"path"`
+	Status string  `json:"status"`
+	Before *string `json:"before"`
+	After  *string `json:"after"`
+}
+
+// Preview parses a candidate SKILL.md + archive and diffs its files against
+// the saved version, as Skills.preview in skills.ts.
+func (s *Service) Preview(ctx context.Context, id, content, archive string) (any, error) {
+	items, err := s.list(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var previous *Skill
+	if index := slices.IndexFunc(items, func(skill Skill) bool { return skill.ID == id }); index >= 0 {
+		previous = &items[index]
+	}
+	if archive == "" && previous != nil && previous.Hash != "" && (s.packages != nil || s.packageDir != "") {
+		data, err := s.readPackage(previous.Hash)
+		if err == nil {
+			archive = base64.StdEncoding.EncodeToString(data)
+		}
+	}
+	bundle, err := packageBundle(content, archive)
+	if err != nil {
+		return nil, err
+	}
+	var before *Bundle
+	if previous != nil {
+		prevArchive := ""
+		if previous.Hash != "" && (s.packages != nil || s.packageDir != "") {
+			if data, err := s.readPackage(previous.Hash); err == nil {
+				prevArchive = base64.StdEncoding.EncodeToString(data)
+			}
+		}
+		if b, err := packageBundle(previous.Content, prevArchive); err == nil {
+			before = &b
+		}
+	}
+	seen := map[string]bool{}
+	var names []string
+	add := func(path string) {
+		if !seen[path] {
+			seen[path] = true
+			names = append(names, path)
+		}
+	}
+	if before != nil {
+		for _, path := range before.Paths {
+			add(path)
+		}
+	}
+	for _, name := range bundle.Paths {
+		add(name)
+	}
+	slices.Sort(names)
+	changes := []PreviewChange{}
+	for _, name := range names {
+		var old, next []byte
+		if before != nil {
+			old = before.Files[name]
+		}
+		next = bundle.Files[name]
+		if old != nil && next != nil && bytes.Equal(old, next) {
+			continue
+		}
+		status := "changed"
+		if old == nil {
+			status = "added"
+		} else if next == nil {
+			status = "deleted"
+		}
+		changes = append(changes, PreviewChange{
+			Path: name, Status: status,
+			Before: textOf(old), After: textOf(next),
+		})
+	}
+	return map[string]any{
+		"content": bundle.Content, "hash": bundle.Hash,
+		"name": bundle.Name, "description": bundle.Description,
+		"changes": changes,
+	}, nil
+}
+
+// Restore saves the package a version hash names back over the skill, as
+// Skills.restore in skills.ts.
+func (s *Service) Restore(ctx context.Context, id, hash string, revision int, requestID string) (Skill, error) {
+	export, err := s.Export(ctx, id, hash)
+	if err != nil {
+		return Skill{}, err
+	}
+	return s.Save(ctx, SaveInput{
+		ID: id, Content: "", Archive: export.Archive,
+		Revision: revision, RequestID: requestID,
+	})
 }
