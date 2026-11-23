@@ -451,7 +451,14 @@ func (s *Service) Report(ctx context.Context, botID int64, taskID store.TaskID, 
 		if view.ID != input.RoutineRunID || view.BotID != botID {
 			continue
 		}
-		if view.Delivery != Conditional || view.Status != "running" {
+		// Only the live turn calls routine_report, so any status before the
+		// terminal ones accepts it: the runner's poll may not have marked the
+		// receipt running yet, and an approval wait does not end the run.
+		switch view.Status {
+		case "done", "failed", "stopped":
+			return none
+		}
+		if view.Delivery != Conditional {
 			return none
 		}
 		if report.Notify && (strings.TrimSpace(report.Text) == "" || strings.TrimSpace(report.Key) == "") {
