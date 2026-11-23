@@ -17,6 +17,9 @@ import (
 
 const gatewayChunkBytes = 64 << 10
 
+// gatewaySlots bounds in-flight requests on each side of the relay.
+const gatewaySlots = 32
+
 // Gateway exposes the service's product-tool gateway on the worker loopback.
 // It never exposes other service endpoints or enables SSH port forwarding.
 type Gateway struct {
@@ -100,7 +103,7 @@ func (s *gatewayStream) handle(w http.ResponseWriter, r *http.Request, send func
 		return
 	}
 	s.mu.Lock()
-	if len(s.pending) >= 32 {
+	if len(s.pending) >= gatewaySlots {
 		s.mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -217,8 +220,22 @@ func (c *Client) OpenGateway(ctx context.Context, service *mcpserver.Gateway) (*
 			}
 		case "http":
 			mu.Lock()
-			if event.ID == 0 || active[event.ID] != nil || len(active) >= 32 || len(payload) > mcpserver.MaxRequestBytes {
+			if event.ID == 0 || active[event.ID] != nil {
 				mu.Unlock()
+				return
+			}
+			// The worker frees a slot before this side does, so it can admit a
+			// request that finds no room here. Fail it rather than leave Pi waiting.
+			if len(active) >= gatewaySlots || len(payload) > mcpserver.MaxRequestBytes {
+				mu.Unlock()
+				go func() {
+					select {
+					case <-started:
+						reply := gatewayReply{Stream: streamID, ID: event.ID, Failed: true}
+						_, _, _ = c.call(lifetime, "gatewayReply", reply, nil, nil)
+					case <-lifetime.Done():
+					}
+				}()
 				return
 			}
 			request, stop := context.WithCancel(lifetime)

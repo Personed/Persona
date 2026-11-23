@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -132,6 +133,107 @@ func TestProductGateway(t *testing.T) {
 				_, _ = io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
 				t.Fatal("worker endpoint still open after close")
+			}
+		})
+	}
+}
+
+// TestGatewaySaturation keeps all gateway slots held and replaces them one at
+// a time. Each replacement must reach the service or fail, never wait forever.
+func TestGatewaySaturation(t *testing.T) {
+	for name, worker := range transports(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			entered := make(chan struct{}, 1024)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				if string(body) == "hold" {
+					entered <- struct{}{}
+					<-r.Context().Done()
+					return
+				}
+				_, _ = io.WriteString(w, "ok")
+			}))
+			defer srv.Close()
+			defer srv.CloseClientConnections()
+			mount, err := worker.OpenGateway(ctx, &mcpserver.Gateway{URL: srv.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mount.Close() //nolint:errcheck // Closed again after the test.
+			send := func(ctx context.Context, body string) (int, error) {
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, mount.URL, strings.NewReader(body))
+				if err != nil {
+					return 0, err
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					return 0, err
+				}
+				defer resp.Body.Close()
+				_, _ = io.Copy(io.Discard, resp.Body)
+				return resp.StatusCode, nil
+			}
+			type hold struct {
+				cancel context.CancelFunc
+				done   chan struct{}
+			}
+			// admit starts a held request and waits until the service has it.
+			// A refused attempt is retried; one that neither arrives nor
+			// returns is the hang this test guards against.
+			refused := 0
+			admit := func() hold {
+				t.Helper()
+				for {
+					held, stop := context.WithCancel(ctx)
+					h := hold{cancel: stop, done: make(chan struct{})}
+					status := make(chan int, 1)
+					go func() {
+						defer close(h.done)
+						code, _ := send(held, "hold")
+						status <- code
+					}()
+					select {
+					case <-entered:
+						return h
+					case code := <-status:
+						stop()
+						if code != http.StatusBadGateway && code != http.StatusServiceUnavailable {
+							t.Fatalf("held request returned %d", code)
+						}
+						refused++
+						time.Sleep(time.Millisecond)
+					case <-time.After(5 * time.Second):
+						stop()
+						t.Fatal("gateway request neither reached the service nor failed")
+					}
+				}
+			}
+			holds := make([]hold, 0, gatewaySlots)
+			for range gatewaySlots {
+				holds = append(holds, admit())
+			}
+			for i := range 100 {
+				old := holds[i%gatewaySlots]
+				old.cancel()
+				<-old.done
+				holds[i%gatewaySlots] = admit()
+			}
+			t.Logf("%d replacement requests were refused while slots were full", refused)
+			for _, h := range holds {
+				h.cancel()
+				<-h.done
+			}
+			for {
+				code, err := send(ctx, "free")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if code == http.StatusOK {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 		})
 	}
