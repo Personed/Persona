@@ -13,3 +13,9 @@ func fileIdentity(_ string, info fs.FileInfo) (dev, ino, links uint64) {
 	}
 	return 0, 0, 0
 }
+
+// ownedPrivate reports whether uid owns info and only that user can use it.
+func ownedPrivate(info fs.FileInfo, uid int) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == uid && info.Mode().Perm() == 0o700
+}

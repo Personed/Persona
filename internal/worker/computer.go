@@ -453,13 +453,8 @@ func driverConfig(input ComputerInput) (*MCPConfig, error) {
 	if err := os.WriteFile(configPath, settings, 0o600); err != nil {
 		return nil, err
 	}
-	// macOS per-user temp paths can exceed the Unix socket path limit.
-	base := os.TempDir()
-	if runtime.GOOS == "darwin" {
-		base = "/tmp"
-	}
-	socket := filepath.Join(base, "persona-browser-"+session)
-	if err := os.MkdirAll(socket, 0o700); err != nil {
+	socket := browserSocketDir(input.Dir)
+	if err := privateSocketDir(socket); err != nil {
 		return nil, err
 	}
 	headed := "0"
@@ -471,6 +466,35 @@ func driverConfig(input ComputerInput) (*MCPConfig, error) {
 	config.Env["AGENT_BROWSER_SOCKET_DIR"] = socket
 	config.Env["AGENT_BROWSER_HEADED"] = headed
 	return &config, nil
+}
+
+// browserSocketDir is the agent-browser socket directory of a work directory.
+func browserSocketDir(dir string) string {
+	sum := sha256.Sum256([]byte(dir))
+	// macOS per-user temp paths can exceed the Unix socket path limit.
+	base := os.TempDir()
+	if runtime.GOOS == "darwin" {
+		base = "/tmp"
+	}
+	return filepath.Join(base, "persona-browser-"+hex.EncodeToString(sum[:])[:24])
+}
+
+// privateSocketDir creates the socket directory, or accepts an existing one
+// only when it is a real directory that this user owns with mode 0700. The
+// path is predictable in a shared temp directory, so another local user can
+// create it first.
+func privateSocketDir(path string) error {
+	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || !ownedPrivate(info, os.Getuid()) {
+		return codeError("EACCES", "the browser socket directory is not a private directory of this user", path)
+	}
+	return nil
 }
 
 func (s *server) closeComputers() {
