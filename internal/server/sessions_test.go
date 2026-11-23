@@ -14,6 +14,7 @@ func TestSessionStoreExchange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	pairing, err := s.Pairing("admin")
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +47,7 @@ func TestSessionStorePersistsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	pairing, _ := s.Pairing("client")
 	token, device, _, err := s.Exchange(pairing.Code, "phone")
 	if err != nil {
@@ -55,6 +57,7 @@ func TestSessionStorePersistsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = reloaded.Close() })
 	if got, ok := reloaded.Authenticate(token); !ok || got.ID != device.ID {
 		t.Fatalf("reloaded authenticate: %+v ok=%v", got, ok)
 	}
@@ -63,6 +66,7 @@ func TestSessionStorePersistsAcrossRestart(t *testing.T) {
 func TestSessionStoreRevokeKeepsLastAdmin(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := NewSessionStore(dir)
+	t.Cleanup(func() { _ = s.Close() })
 	p, _ := s.Pairing("admin")
 	_, admin, _, _ := s.Exchange(p.Code, "a")
 	if err := s.Revoke(admin.ID); err == nil {
@@ -84,6 +88,7 @@ func TestSessionStoreRevokeKeepsLastAdmin(t *testing.T) {
 func TestSessionStoreLogoutEndsTrack(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := NewSessionStore(dir)
+	t.Cleanup(func() { _ = s.Close() })
 	p, _ := s.Pairing("client")
 	_, device, _, _ := s.Exchange(p.Code, "x")
 	ctx, release := s.Track(device)
@@ -149,6 +154,7 @@ func TestSessionStorePreservesTypescriptDevices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	got, ok := s.Authenticate(oldToken)
 	if !ok || got.ID != "dev-old" || got.Scope != "admin" || got.Label != "laptop" {
 		t.Fatalf("typescript device lost: %+v ok=%v", got, ok)
@@ -190,6 +196,7 @@ func TestSessionStoreMigratesLegacyJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	if got, ok := s.Authenticate(token); !ok || got.ID != "dev-json" {
 		t.Fatalf("legacy device lost: %+v ok=%v", got, ok)
 	}
@@ -201,6 +208,7 @@ func TestSessionStoreMigratesLegacyJSON(t *testing.T) {
 func TestSessionStoreBootstrapOwnerCode(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := NewSessionStore(dir)
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
