@@ -23,6 +23,9 @@ type projection struct {
 	task  int64
 	turn  string
 	entry store.EntryID
+	// routineRun is the routine run the turn executes; a conditional run's
+	// messages are stored hidden, as projection.ts does.
+	routineRun string
 
 	mu         sync.Mutex
 	write      sync.Mutex
@@ -232,7 +235,16 @@ func (p *projection) flush(ctx context.Context) {
 					return err
 				}
 			}
+			run, err := p.run(tx)
+			if err != nil {
+				return err
+			}
 			for _, draft := range drafts {
+				if run != nil && run.Delivery == "conditional" {
+					draft.Routine, _ = json.Marshal(map[string]any{"runId": run.ID, "title": run.Title,
+						"scheduledAt": run.ScheduledAt, "turnId": p.turn, "delivery": run.Delivery})
+					draft.Hidden = true
+				}
 				index := slices.IndexFunc(doc.Drafts, func(item *Draft) bool { return item.ID == draft.ID })
 				if index < 0 {
 					doc.Drafts = append(doc.Drafts, draft)
@@ -244,6 +256,13 @@ func (p *projection) flush(ctx context.Context) {
 			return nil
 		})
 	}
+}
+
+func (p *projection) run(tx *Tx) (*RoutineRun, error) {
+	if p.routineRun == "" {
+		return nil, nil
+	}
+	return p.r.routineRun(tx, p.bot, p.routineRun)
 }
 
 func (p *projection) apply(tx *Tx, doc *EngineState, event map[string]any) error {

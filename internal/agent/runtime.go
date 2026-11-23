@@ -564,7 +564,7 @@ func (r *Runtime) runEngine(ctx context.Context, bot int64, w *worker, taskID st
 	if err != nil {
 		return
 	}
-	p := &projection{r: r, bot: bot, task: id, turn: in.TurnID, entry: in.EntryID, messages: drafts}
+	p := &projection{r: r, bot: bot, task: id, turn: in.TurnID, entry: in.EntryID, routineRun: in.RoutineRunID, messages: drafts}
 	failure := r.executeEngine(ctx, bot, w, id, in, config, sessionID, p)
 	p.flush(context.Background())
 	reason := failure
