@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Personed/Persona/internal/engine"
+	"github.com/Personed/Persona/internal/localmodels"
 )
 
 func newTestEngine(t *testing.T) *Engine {
@@ -314,6 +315,58 @@ func TestEngineRequiresApprovalToolExtension(t *testing.T) {
 	}
 	if e.Live() != 0 {
 		t.Fatal("a Pi process was started without the extension")
+	}
+}
+
+func TestEngineSyncsLocalProviders(t *testing.T) {
+	e := newTestEngine(t)
+	e.config.LocalModels = true
+	e.config.AgentDir = t.TempDir()
+	e.config.localScan = func(context.Context) []localmodels.Server {
+		return []localmodels.Server{{
+			Kind:    localmodels.Ollama,
+			BaseURL: "http://127.0.0.1:11434",
+			Models:  []localmodels.Model{{ID: "llama3"}},
+		}}
+	}
+	s, err := e.Start(context.Background(), engine.SessionOptions{BotID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	content, err := os.ReadFile(filepath.Join(e.config.AgentDir, "models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Providers map[string]struct {
+			BaseURL string `json:"baseUrl"`
+			Models  []struct {
+				ID string `json:"id"`
+			} `json:"models"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(content, &file); err != nil {
+		t.Fatal(err)
+	}
+	provider, ok := file.Providers["ollama"]
+	if !ok || provider.BaseURL != "http://127.0.0.1:11434/v1" || len(provider.Models) != 1 || provider.Models[0].ID != "llama3" {
+		t.Fatalf("models.json providers = %+v", file.Providers)
+	}
+}
+
+func TestEngineLocalModelsAbsent(t *testing.T) {
+	e := newTestEngine(t)
+	e.config.LocalModels = true
+	e.config.AgentDir = t.TempDir()
+	e.config.localScan = func(context.Context) []localmodels.Server { return nil }
+	s, err := e.Start(context.Background(), engine.SessionOptions{BotID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	if _, err := os.Stat(filepath.Join(e.config.AgentDir, "models.json")); !os.IsNotExist(err) {
+		t.Fatalf("models.json written without local servers: %v", err)
 	}
 }
 

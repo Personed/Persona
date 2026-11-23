@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Personed/Persona/internal/engine"
+	"github.com/Personed/Persona/internal/localmodels"
 )
 
 // RequestTimeout bounds one setup or control command, like the TypeScript handshake.
@@ -47,6 +48,16 @@ type Config struct {
 	RequestTimeout time.Duration
 	// StopGrace is the wait between shutdown steps. Zero means StopGrace.
 	StopGrace time.Duration
+	// LocalModels syncs detected local model servers (Ollama, llama.cpp,
+	// LM Studio) into AgentDir/models.json before each Pi process starts, so
+	// the spawned Pi offers them as providers.
+	LocalModels bool
+	// AgentDir is Pi's agent directory holding models.json. Empty means
+	// $PI_CODING_AGENT_DIR from Env, else ~/.pi/agent.
+	AgentDir string
+	// localScan replaces local server discovery; nil means the default
+	// probes. Tests set it.
+	localScan func(context.Context) []localmodels.Server
 }
 
 // Engine implements engine.Engine with one Pi process per active Bot.
@@ -147,6 +158,48 @@ func (e *Engine) Catalog(ctx context.Context) ([]CatalogModel, error) {
 	return result.Models, err
 }
 
+// syncLocalModels merges detected local providers into Pi's models.json before
+// a process starts. No servers means no write, so a disabled scanner costs
+// nothing.
+func (e *Engine) syncLocalModels(ctx context.Context) error {
+	if !e.config.LocalModels {
+		return nil
+	}
+	scan := e.config.localScan
+	if scan == nil {
+		scan = func(ctx context.Context) []localmodels.Server {
+			return localmodels.Discover(ctx, localmodels.DefaultEndpoints())
+		}
+	}
+	servers := scan(ctx)
+	if len(servers) == 0 {
+		return nil
+	}
+	_, err := localmodels.SyncProviders(filepath.Join(e.agentDir(), "models.json"), servers)
+	return err
+}
+
+// agentDir mirrors Pi: $PI_CODING_AGENT_DIR (Env wins over the process
+// environment) or ~/.pi/agent.
+func (e *Engine) agentDir() string {
+	if e.config.AgentDir != "" {
+		return e.config.AgentDir
+	}
+	for _, kv := range e.config.Env {
+		if dir, ok := strings.CutPrefix(kv, "PI_CODING_AGENT_DIR="); ok && dir != "" {
+			return dir
+		}
+	}
+	if dir := os.Getenv("PI_CODING_AGENT_DIR"); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".pi", "agent")
+	}
+	return filepath.Join(home, ".pi", "agent")
+}
+
 // extensions returns the Pi flags that load the packaged approval/tool
 // extension. Sessions fail closed: none are launched without one readable file.
 func (e *Engine) extensions() ([]string, error) {
@@ -171,6 +224,9 @@ func (e *Engine) extensions() ([]string, error) {
 func (e *Engine) transient(ctx context.Context, env []string, run func(context.Context, *Client) error) error {
 	ctx, cancel := e.bound(ctx)
 	defer cancel()
+	if err := e.syncLocalModels(ctx); err != nil {
+		return err
+	}
 	p, err := Start(Command{
 		Path: e.config.Command,
 		Args: append([]string{"--mode", "rpc", "--no-session"}, e.config.Args...),
@@ -239,6 +295,9 @@ func (e *Engine) open(ctx context.Context, botID int64) (*conn, error) {
 	}
 	extensions, err := e.extensions()
 	if err != nil {
+		return nil, err
+	}
+	if err := e.syncLocalModels(ctx); err != nil {
 		return nil, err
 	}
 	args := append([]string{"--mode", "rpc"}, extensions...)
