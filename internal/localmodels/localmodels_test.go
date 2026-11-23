@@ -108,12 +108,13 @@ func TestSyncProviders(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "models.json")
 	existing := "\xef\xbb\xbf" + `{"providers":{ // apiKey per provider
-"anthropic":{"apiKey":"sk-ant"},"ollama":{"apiKey":"my-key","baseUrl":"http://a//b"}}}`
+"anthropic":{"apiKey":"sk-ant"},"ollama":{"apiKey":"my-key","baseUrl":"http://a//b",
+"models":[{"id":"llama3.1:8b","contextWindow":4096,"maxTokens":1024}]}}}`
 	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	servers := []Server{
-		{Kind: Ollama, BaseURL: "http://127.0.0.1:11434", Models: []Model{{ID: "llama3.1:8b", ContextWindow: 131072}}},
+		{Kind: Ollama, BaseURL: "http://127.0.0.1:11434", Models: []Model{{ID: "llama3.1:8b", ContextWindow: 131072}, {ID: "qwen3:4b"}}},
 		{Kind: LMStudio, BaseURL: "http://127.0.0.1:1234", Models: []Model{{ID: "qwen-7b"}}},
 	}
 	changed, err := SyncProviders(path, servers)
@@ -140,11 +141,14 @@ func TestSyncProviders(t *testing.T) {
 	if ollama.APIKey != "my-key" {
 		t.Fatalf("stored apiKey not preserved: %q", ollama.APIKey)
 	}
-	if ollama.BaseURL != "http://127.0.0.1:11434/v1" || len(ollama.Models) != 1 {
+	if ollama.BaseURL != "http://a//b" || ollama.API != "openai-completions" || len(ollama.Models) != 2 {
 		t.Fatalf("unexpected ollama provider: %+v", ollama)
 	}
-	if ollama.Models[0].ContextWindow != 131072 || ollama.Models[0].API != "openai-completions" {
-		t.Fatalf("unexpected ollama model: %+v", ollama.Models[0])
+	if custom := ollama.Models[0]; custom.ContextWindow != 4096 || custom.MaxTokens != 1024 || custom.API != "" {
+		t.Fatalf("custom ollama model changed: %+v", custom)
+	}
+	if added := ollama.Models[1]; added.ID != "qwen3:4b" || added.API != "openai-completions" {
+		t.Fatalf("unexpected added ollama model: %+v", added)
 	}
 	studio := file.Providers["lmstudio"]
 	if studio.Models[0].ContextWindow != defaultContextWindow {
