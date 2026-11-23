@@ -12,12 +12,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Personed/Persona/internal/approval"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf16"
+
+	"github.com/Personed/Persona/internal/approval"
 
 	"github.com/Personed/Persona/internal/store"
 )
