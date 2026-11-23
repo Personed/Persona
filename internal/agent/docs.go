@@ -212,7 +212,14 @@ var (
 	MemorySnapshotDoc = Doc[MemorySnapshot]{Kind: memory.SnapshotDocKind, Scope: "task"}
 	UsageTaskDoc      = Doc[TaskItems]{Kind: "persona.engine-usage", Scope: "task", Initial: emptyItems}
 	CompactionTaskDoc = Doc[TaskItems]{Kind: "persona.engine-compaction", Scope: "task", Initial: emptyItems}
+	RequestsDoc       = Doc[ComputerRequests]{Kind: "persona.computer-requests", Scope: "conversation", History: "latest", Fork: "initial"}
 )
+
+// ComputerRequests is the persona.computer-requests document; internal/approval
+// owns its writes and the chat shows its pending approvals.
+type ComputerRequests struct {
+	Approvals []json.RawMessage `json:"approvals"`
+}
 
 // Entry kinds read by the chat projection.
 const (

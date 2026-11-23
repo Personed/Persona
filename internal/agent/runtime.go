@@ -691,21 +691,37 @@ func (r *Runtime) consume(ctx context.Context, session engine.Session, emit func
 	return settled
 }
 
-// approve answers one of Pi's approval requests. Answers are not served yet,
-// so only an Automatic request in the Bot's auto approval mode is allowed and
-// every other request is cancelled rather than left waiting.
-func (r *Runtime) approve(ctx context.Context, bot int64, session engine.Session, request map[string]any) {
-	id, _ := request["id"].(string)
-	automatic, _ := request["automatic"].(bool)
-	allow := false
-	if automatic && r.approvals != nil {
-		allow, _ = r.approvals.Automatic(ctx, bot)
+// approve asks the user one of Pi's approval requests through the shared
+// approval flow and answers Pi with the reply, as execution.ts approve does. A
+// stopped task expires the request, and Pi's dialog is cancelled.
+func (r *Runtime) approve(ctx context.Context, bot int64, session engine.Session, payload map[string]any) {
+	var request approval.Request
+	if data, err := json.Marshal(payload); err == nil {
+		_ = json.Unmarshal(data, &request)
 	}
-	answer := json.RawMessage(`{"cancelled":true}`)
-	if allow {
-		answer = json.RawMessage(`{"confirmed":true}`)
+	var answer approval.Answer
+	if r.approvals != nil && request.ID != "" {
+		answer, _ = r.approvals.Request(ctx, bot, request)
 	}
-	_ = session.Answer(ctx, id, answer)
+	response, _ := json.Marshal(piAnswer(request, answer))
+	_ = session.Answer(context.WithoutCancel(ctx), request.ID, response)
+}
+
+// piAnswer is the extension_ui_response body for an answered approval, as
+// pi-ui.ts answer: cancelled unless allowed, confirmed for a permission, else
+// the question's first answer or the free text.
+func piAnswer(request approval.Request, answer approval.Answer) map[string]any {
+	switch {
+	case !answer.Allow:
+		return map[string]any{"cancelled": true}
+	case request.Kind != approval.Question:
+		return map[string]any{"confirmed": true}
+	}
+	value := answer.Text
+	if values := answer.Answers[request.ID]; len(values) > 0 {
+		value = values[0]
+	}
+	return map[string]any{"value": value}
 }
 
 func (r *Runtime) readContext(ctx context.Context, session engine.Session, p *projection) {

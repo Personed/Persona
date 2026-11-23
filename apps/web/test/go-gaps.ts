@@ -37,7 +37,6 @@ export const goGaps: Record<string, string[]> = {
     "chat routine changes require confirmation and link runs to Work",
   ],
   "native questions: Pi's ask_user is not stored as a shared question card": [
-    "native questions use the shared card and native replies persist",
     "shared question and approval cards persist answers and terminal states",
   ],
   "native Work records: work.records does not yet project native turns": [
