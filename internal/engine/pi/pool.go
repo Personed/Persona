@@ -46,7 +46,8 @@ type slot[T Instance] struct {
 	retiring chan struct{}
 }
 
-// NewPool returns a pool that starts instances with open and closes them after idle.
+// NewPool returns a pool that starts instances with open and closes them after
+// idle, or as soon as the last lease is released when idle is negative.
 func NewPool[T Instance](idle time.Duration, open func(ctx context.Context, botID int64) (T, error)) *Pool[T] {
 	return &Pool[T]{open: open, idle: idle, slots: map[int64]*slot[T]{}}
 }
@@ -157,6 +158,10 @@ func (p *Pool[T]) release(botID int64, s *slot[T]) {
 	defer p.mu.Unlock()
 	s.leases--
 	if s.leases > 0 || s.retiring != nil || p.slots[botID] != s {
+		return
+	}
+	if p.idle < 0 {
+		p.retireLocked(botID, s)
 		return
 	}
 	s.timer = time.AfterFunc(p.idle, func() {

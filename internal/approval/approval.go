@@ -439,6 +439,12 @@ func (s *Service) save(ctx context.Context, botID int64, meta store.Document, do
 	return err
 }
 
+// Automatic reports whether the Bot's approval mode allows requests marked
+// Automatic without asking.
+func (s *Service) Automatic(ctx context.Context, botID int64) (bool, error) {
+	return s.automatic(ctx, botID)
+}
+
 // automatic reports whether the Bot's approval mode allows automatic requests without asking.
 func (s *Service) automatic(ctx context.Context, botID int64) (bool, error) {
 	var computers struct {

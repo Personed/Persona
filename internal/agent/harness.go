@@ -100,11 +100,15 @@ type Tx struct {
 	h      *Harness
 	writes store.Batch
 	docs   []*txDoc
+	tasks  map[store.TaskID]*store.Task
+	subs   map[store.SubmissionID]*store.Submission
+	put    map[any]bool
 }
 
 type txDoc struct {
 	meta     store.Document
 	exists   bool
+	created  bool
 	original []byte
 	value    any
 }
@@ -142,6 +146,179 @@ func Edit[T any](tx *Tx, d Doc[T], owner int64) (*T, error) {
 	return &value, nil
 }
 
+// Create returns the document like Edit and, when it is new, reserves its
+// record ID now and writes it even unchanged, as pi-durable creates a document
+// on first access: the ID then orders with the transaction's other records.
+func Create[T any](tx *Tx, d Doc[T], owner int64) (*T, error) {
+	value, err := Edit(tx, d, owner)
+	if err != nil {
+		return nil, err
+	}
+	doc := tx.doc(d.Kind, d.scope(owner))
+	if !doc.exists && !doc.created {
+		id, err := tx.MintID()
+		if err != nil {
+			return nil, err
+		}
+		doc.meta.ID, doc.created = store.DocumentID(id), true
+	}
+	return value, nil
+}
+
+func (tx *Tx) doc(kind string, scope store.Scope) *txDoc {
+	for _, doc := range tx.docs {
+		if doc.meta.Kind == kind && doc.meta.Scope == scope {
+			return doc
+		}
+	}
+	return nil
+}
+
+// AppendEntry adds an entry to a conversation and returns its ID.
+func (tx *Tx) AppendEntry(entry store.Entry) (store.EntryID, error) {
+	id, err := tx.MintID()
+	if err != nil {
+		return 0, err
+	}
+	entry.ID = store.EntryID(id)
+	tx.writes = append(tx.writes, store.Write{Type: store.WriteEntry, Entry: &entry})
+	return entry.ID, nil
+}
+
+// Entries scans entries as of the transaction's start.
+func (tx *Tx) Entries(query store.EntryQuery, scan store.Scan) (store.Page[store.Entry], error) {
+	return tx.h.store.Entries(tx.ctx, query, scan)
+}
+
+// Task returns the task for changing in tx, or nil when it does not exist.
+// Call PutTask to write a change.
+func (tx *Tx) Task(id store.TaskID) (*store.Task, error) {
+	if task, ok := tx.tasks[id]; ok {
+		return task, nil
+	}
+	task, err := tx.h.store.Task(tx.ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if tx.tasks == nil {
+		tx.tasks = map[store.TaskID]*store.Task{}
+	}
+	tx.tasks[id] = &task
+	return &task, nil
+}
+
+// CreateTask adds a pending task and returns it.
+func (tx *Tx) CreateTask(task store.Task) (*store.Task, error) {
+	id, err := tx.MintID()
+	if err != nil {
+		return nil, err
+	}
+	task.ID = store.TaskID(id)
+	if task.State.Status == "" {
+		task.State.Status = store.TaskPending
+	}
+	if tx.tasks == nil {
+		tx.tasks = map[store.TaskID]*store.Task{}
+	}
+	tx.tasks[task.ID] = &task
+	tx.PutTask(&task)
+	return &task, nil
+}
+
+// PutTask writes the task when tx commits, with any later changes.
+func (tx *Tx) PutTask(task *store.Task) {
+	if tx.mark(task) {
+		tx.writes = append(tx.writes, store.Write{Type: store.WriteTask, Task: task})
+	}
+}
+
+// Submission returns the submission for changing in tx, or nil.
+func (tx *Tx) Submission(id store.SubmissionID) (*store.Submission, error) {
+	if sub, ok := tx.subs[id]; ok {
+		return sub, nil
+	}
+	sub, err := tx.h.store.Submission(tx.ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return tx.keep(&sub), nil
+}
+
+// SubmissionByRequest finds a conversation's submission by request ID, or nil.
+func (tx *Tx) SubmissionByRequest(conversation store.ConversationID, requestID string) (*store.Submission, error) {
+	for _, sub := range tx.subs {
+		if sub.ConversationID == conversation && sub.RequestID == requestID {
+			return sub, nil
+		}
+	}
+	sub, err := tx.h.store.SubmissionByRequest(tx.ctx, conversation, requestID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return tx.keep(&sub), nil
+}
+
+func (tx *Tx) keep(sub *store.Submission) *store.Submission {
+	if tx.subs == nil {
+		tx.subs = map[store.SubmissionID]*store.Submission{}
+	}
+	tx.subs[sub.ID] = sub
+	return sub
+}
+
+// CreateSubmission adds a submission and returns it.
+func (tx *Tx) CreateSubmission(sub store.Submission) (*store.Submission, error) {
+	id, err := tx.MintID()
+	if err != nil {
+		return nil, err
+	}
+	sub.ID = store.SubmissionID(id)
+	created := tx.keep(&sub)
+	tx.PutSubmission(created)
+	return created, nil
+}
+
+// PutSubmission writes the submission when tx commits, with any later changes.
+func (tx *Tx) PutSubmission(sub *store.Submission) {
+	if tx.mark(sub) {
+		tx.writes = append(tx.writes, store.Write{Type: store.WriteSubmission, Submission: sub})
+	}
+}
+
+// SettleSubmission ends a submission that is not settled yet.
+func (tx *Tx) SettleSubmission(id store.SubmissionID, status store.SubmissionStatus, answer *store.EntryID, reason string) error {
+	sub, err := tx.Submission(id)
+	if err != nil || sub == nil {
+		return err
+	}
+	if sub.Status == store.SubmissionDone || sub.Status == store.SubmissionUnanswered {
+		return nil
+	}
+	sub.Status, sub.Answer, sub.Reason = status, answer, reason
+	tx.PutSubmission(sub)
+	return nil
+}
+
+func (tx *Tx) mark(record any) bool {
+	if tx.put == nil {
+		tx.put = map[any]bool{}
+	}
+	if tx.put[record] {
+		return false
+	}
+	tx.put[record] = true
+	return true
+}
+
 // MintID reserves a record ID.
 func (tx *Tx) MintID() (int64, error) { return tx.h.store.MintID(tx.ctx) }
 
@@ -170,16 +347,18 @@ func (h *Harness) Commit(ctx context.Context, fn func(tx *Tx) error) error {
 		if err != nil {
 			return err
 		}
-		if bytes.Equal(value, doc.original) {
+		if bytes.Equal(value, doc.original) && !doc.created {
 			continue
 		}
 		write := store.Write{Type: store.WriteDocumentChange, Value: value}
 		if !doc.exists {
-			id, err := tx.MintID()
-			if err != nil {
-				return err
+			if doc.meta.ID == 0 {
+				id, err := tx.MintID()
+				if err != nil {
+					return err
+				}
+				doc.meta.ID = store.DocumentID(id)
 			}
-			doc.meta.ID = store.DocumentID(id)
 			write.Type = store.WriteDocumentCreate
 		}
 		meta := doc.meta
