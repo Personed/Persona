@@ -588,17 +588,35 @@ type LaunchOptions struct {
 	RuntimeHome string
 	Env         map[string]string
 	User        string
-	Stdin       io.Reader
-	Stdout      io.Writer
-	Stderr      io.Writer
+	// Gateway is the product tool endpoint mounted on this worker.
+	Gateway *Gateway
+	Stdin   io.Reader
+	Stdout  io.Writer
+	Stderr  io.Writer
 }
 
 // Launch runs a Harness program as the work computer's OS user, with its account
 // environment and the program its login shell resolves. Kill stops the whole tree.
 func (c *Client) Launch(ctx context.Context, options LaunchOptions) (computer.Process, error) {
+	env := options.Env
+	if options.Gateway != nil {
+		if options.Gateway.owner != c {
+			return nil, errors.New("worker: gateway belongs to another connection")
+		}
+		select {
+		case <-options.Gateway.done:
+			return nil, errors.New("worker: gateway is closed")
+		default:
+		}
+		env = make(map[string]string, len(options.Env)+1)
+		for key, value := range options.Env {
+			env[key] = value
+		}
+		env["PERSONA_PI_MCP_URL"] = options.Gateway.URL
+	}
 	return c.start(ctx, "launch", launchRequest{
 		Program: options.Program, Args: options.Args, Cwd: options.Dir,
-		RuntimeHome: options.RuntimeHome, Env: options.Env, User: options.User,
+		RuntimeHome: options.RuntimeHome, Env: env, User: options.User,
 	}, computer.Command{Stdin: options.Stdin, Stdout: options.Stdout, Stderr: options.Stderr})
 }
 
