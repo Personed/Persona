@@ -145,7 +145,13 @@ func (c *controllerDriver) request(ctx context.Context, action, method string) (
 	if err != nil {
 		return out, err
 	}
-	endpoint := strings.TrimRight(c.config.Endpoint, "/") + "/" + url.PathEscape(c.config.ID) + "/" + action
+	base, err := url.Parse(c.config.Endpoint)
+	if err != nil {
+		return out, err
+	}
+	// new URL(`/${id}/${action}`, endpoint): the path replaces the endpoint's.
+	base.Path = "/" + url.PathEscape(c.config.ID) + "/" + action
+	endpoint := base.String()
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
