@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/computers"
 	"github.com/Personed/Persona/internal/rpc"
 )
@@ -203,5 +204,60 @@ func RegisterComputer(s *rpc.Server, c *computers.Catalog) {
 			return nil, rpc.NewError("BAD_REQUEST", "entrada inválida")
 		}
 		return nil, c.Watch(ctx, in.BotID, in.Service, send)
+	})
+}
+
+// RegisterComputerTakeover wires the takeover card procedures the engines
+// slice leaves unimplemented: engines.takeRequest grants a viewer control of
+// a pending takeover card, and engines.answer settles the stored approval —
+// finishing the live request before resolving it, as runtime.ts
+// execution.answer does.
+func RegisterComputerTakeover(s *rpc.Server, c *computers.Catalog, approvals *approval.Service) {
+	s.Handle("engines.takeRequest", func(ctx context.Context, input json.RawMessage) (any, error) {
+		var in struct {
+			BotID int64  `json:"botId"`
+			ID    string `json:"id"`
+			View  string `json:"view"`
+		}
+		if err := json.Unmarshal(input, &in); err != nil {
+			return nil, rpc.NewError("BAD_REQUEST", "entrada inválida")
+		}
+		if err := c.TakeRequest(ctx, in.BotID, in.ID, in.View, approvals); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+	})
+	s.Handle("engines.answer", func(ctx context.Context, input json.RawMessage) (any, error) {
+		var in struct {
+			BotID    int64               `json:"botId"`
+			ID       string              `json:"id"`
+			Allow    bool                `json:"allow"`
+			Text     string              `json:"text"`
+			Answers  map[string][]string `json:"answers"`
+			OptionID string              `json:"optionId"`
+		}
+		if err := json.Unmarshal(input, &in); err != nil {
+			return nil, rpc.NewError("BAD_REQUEST", "entrada inválida")
+		}
+		if in.Allow {
+			pending, err := approvals.Pending(ctx, in.BotID)
+			if err != nil {
+				return nil, err
+			}
+			for i := range pending {
+				if pending[i].ID == in.ID && pending[i].Takeover != nil {
+					if err := c.FinishRequest(ctx, in.BotID, in.ID); err != nil {
+						return nil, err
+					}
+					break
+				}
+			}
+		}
+		if err := approvals.Answer(in.BotID, in.ID, approval.Answer{
+			Allow: in.Allow, Text: in.Text, Answers: in.Answers, OptionID: in.OptionID,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
 	})
 }

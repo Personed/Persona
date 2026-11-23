@@ -77,13 +77,10 @@ func (c *Catalog) Handoff(approver *approval.Service) takeover.Handoff {
 		if err != nil {
 			return false, err
 		}
-		if answer.Allow {
-			// The "return control" answer completes the live request and
-			// releases the viewer lease (runtime.ts answer → finishRequest).
-			if err := c.FinishRequest(ctx, request.BotID, id); err != nil {
-				return false, err
-			}
-		}
+		// The allowed answer already released the viewer lease: the
+		// engines.answer procedure finishes the live request before it
+		// resolves the pending one (runtime.ts execution.answer →
+		// views.finishRequest → pending.resolve).
 		return answer.Allow, nil
 	}
 }

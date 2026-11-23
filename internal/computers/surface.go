@@ -2,6 +2,7 @@ package computers
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -10,6 +11,8 @@ import (
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/worker"
 )
+
+var randRead = rand.Read
 
 // AssistanceView is computer.assistant's output, assistance.ts state().
 type AssistanceView struct {
@@ -33,8 +36,8 @@ func (c *Catalog) Assistant(ctx context.Context, botID int64) (AssistanceView, e
 		Revision:   binding.Revision,
 		Provider:   "typesafe",
 		Configured: map[string]bool{
-			"typesafe":   c.assistKey("typesafe") != "",
-			"openrouter": c.assistKey("openrouter") != "",
+			"typesafe":   c.assistKey(ctx, "typesafe") != "",
+			"openrouter": c.assistKey(ctx, "openrouter") != "",
 		},
 		Available: c.keyring != nil,
 	}
@@ -60,7 +63,7 @@ func (c *Catalog) AssistantConfigure(ctx context.Context, botID int64, computerI
 		if !ok || binding.ComputerID == nil || *binding.ComputerID != computerID {
 			return rpc.NewError("CONFLICT", "工作电脑已改变。请刷新后重试。")
 		}
-		if enabled && c.assistKey(provider) == "" {
+		if enabled && c.assistKey(ctx, provider) == "" {
 			return rpc.NewError("BAD_REQUEST", "请先保存这个来源的密钥。")
 		}
 		binding.Assistance = &Assistance{Enabled: enabled, Provider: provider}
@@ -246,8 +249,10 @@ func (c *Catalog) ConfigureService(ctx context.Context, botID int64, service str
 	return c.Services(ctx, botID)
 }
 
-// ServiceState is one service's state, ServiceState of service-types.ts.
+// ServiceState is one service's state, ServiceState of service-types.ts
+// plus the enabled flag the workspace reads (tools.ts state).
 type ServiceState struct {
+	Enabled   bool    `json:"enabled"`
 	Available bool    `json:"available"`
 	Error     *string `json:"error"`
 	Mode      string  `json:"mode,omitempty"`
@@ -275,8 +280,8 @@ func (c *Catalog) Services(ctx context.Context, botID int64) (ServiceStates, err
 		return ServiceStates{}, nil
 	}
 	states := ServiceStates{
-		Browser: ServiceState{Available: enabled["browser"]},
-		Desktop: ServiceState{Available: enabled["desktop"]},
+		Browser: ServiceState{Enabled: enabled["browser"]},
+		Desktop: ServiceState{Enabled: enabled["desktop"]},
 	}
 	for _, service := range []string{"browser", "desktop"} {
 		if !enabled[service] {
@@ -306,7 +311,7 @@ func (c *Catalog) Services(ctx context.Context, botID int64) (ServiceStates, err
 			// The worker has no prepare op yet: report the configured state.
 			continue
 		}
-		state := ServiceState{Available: prepared.Available, Error: prepared.Error, Mode: prepared.Mode}
+		state := ServiceState{Enabled: enabled[service], Available: prepared.Available, Error: prepared.Error, Mode: prepared.Mode}
 		if service == "browser" {
 			states.Browser = state
 		} else {
@@ -401,7 +406,7 @@ func (c *Catalog) AssistantKey(ctx context.Context, botID int64, provider, key s
 	if c.keyring == nil {
 		return AssistanceView{}, errors.New("当前服务未配置凭据存储。")
 	}
-	if err := c.saveKey(provider, key); err != nil {
+	if err := c.saveKey(ctx, provider, key); err != nil {
 		return AssistanceView{}, err
 	}
 	return c.Assistant(ctx, botID)
@@ -409,7 +414,7 @@ func (c *Catalog) AssistantKey(ctx context.Context, botID int64, provider, key s
 
 // AssistantTest checks provider connectivity (computer.assistantTest).
 func (c *Catalog) AssistantTest(ctx context.Context, _ int64, provider string) (AssistantTestResult, error) {
-	key := c.assistKey(provider)
+	key := c.assistKey(ctx, provider)
 	if key == "" {
 		return AssistantTestResult{}, errors.New("请先保存这个来源的密钥。")
 	}
