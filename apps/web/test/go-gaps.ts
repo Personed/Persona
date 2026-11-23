@@ -11,15 +11,8 @@ export const goGaps: Record<string, string[]> = {
       "takeover card first click opens the browser and resumes after completion",
       "takeover controls the Agent browser and preserves its layout through fullscreen",
     ],
-  "parallel tools: Pi runs one response's tool calls concurrently, so attach_file can read report.md before the edit beside it lands; the TypeScript harness runs them in order":
-    [
-      // The fixture holds the model request after ls, not the tool, so input
-      // steered while it waits joins a later turn instead of that request.
-      "chat keeps sending available while the Bot is working",
-      "file drafts, real tools, and published downloads survive Bot switches and restart",
-    ],
-  "faux failure: Pi's OpenAI-compatible provider always gives a failed reply an error message, so the fixture cannot script web-server.ts's failure without one":
-    ["typing follows the Bot and failures retain their error message"],
+  "chat steering: the Go fixture holds the model request after ls, not the tool, so input steered while it waits joins a later turn":
+    ["chat keeps sending available while the Bot is working"],
   "routine tools: Pi's scripted routine_create call shows no routine approval card in chat":
     ["chat routine changes require confirmation and link runs to Work"],
   "native questions: Pi's ask_user is not stored as a shared question card": [

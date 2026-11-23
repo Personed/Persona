@@ -378,7 +378,12 @@ func writeTools(stateDir string, botID int64, o engine.SessionOptions) (string, 
 	if err != nil {
 		return "", err
 	}
-	data, err := json.Marshal(map[string]any{"url": o.Env["PERSONA_PI_MCP_URL"], "tools": o.Tools, "servers": []any{}})
+	data, err := json.Marshal(map[string]any{
+		"url":                 o.Env["PERSONA_PI_MCP_URL"],
+		"tools":               o.Tools,
+		"servers":             []any{},
+		"sequentialFileTools": true,
+	})
 	if err != nil {
 		return "", err
 	}
