@@ -3,18 +3,15 @@ import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { characterIdentity } from "@persona/ui/characters";
-import { expect, stopWorker, test } from "./fixtures.ts";
+import { expect, fixtureServer, stopWorker, test } from "./fixtures.ts";
 
 test("plush identities load, animate and survive profile changes", async ({
   page,
 }, testInfo) => {
   const directory = await mkdtemp(join(tmpdir(), "persona-avatars-"));
   const worker = fork(
-    fileURLToPath(
-      new URL("../../api/test/fixtures/web-server.ts", import.meta.url),
-    ),
+    fixtureServer("web-server"),
     [join(directory, "data.sqlite"), "0"],
     { silent: true, execArgv: [] },
   );

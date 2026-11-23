@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,12 +40,157 @@ func RegisterEngines(s *rpc.Server, a *agent.Agent, rt *agent.Runtime) {
 	for _, path := range engineRuntimeProcedures {
 		s.Handle(path, r.withoutEngine)
 	}
+	if rt != nil && rt.Native() {
+		s.Handle("engines.inspect", r.inspect)
+		s.Handle("engines.configure", r.configure)
+		s.Handle("engines.select", r.selectEngineModel)
+	}
 	s.Handle("engines.usage", func(ctx context.Context, input json.RawMessage) (any, error) {
 		if !native {
 			return []any{}, nil
 		}
 		return r.usage(ctx, input)
 	})
+}
+
+// engineProfile is profile in packages/agent/src/runtime before any engine
+// connection is inspected: without a computer runtime no Bot has a bound work
+// computer, so the catalog has no versions or models and there is no
+// connection.
+func (r agentRoutes) engineProfile(ctx context.Context, input json.RawMessage) (any, error) {
+	id, err := r.bot(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	return r.profileOf(ctx, id)
+}
+
+// engineConfig is the Bot's engine configuration, or the initial Pi
+// configuration with its pi.agent model before the first engine change.
+func (r agentRoutes) engineConfig(ctx context.Context, id int64) (agent.EngineState, agent.EngineConfig, error) {
+	doc, ok, err := agent.Snapshot(ctx, r.a.Harness, agent.EngineDoc, id)
+	if err != nil || ok {
+		return doc, doc.Config, err
+	}
+	settings, _, err := agent.Snapshot(ctx, r.a.Harness, agent.AgentDoc, id)
+	if err != nil {
+		return doc, agent.EngineConfig{}, err
+	}
+	config := agent.EngineConfig{Provider: "pi"}
+	if selection := settings.Model(); selection != nil {
+		value := selection.Provider + "/" + selection.ModelID
+		config.Model = &value
+	}
+	return doc, config, nil
+}
+
+// profileOf is profile in packages/agent/src/runtime. Without a computer
+// runtime no Bot has a bound work computer, so the catalog and connection come
+// from the last engine inspection on the service computer.
+func (r agentRoutes) profileOf(ctx context.Context, id int64) (any, error) {
+	doc, config, err := r.engineConfig(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	engines := agent.EngineCatalog()
+	catalog := make([]map[string]any, len(engines))
+	var connection, model any
+	for i, e := range engines {
+		entry := map[string]any{"id": e.ID, "name": e.Name, "version": nil, "models": []agent.EngineModel{}}
+		if inspected, ok := r.rt.Inspection(e.ID); ok {
+			entry["version"], entry["models"] = inspected.Version, inspected.Models
+			if e.ID == config.Provider {
+				connection = inspected
+				for _, m := range inspected.Models {
+					if config.Model != nil && m.ID == *config.Model {
+						model = m
+					}
+				}
+			}
+		}
+		catalog[i] = entry
+	}
+	var runtime any
+	if doc.Runtime != nil && doc.ComputerID == nil {
+		runtime = doc.Runtime
+	}
+	view := map[string]any{"provider": config.Provider, "model": config.Model}
+	if config.Options != nil {
+		view["options"] = config.Options
+	}
+	return map[string]any{
+		"config":     view,
+		"computerId": nil,
+		"catalog":    catalog,
+		"connection": connection,
+		"model":      model,
+		"revision":   doc.Revision,
+		"runtime":    runtime,
+		"busy":       len(doc.Tasks) > 0,
+		"error":      doc.Error,
+		"prepared":   doc.Prepared && cmp.Or(doc.PreparedComputerID, doc.ComputerID) == nil,
+		"providers":  engines,
+	}, nil
+}
+
+func (r agentRoutes) inspect(ctx context.Context, input json.RawMessage) (any, error) {
+	id, err := r.bot(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	var in struct {
+		Config *agent.EngineConfig `json:"config"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return nil, rpc.NewError("BAD_REQUEST", "Input validation failed")
+	}
+	if in.Config == nil {
+		_, config, err := r.engineConfig(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		in.Config = &config
+	}
+	return r.rt.Inspect(ctx, *in.Config), nil
+}
+
+func (r agentRoutes) configure(ctx context.Context, input json.RawMessage) (any, error) {
+	id, err := r.bot(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	var in agent.EngineChange
+	if err := json.Unmarshal(input, &in); err != nil {
+		return nil, rpc.NewError("BAD_REQUEST", "Input validation failed")
+	}
+	if err := r.rt.Configure(ctx, id, in); err != nil {
+		return nil, rpcError(err)
+	}
+	return r.profileOf(ctx, id)
+}
+
+func (r agentRoutes) selectEngineModel(ctx context.Context, input json.RawMessage) (any, error) {
+	id, err := r.bot(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	var in struct {
+		Model     *string        `json:"model"`
+		Options   map[string]any `json:"options"`
+		Revision  int            `json:"revision"`
+		RequestID string         `json:"requestId"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return nil, rpc.NewError("BAD_REQUEST", "Input validation failed")
+	}
+	_, config, err := r.engineConfig(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.rt.Select(ctx, id, config, in.Model, in.Options, in.Revision, in.RequestID); err != nil {
+		return nil, rpcError(err)
+	}
+	return r.profileOf(ctx, id)
 }
 
 func (r agentRoutes) selectModel(ctx context.Context, input json.RawMessage) (any, error) {

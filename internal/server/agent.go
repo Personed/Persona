@@ -46,7 +46,11 @@ func RegisterAgent(s *rpc.Server, a *agent.Agent, rt *agent.Runtime, catalog ...
 	s.Handle("models.visibility", func(ctx context.Context, _ json.RawMessage) (any, error) { return a.Bots.ModelVisibility(ctx) })
 	s.Handle("models.setVisibility", r.setVisibility)
 	s.Handle("engines.catalog", func(context.Context, json.RawMessage) (any, error) { return agent.EngineCatalog(), nil })
-	s.Handle("engines.get", r.withoutEngine)
+	if rt != nil && rt.Native() {
+		s.Handle("engines.get", r.engineProfile)
+	} else {
+		s.Handle("engines.get", r.withoutEngine)
+	}
 	s.Handle("work.profile", r.profile)
 	s.Handle("work.update", r.update)
 	s.Handle("mcp.catalog", func(context.Context, json.RawMessage) (any, error) { return agent.MCPApps(), nil })

@@ -150,7 +150,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	var runtime *agent.Runtime
 	if *piExtension != "" {
 		// An idle Bot has no Pi: each closes with the last session of its task.
-		engine := pi.New(pi.Config{Extensions: []string{*piExtension}, IdleTimeout: -1,
+		engine := pi.New(pi.Config{Extensions: []string{*piExtension}, IdleTimeout: -1, LocalModels: true,
 			SessionDir: filepath.Join(*dataDir, "pi", "sessions"), StateDir: filepath.Join(*dataDir, "pi", "state")})
 		defer engine.Close()
 		registry := tools.NewRegistry()

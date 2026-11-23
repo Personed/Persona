@@ -3,7 +3,6 @@ import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
@@ -14,6 +13,7 @@ import type { AppRouter } from "../../api/src/router.ts";
 import {
   expect,
   type FileChooser,
+  fixtureServer,
   type Page,
   setTestLanguage,
   test,
@@ -27,9 +27,7 @@ let toolName: string;
 
 async function start(port = 0, native = false) {
   worker = fork(
-    fileURLToPath(
-      new URL("../../api/test/fixtures/web-server.ts", import.meta.url),
-    ),
+    fixtureServer("web-server"),
     [database, String(port), native ? "native" : ""],
     { silent: true, execArgv: [] },
   );
@@ -975,7 +973,7 @@ test("send, reload, disconnect, reconnect and restart preserve the conversation"
   await expect(contactTime).toHaveText(/^\d{2}:\d{2}$/);
   const lastMessage = (
     await createORPCClient<RouterClient<AppRouter>>(
-      new RPCLink({ url: `${url}/rpc` }),
+      new RPCLink({ url: `${url}/rpc`, headers: { origin: url } }),
     ).get({ botId: 1 })
   ).messages.at(-1);
   await expect(contactTime).toHaveAttribute(
@@ -3885,7 +3883,7 @@ test("composer menu adds task materials, keeps drafts, and fits both themes", as
   page,
 }) => {
   const rpc: RouterClient<AppRouter> = createORPCClient(
-    new RPCLink({ url: `${url}/rpc` }),
+    new RPCLink({ url: `${url}/rpc`, headers: { origin: url } }),
   );
   const bot = (await rpc.bots.list())[0];
   if (!bot) throw new Error("Missing Bot");
