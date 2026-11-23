@@ -35,6 +35,7 @@ type Client struct {
 	err     error
 	cmd     *exec.Cmd
 	closed  atomic.Bool
+	options Options
 }
 
 type pending struct {
@@ -47,6 +48,12 @@ type Options struct {
 	ID   string
 	Name string
 	Kind computer.Kind
+	// MCPNotification receives notifications from connected MCP servers.
+	MCPNotification func(id string, notification MCPNotification)
+	// WorkDir is the Bot work directory that Execute and Observe use.
+	WorkDir string
+	// ComputerDrivers replaces the desktop or browser driver, by service.
+	ComputerDrivers map[string]*MCPConfig
 }
 
 // Transport builds the command that starts a worker printing token on its sync line.
@@ -95,7 +102,7 @@ func Dial(ctx context.Context, transport Transport, options Options) (*Client, e
 // Connect speaks the protocol over an established stream: it waits for the
 // sync line carrying token, then sends hello.
 func Connect(ctx context.Context, in io.Reader, out io.WriteCloser, token string, options Options) (*Client, error) {
-	c := &Client{
+	c := &Client{options: options,
 		reader: bufio.NewReaderSize(in, 64<<10), writer: out,
 		calls: map[uint32]*pending{}, done: make(chan struct{}),
 	}
@@ -171,6 +178,8 @@ func (c *Client) readLoop() {
 		}
 		c.mu.Unlock()
 		switch {
+		case call == nil && f.Type == frameEvent && f.ID == 0:
+			c.workerEvent(f.JSON)
 		case call == nil:
 		case f.Type == frameEvent && call.event != nil:
 			call.event(f.JSON, f.Payload)
@@ -583,17 +592,35 @@ type LaunchOptions struct {
 	RuntimeHome string
 	Env         map[string]string
 	User        string
-	Stdin       io.Reader
-	Stdout      io.Writer
-	Stderr      io.Writer
+	// Gateway is the product tool endpoint mounted on this worker.
+	Gateway *Gateway
+	Stdin   io.Reader
+	Stdout  io.Writer
+	Stderr  io.Writer
 }
 
 // Launch runs a Harness program as the work computer's OS user, with its account
 // environment and the program its login shell resolves. Kill stops the whole tree.
 func (c *Client) Launch(ctx context.Context, options LaunchOptions) (computer.Process, error) {
+	env := options.Env
+	if options.Gateway != nil {
+		if options.Gateway.owner != c {
+			return nil, errors.New("worker: gateway belongs to another connection")
+		}
+		select {
+		case <-options.Gateway.done:
+			return nil, errors.New("worker: gateway is closed")
+		default:
+		}
+		env = make(map[string]string, len(options.Env)+1)
+		for key, value := range options.Env {
+			env[key] = value
+		}
+		env["PERSONA_PI_MCP_URL"] = options.Gateway.URL
+	}
 	return c.start(ctx, "launch", launchRequest{
 		Program: options.Program, Args: options.Args, Cwd: options.Dir,
-		RuntimeHome: options.RuntimeHome, Env: options.Env, User: options.User,
+		RuntimeHome: options.RuntimeHome, Env: env, User: options.User,
 	}, computer.Command{Stdin: options.Stdin, Stdout: options.Stdout, Stderr: options.Stderr})
 }
 
@@ -689,15 +716,24 @@ func (p *process) Kill() error {
 	return p.client.send(frameCancel, p.id, map[string]string{"mode": "kill"}, nil)
 }
 
-// Execute implements computer.Target. Browser and desktop actions are bridged
-// to agent-browser and cua-driver by the computer service, not this connection.
-func (c *Client) Execute(context.Context, computer.Action) (computer.Observation, error) {
-	return computer.Observation{}, errors.ErrUnsupported
+// Execute implements computer.Target for Options.WorkDir. It journals the action
+// under a fresh call ID; task callers use Act with the engine's call ID.
+func (c *Client) Execute(ctx context.Context, action computer.Action) (computer.Observation, error) {
+	callID, err := newToken()
+	if err != nil {
+		return computer.Observation{}, err
+	}
+	return c.Act(ctx, ComputerCall{Dir: c.options.WorkDir, CallID: callID, Action: action})
 }
 
-// Observe implements computer.Target; see Execute.
-func (c *Client) Observe(context.Context, string) (computer.Observation, error) {
-	return computer.Observation{}, errors.ErrUnsupported
+// Observe implements computer.Target with the driver's native observation:
+// get_desktop_state for the desktop, agent_browser_snapshot for the browser.
+func (c *Client) Observe(ctx context.Context, service string) (computer.Observation, error) {
+	name := "get_desktop_state"
+	if service == "browser" {
+		name = "agent_browser_snapshot"
+	}
+	return c.Act(ctx, ComputerCall{Dir: c.options.WorkDir, Action: computer.Action{Service: service, Name: name}})
 }
 
 // Close ends the connection. The worker then kills every program it started.
@@ -730,4 +766,27 @@ func (w *limitedWriter) Write(p []byte) (int, error) {
 		w.buffer.Write(p[:min(len(p), room)])
 	}
 	return len(p), nil
+}
+
+func (c *Client) workerEvent(raw json.RawMessage) {
+	var event mcpEvent
+	if json.Unmarshal(raw, &event) == nil && event.Type == "mcpNotification" && event.Notification != nil && c.options.MCPNotification != nil {
+		c.options.MCPNotification(event.ID, *event.Notification)
+	}
+}
+
+// MCP runs one managed MCP operation on the work computer. progress receives
+// the server's progress notifications for a forwarded request.
+func (c *Client) MCP(ctx context.Context, input MCPInput, progress func(MCPProgress)) (MCPResult, error) {
+	var result MCPResult
+	raw, _, err := c.call(ctx, "mcp", input, nil, func(raw json.RawMessage, _ []byte) {
+		var event mcpEvent
+		if progress != nil && json.Unmarshal(raw, &event) == nil && event.Type == "progress" && event.Progress != nil {
+			progress(*event.Progress)
+		}
+	})
+	if err == nil {
+		err = json.Unmarshal(raw, &result)
+	}
+	return result, err
 }

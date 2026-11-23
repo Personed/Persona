@@ -181,7 +181,14 @@ func (c *Client) send(ctx context.Context, record any) error {
 	case err := <-w.done:
 		return err
 	case <-c.done:
-		return c.Err()
+		// The writer accepted this record before the connection ended. Its
+		// acknowledgement determines whether the write itself succeeded.
+		select {
+		case err := <-w.done:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	case <-ctx.Done():
 		return ctx.Err()
 	}

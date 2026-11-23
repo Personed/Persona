@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"golang.org/x/crypto/ssh"
 
 	"github.com/Personed/Persona/internal/computer"
@@ -31,10 +33,37 @@ func TestMain(m *testing.M) {
 				os.Exit(1)
 			}
 			os.Exit(0)
+		case "mcp-stdio":
+			if err := testMCPServer().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			os.Exit(0)
 		case "cat":
 			_, _ = io.Copy(os.Stdout, os.Stdin)
 			fmt.Fprint(os.Stderr, "done")
 			os.Exit(3)
+		case "computer-driver":
+			if err := testComputerDriver().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		case "browser-driver":
+			if err := testBrowserDriver().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		case "close":
+			_ = os.WriteFile(os.Getenv("TEST_BROWSER_CLOSED"), []byte(os.Getenv("AGENT_BROWSER_SESSION")), 0o600)
+			os.Exit(0)
+		case "pi-gateway":
+			if err := testPiGateway(os.Getenv("PERSONA_PI_MCP_URL")); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			os.Exit(0)
 		}
 	}
 	os.Exit(m.Run())

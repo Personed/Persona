@@ -20,7 +20,7 @@ import (
 var Version = "dev"
 
 // Features lists operations added after the first release of protocol 1.
-var Features = []string{"listFiles", "process", "launch"}
+var Features = []string{"listFiles", "process", "launch", "mcp", "gateway", "computer"}
 
 const (
 	pingInterval = 5 * time.Second
@@ -47,16 +47,22 @@ type server struct {
 	handles  handles
 	mu       sync.Mutex
 	requests map[uint32]*request
-	wg       sync.WaitGroup
-	lastRead atomic.Int64
+	// mcpSessions holds connected managed MCP servers by connection id.
+	mcpSessions   map[string]*mcpSession
+	computersMu   sync.Mutex
+	computers     map[string]*computerDriver
+	computerLanes map[string]*sync.Mutex
+	wg            sync.WaitGroup
+	lastRead      atomic.Int64
 }
 
 type request struct {
-	cancel context.CancelFunc
-	kill   chan struct{}
-	once   sync.Once
-	input  chan []byte
-	closed bool
+	cancel  context.CancelFunc
+	kill    chan struct{}
+	once    sync.Once
+	input   chan []byte
+	closed  bool
+	gateway *gatewayStream
 }
 
 type operation struct {
@@ -69,8 +75,10 @@ type operation struct {
 func Serve(ctx context.Context, in io.Reader, out io.Writer, token string) error {
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
-	s := &server{out: out, handles: handles{open: map[uint32]*os.File{}}, requests: map[uint32]*request{}}
+	s := &server{out: out, handles: handles{open: map[uint32]*os.File{}}, requests: map[uint32]*request{}, mcpSessions: map[string]*mcpSession{}, computers: map[string]*computerDriver{}}
 	defer s.handles.closeAll()
+	defer s.closeMCP()
+	defer s.closeComputers()
 	defer s.wg.Wait()
 	defer s.cancelAll()
 	if _, err := io.WriteString(out, syncPrefix+token+"\n"); err != nil {
@@ -186,6 +194,9 @@ func (s *server) dispatch(ctx context.Context, f frame) {
 	if op.Op == "process" || op.Op == "launch" {
 		r.input = make(chan []byte, 256)
 	}
+	if op.Op == "gateway" {
+		r.gateway = &gatewayStream{pending: map[uint32]gatewayRequest{}}
+	}
 	s.mu.Lock()
 	s.requests[f.ID] = r
 	s.mu.Unlock()
@@ -239,6 +250,10 @@ func (s *server) handle(ctx context.Context, r *request, f frame, op string) (an
 	switch op {
 	case "hello":
 		return hello(), nil, nil
+	case "gateway":
+		return empty, nil, s.serveGateway(ctx, f.ID, r.gateway)
+	case "gatewayReply":
+		return empty, nil, s.replyGateway(f)
 	case "lstat", "realpath", "write", "truncate", "rename", "mkdir", "rm", "mkdtemp", "open", "opendir":
 		request, err := decode[pathRequest](f.JSON)
 		if err != nil {
@@ -339,6 +354,20 @@ func (s *server) handle(ctx context.Context, r *request, f frame, op string) (an
 		}
 		code, err := s.launch(ctx, r, f.ID, request)
 		return map[string]int{"exitCode": code}, nil, err
+	case "mcp":
+		request, err := decode[MCPInput](f.JSON)
+		if err != nil {
+			return nil, nil, err
+		}
+		result, err := s.mcp(ctx, f.ID, request)
+		return result, nil, err
+	case "computer":
+		request, err := decode[ComputerInput](f.JSON)
+		if err != nil {
+			return nil, nil, err
+		}
+		result, err := s.computer(ctx, request)
+		return result, nil, err
 	case "process":
 		request, err := decode[execRequest](f.JSON)
 		if err != nil {
