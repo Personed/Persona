@@ -11,6 +11,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
 COPY apps ./apps
 COPY packages ./packages
+COPY deploy/NOTICE ./deploy/NOTICE
+COPY deploy/licenses ./deploy/licenses
 RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm build
 
 FROM ${GO_IMAGE} AS build
@@ -25,6 +27,9 @@ RUN CGO_ENABLED=0 go build -tags embedweb -ldflags "-X github.com/Personed/Perso
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+# The docker-cli image ships Buildx under cli-plugins; without it `docker build`
+# falls back to the legacy builder, which workspace.Dockerfile does not support.
+COPY --from=docker /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
 COPY --from=build /out/persona /usr/local/bin/persona
 COPY --from=build --chown=1000:1000 /data /data
 COPY contracts/api /app/contracts/api
