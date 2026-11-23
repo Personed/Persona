@@ -389,6 +389,9 @@ func recordLine(entry Entry) string {
 	return line.String()
 }
 
+// Usage returns the bytes the records use in context, by category.
+func Usage(items []Entry) map[string]int { return usage(items) }
+
 func usage(items []Entry) map[string]int {
 	used := map[string]int{Profile: 0, Work: 0}
 	for _, entry := range items {
