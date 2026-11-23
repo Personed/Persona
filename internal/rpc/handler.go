@@ -46,11 +46,14 @@ type Server struct {
 	prefix     string
 	procedures map[string]*procedure
 	keepAlive  time.Duration
+	streams    context.Context
+	close      context.CancelFunc
 }
 
 // New compiles every input schema of c.
 func New(c contract.Contract) (*Server, error) {
 	s := &Server{prefix: c.Prefix, procedures: map[string]*procedure{}, keepAlive: KeepAlive}
+	s.streams, s.close = context.WithCancel(context.Background())
 	for _, p := range c.Procedures {
 		proc := &procedure{Procedure: p}
 		if len(p.Input) > 0 && string(p.Input) != "null" {
@@ -80,6 +83,10 @@ func (s *Server) Registered(path string) bool {
 	p, ok := s.procedures[contract.Procedure{Path: path}.HTTPPath(s.prefix)]
 	return ok && (p.unary != nil || p.stream != nil)
 }
+
+// CloseStreams ends every open and later event stream without an event, as a
+// client disconnect does. Call it when the HTTP server shuts down.
+func (s *Server) CloseStreams() { s.close() }
 
 func (s *Server) lookup(path, kind string) *procedure {
 	p, ok := s.procedures[contract.Procedure{Path: path}.HTTPPath(s.prefix)]
@@ -145,6 +152,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request, stream Stream, input json.RawMessage) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	defer context.AfterFunc(s.streams, cancel)()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	writes := make(chan string)
@@ -186,13 +196,13 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request, stream Stre
 		select {
 		case writes <- text + "\n":
 			return nil
-		case <-r.Context().Done():
-			return r.Context().Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
-	result, err := stream(r.Context(), input, func(value any) error { return emit("message", envelope(value)) })
+	result, err := stream(ctx, input, func(value any) error { return emit("message", envelope(value)) })
 	switch {
-	case r.Context().Err() != nil:
+	case ctx.Err() != nil:
 	case err != nil:
 		_ = emit("error", map[string]any{"json": toError(err)})
 	default:
