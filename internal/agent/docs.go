@@ -212,9 +212,9 @@ var (
 	MemorySnapshotDoc = Doc[MemorySnapshot]{Kind: memory.SnapshotDocKind, Scope: "task"}
 	UsageTaskDoc      = Doc[TaskItems]{Kind: "persona.engine-usage", Scope: "task", Initial: emptyItems}
 	CompactionTaskDoc = Doc[TaskItems]{Kind: "persona.engine-compaction", Scope: "task", Initial: emptyItems}
-	RequestsDoc       = Doc[ComputerRequests]{Kind: "persona.computer-requests", Scope: "conversation", History: "latest", Fork: "initial"}
 	RoutinesDoc       = Doc[RoutinesState]{Kind: "persona.routines", Scope: "session"}
 	SkillsDoc         = Doc[SkillsState]{Kind: "persona.skills", Scope: "session"}
+	RequestsDoc       = Doc[ComputerRequests]{Kind: "persona.computer-requests", Scope: "conversation", History: "latest", Fork: "initial"}
 )
 
 // SkillItem is the part of a persona.skills record the prompt section reads.
