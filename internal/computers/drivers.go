@@ -150,7 +150,7 @@ func (c *controllerDriver) request(ctx context.Context, action, method string) (
 		return out, err
 	}
 	// new URL(`/${id}/${action}`, endpoint): the path replaces the endpoint's.
-	base.Path = "/" + url.PathEscape(c.config.ID) + "/" + action
+	base.Path = "/" + c.config.ID + "/" + action
 	endpoint := base.String()
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
