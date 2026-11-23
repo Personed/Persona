@@ -128,19 +128,23 @@ pnpm host restore --directory /srv/persona-restored --file /backup/persona.perso
 一份数据目录只允许一个实例接管。磁盘须支持 SQLite 文件锁，不使用 NFS。容器重建不会恢复原 exec 进程。连接中断后，先核对命令结果，再决定是否重试。
 
 ## 验收
-
 ```sh
 pnpm lint
 pnpm typecheck
 pnpm test
 pnpm test:e2e
+pnpm --filter @persona/desktop test
 pnpm --filter @persona/desktop build
-pnpm exec playwright test --config apps/desktop/playwright.config.ts
-node --test apps/desktop/test/package.test.mjs
+pnpm --filter @persona/desktop dist
 ```
+`pnpm --filter @persona/desktop test` 顺序运行桌面端的 Node 和 Rust 测试。`build` 编译桌面应用；`dist` 构建 Windows 安装包，并运行使用隔离 `LocalAppData` 的包内资源生命周期 smoke。它要求 Windows 和 Node.js 24+；CI 会在 Windows 执行这条命令，但仍不等于完整安装后的手工验收。
 
-分发包测试须先构建 Windows 包。它校验依赖位于包内，并启动包内后台。
-
+原生桌面输入 E2E 需要已登录且有交互权限的 Windows 桌面会话，并使用完整 Chromium（不是仅供无头模式的 shell）：
+```sh
+pnpm exec playwright install chromium
+pnpm exec playwright test --config apps/desktop/playwright.config.ts apps/desktop/test/computer-input.spec.ts
+```
+此测试在非 Windows 系统会跳过。Web E2E 使用 `pnpm exec playwright install chromium --only-shell`；Linux 若缺少浏览器系统依赖，安装时加 `--with-deps`。
 Docker 主机先构建工作镜像及代理镜像，再运行：
 
 ```sh

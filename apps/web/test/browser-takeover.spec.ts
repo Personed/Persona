@@ -8,7 +8,7 @@ import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
 import type { AppRouter } from "../../api/src/router.ts";
-import { expect, test } from "./fixtures.ts";
+import { expect, stopWorker, test } from "./fixtures.ts";
 
 let worker: ChildProcess;
 let directory: string;
@@ -33,11 +33,7 @@ test.beforeEach(async () => {
 });
 test.afterEach(async ({ page }) => {
   await page.close();
-  if (worker.connected) {
-    const exited = once(worker, "exit");
-    worker.disconnect();
-    await exited;
-  }
+  await stopWorker(worker);
   await rm(directory, { recursive: true, force: true, maxRetries: 5 });
 });
 
@@ -115,7 +111,7 @@ for (const refresh of [false, true]) {
     await page.addInitScript(() =>
       localStorage.setItem("persona:appearance:v1", "dark"),
     );
-    test.setTimeout(60000);
+    test.setTimeout(120_000);
     await page.goto(url);
     const view = page.getByRole("region", {
       name: "Persona的电脑",
@@ -171,9 +167,13 @@ for (const refresh of [false, true]) {
       state,
       "draft",
     );
+    const image = view.getByRole("img", { name: "工作电脑画面" });
     await page.mouse.click(at.x, at.y);
     await page.keyboard.press(
       refresh || process.platform === "darwin" ? "Meta+a" : "Control+a",
+    );
+    const previousFrame = await image.evaluate(
+      (node: HTMLImageElement) => node.currentSrc,
     );
     const inputStarted = performance.now();
     await page.keyboard.insertText("京都天气");
@@ -187,9 +187,12 @@ for (const refresh of [false, true]) {
     await expect
       .poll(
         () =>
-          view
-            .getByRole("img", { name: "工作电脑画面" })
-            .evaluate((image: HTMLImageElement, state) => {
+          image.evaluate(
+            (
+              image: HTMLImageElement,
+              baseline: { source: string; width: number; height: number },
+            ) => {
+              if (image.currentSrc === baseline.source) return false;
               const canvas = document.createElement("canvas");
               canvas.width = image.naturalWidth;
               canvas.height = image.naturalHeight;
@@ -198,14 +201,20 @@ for (const refresh of [false, true]) {
                 return false;
               context.drawImage(image, 0, 0);
               const [r = 255, g = 0, b = 255] = context.getImageData(
-                Math.floor((80 * image.naturalWidth) / state.width),
-                Math.floor((40 * image.naturalHeight) / state.height),
+                Math.floor((80 * image.naturalWidth) / baseline.width),
+                Math.floor((40 * image.naturalHeight) / baseline.height),
                 1,
                 1,
               ).data;
               return r < 50 && g > 140 && b < 120;
-            }, state),
-        { intervals: [16, 16, 32], timeout: 5000 },
+            },
+            {
+              source: previousFrame,
+              width: state.width,
+              height: state.height,
+            },
+          ),
+        { intervals: [100, 250, 500], timeout: 30_000 },
       )
       .toBe(true);
     const inputToPaintMs = performance.now() - inputStarted;

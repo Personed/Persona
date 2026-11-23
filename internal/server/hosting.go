@@ -103,15 +103,11 @@ func newHosted(cfg Hosting, local http.Handler) (http.Handler, error) {
 	if cfg.Sessions == nil {
 		return nil, errors.New("server: hosting needs Sessions")
 	}
-	u, err := url.Parse(cfg.PublicURL)
-	if err != nil || u.Host == "" {
-		return nil, fmt.Errorf("server: invalid public URL %q", cfg.PublicURL)
+	origin, host, err := publicOrigin(cfg.PublicURL)
+	if err != nil {
+		return nil, err
 	}
-	scheme, host := strings.ToLower(u.Scheme), strings.ToLower(u.Host)
-	if (scheme == "http" && strings.HasSuffix(host, ":80")) || (scheme == "https" && strings.HasSuffix(host, ":443")) {
-		host = host[:strings.LastIndex(host, ":")]
-	}
-	h := &hosted{cfg: cfg, local: local, origin: scheme + "://" + host, host: host, secure: scheme == "https",
+	h := &hosted{cfg: cfg, local: local, origin: origin, host: host, secure: strings.HasPrefix(origin, "https:"),
 		public: http.NewServeMux(), device: http.NewServeMux(), admin: http.NewServeMux()}
 	h.public.Handle("POST /hosting/exchange", h.handle(h.exchange))
 	h.public.Handle("POST /hosting/desktop", h.handle(h.desktop))
@@ -167,13 +163,28 @@ func (h *hosted) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// publicOrigin returns the origin and host of a public URL, without a default port.
+func publicOrigin(publicURL string) (origin, host string, err error) {
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Host == "" {
+		return "", "", fmt.Errorf("server: invalid public URL %q", publicURL)
+	}
+	scheme, host := strings.ToLower(u.Scheme), strings.ToLower(u.Host)
+	if (scheme == "http" && strings.HasSuffix(host, ":80")) || (scheme == "https" && strings.HasSuffix(host, ":443")) {
+		host = host[:strings.LastIndex(host, ":")]
+	}
+	return scheme + "://" + host, host, nil
+}
+
+func (h *hosted) checkOrigin(r *http.Request) string { return checkOrigin(r, h.origin, h.host) }
+
 // checkOrigin mirrors originGuard in apps/api/src/hosting/security.ts.
-func (h *hosted) checkOrigin(r *http.Request) string {
-	if r.Host != "" && r.Host != h.host {
+func checkOrigin(r *http.Request, origin, host string) string {
+	if r.Host != "" && r.Host != host {
 		return "服务器地址不匹配。"
 	}
 	supplied := r.Header.Get("Origin")
-	if supplied != "" && supplied != h.origin {
+	if supplied != "" && supplied != origin {
 		return "请求来源不匹配。"
 	}
 	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
