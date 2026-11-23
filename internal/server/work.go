@@ -23,9 +23,7 @@ type Work struct {
 // RegisterWork registers the work procedures, as workRouter in
 // apps/api/src/work.ts. work.prompt reads the prompt a native task was
 // started with, so it needs a native runtime; work.routines.test needs the
-// routine runner (Routines.RunNow). work.skills.save, preview and restore
-// stay unregistered until SKILL.md front matter is parsed with the YAML
-// failsafe schema the TypeScript service uses.
+// routine runner (Routines.RunNow).
 func RegisterWork(s *rpc.Server, a *agent.Agent, rt *agent.Runtime, w Work) {
 	r := workRoutes{agentRoutes: agentRoutes{a: a, rt: rt}, w: w}
 	s.Handle("work.get", func(ctx context.Context, input json.RawMessage) (any, error) {
@@ -48,6 +46,9 @@ func RegisterWork(s *rpc.Server, a *agent.Agent, rt *agent.Runtime, w Work) {
 	if w.Routines.RunNow != nil {
 		s.Handle("work.routines.test", r.testRoutine)
 	}
+	s.Handle("work.skills.save", r.saveSkill)
+	s.Handle("work.skills.preview", r.previewSkill)
+	s.Handle("work.skills.restore", r.restoreSkill)
 	s.Handle("work.skills.enable", r.enableSkill)
 	s.Handle("work.skills.delete", r.deleteSkill)
 	s.Handle("work.skills.export", r.exportSkill)
@@ -259,6 +260,60 @@ func (r workRoutes) testRoutine(ctx context.Context, input json.RawMessage) (any
 		return nil, workError(err)
 	}
 	return map[string]any{"taskId": task}, nil
+}
+
+func (r workRoutes) saveSkill(ctx context.Context, input json.RawMessage) (any, error) {
+	var in struct {
+		ID        string `json:"id"`
+		Content   string `json:"content"`
+		Archive   string `json:"archive"`
+		Revision  int    `json:"revision"`
+		RequestID string `json:"requestId"`
+	}
+	if _, err := r.target(ctx, input, &in); err != nil {
+		return nil, err
+	}
+	skill, err := r.w.Skills.Save(ctx, skills.SaveInput{
+		ID: in.ID, Content: in.Content, Archive: in.Archive,
+		Revision: in.Revision, RequestID: in.RequestID,
+	})
+	if err != nil {
+		return nil, workError(err)
+	}
+	return skill, nil
+}
+
+func (r workRoutes) previewSkill(ctx context.Context, input json.RawMessage) (any, error) {
+	var in struct {
+		ID      string `json:"id"`
+		Content string `json:"content"`
+		Archive string `json:"archive"`
+	}
+	if _, err := r.target(ctx, input, &in); err != nil {
+		return nil, err
+	}
+	out, err := r.w.Skills.Preview(ctx, in.ID, in.Content, in.Archive)
+	if err != nil {
+		return nil, workError(err)
+	}
+	return out, nil
+}
+
+func (r workRoutes) restoreSkill(ctx context.Context, input json.RawMessage) (any, error) {
+	var in struct {
+		ID        string `json:"id"`
+		Revision  int    `json:"revision"`
+		Hash      string `json:"hash"`
+		RequestID string `json:"requestId"`
+	}
+	if _, err := r.target(ctx, input, &in); err != nil {
+		return nil, err
+	}
+	skill, err := r.w.Skills.Restore(ctx, in.ID, in.Hash, in.Revision, in.RequestID)
+	if err != nil {
+		return nil, workError(err)
+	}
+	return skill, nil
 }
 
 func (r workRoutes) enableSkill(ctx context.Context, input json.RawMessage) (any, error) {

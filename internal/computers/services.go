@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/Personed/Persona/internal/computer"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/worker"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -193,6 +194,57 @@ func (s *services) takeover(ctx context.Context, service string, botID int64) (i
 	ctl.lease = lease
 	ctl.owner = false
 	return lease, nil
+}
+
+// Workspace dials the worker of the Bot's bound work computer and returns it
+// with the work directory, as catalog.ts workspace: the file Target behind
+// attach_file and skill packages. Unlike services, workspace needs no enabled
+// flag; it fails while the computer is being changed.
+func (c *Catalog) Workspace(ctx context.Context, botID int64) (computer.Target, string, error) {
+	binding, err := c.Binding(ctx, botID)
+	if err != nil {
+		return nil, "", err
+	}
+	if binding.ComputerID == nil {
+		return nil, "", rpc.NewError("BAD_REQUEST", "请先为 Bot 分配工作电脑。")
+	}
+	record, err := c.recordOf(ctx, *binding.ComputerID)
+	if err != nil {
+		return nil, "", err
+	}
+	if !record.Authorized {
+		return nil, "", rpc.NewError("BAD_REQUEST", "这台电脑的授权已撤销。")
+	}
+	if record.Scope != nil {
+		if err := c.ensureReady(ctx, record.ID); err != nil {
+			return nil, "", err
+		}
+	}
+	if c.isChanging(record.ID) {
+		return nil, "", rpc.NewError("CONFLICT", "工作电脑正在操作中。")
+	}
+	target := c.target(*record)
+	key := serviceKey{service: "workspace", botID: botID}
+	s := c.svcs
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if w := s.workers[key]; w != nil {
+		if client, ok := (*w).(*worker.Client); ok {
+			return client, target.workDir(botID), nil
+		}
+	}
+	transport, workDir, err := target.transport(botID)
+	if err != nil {
+		return nil, "", err
+	}
+	client, err := worker.Dial(ctx, transport, worker.Options{})
+	if err != nil {
+		return nil, "", err
+	}
+	var w serviceWorker = client
+	s.workers[key] = &w
+	s.records[key] = record.ID
+	return client, workDir, nil
 }
 
 // release returns control to the Bot (services.ts release).

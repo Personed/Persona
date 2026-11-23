@@ -72,8 +72,10 @@ func workService(t *testing.T) workFixture {
 	f := workFixture{records: records, credentials: memoryCredentials{}, runner: &fakeRunner{}}
 	procedures := newRPC(t)
 	RegisterAgent(procedures, a, nil)
+	packages := skills.NewService(records, os.DirFS(filepath.Join(dir, "files", "skills")), nil)
+	packages.UsePackageDir(filepath.Join(dir, "files", "skills"))
 	RegisterWork(procedures, a, nil, Work{Memory: memory.NewService(records, nil), Routines: routines.NewService(records, nil),
-		Skills: skills.NewService(records, os.DirFS(filepath.Join(dir, "files", "skills")), nil)})
+		Skills: packages})
 	connections := mcp.NewService(records, f.credentials, nil)
 	connections.Runner = f.runner
 	RegisterMCP(procedures, a, connections, "")
@@ -105,7 +107,7 @@ func TestWorkProcedures(t *testing.T) {
 	f := workService(t)
 	bot := rootBot(t, f.h)
 	b := `{"botId":` + bot
-	skill := `{"items":[{"id":"skill-1","name":"weekly-report","description":"Weekly.","content":"---\nname: weekly-report\n---\nBody\n","revision":1,"enabledBots":[],"source":"user","requestId":"r"}]}`
+	skill := `{"items":[{"id":"skill-1","name":"weekly-report","description":"Weekly.","content":"---\nname: weekly-report\ndescription: Weekly.\n---\nBody\n","revision":1,"enabledBots":[],"source":"user","requestId":"r"}]}`
 	id, err := f.records.MintID(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +140,11 @@ func TestWorkProcedures(t *testing.T) {
 		{"work.get", b + `}`, 200, `"enabledBots":[` + bot + `]`},
 		{"work.skills.enable", b + `,"id":"missing","revision":1,"enabled":true,"requestId":` + uuidN("9") + `}`, 404, `技能不存在。`},
 		{"work.skills.export", b + `,"id":"skill-1","hash":"` + strings.Repeat("a", 64) + `"}`, 404, `技能版本不存在。`},
-		{"work.skills.save", b + `,"id":"s","content":"x","revision":0,"requestId":` + uuidN("3") + `}`, 501, `"NOT_IMPLEMENTED"`},
+		{"work.skills.save", b + `,"id":"s","content":"x","revision":0,"requestId":` + uuidN("3") + `}`, 400, `SKILL.md需要YAML前置信息。`},
+		{"work.skills.save", b + `,"id":"s","content":"---\nname: notes\ndescription: Notes.\n---\nBody\n","revision":0,"requestId":` + uuidN("3") + `}`, 200, `"name":"notes"`},
+		{"work.skills.save", b + `,"id":"s","content":"---\nname: notes\ndescription: Notes.\n---\nBody\n","revision":0,"requestId":` + uuidN("3") + `}`, 200, `"revision":1`},
+		{"work.skills.preview", b + `,"id":"s","content":"---\nname: notes\ndescription: Notes.\n---\nMore\n"}`, 200, `"status":"changed"`},
+		{"work.skills.save", b + `,"id":"s","content":"---\nname: notes\ndescription: Notes.\n---\nBody\n","revision":0,"requestId":` + uuidN("7") + `}`, 409, `"CONFLICT"`},
 		{"work.skills.delete", b + `,"id":"skill-1","revision":1}`, 409, `"CONFLICT"`},
 	})
 	status, body := call(t, f.h, "work.skills.export", b+`,"id":"skill-1"}`)
