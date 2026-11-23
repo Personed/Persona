@@ -39,11 +39,14 @@ type OAuth interface {
 
 // Config composes the service. Nil fields disable their routes.
 type Config struct {
-	RPC     *rpc.Server
-	Static  fs.FS
-	Files   Files
-	MCP     OAuth
-	Hosting *Hosting
+	// PublicURL, without Hosting, puts the local app behind the same origin
+	// guard as hosted mode: the TypeScript service always runs behind it.
+	PublicURL string
+	RPC       *rpc.Server
+	Static    fs.FS
+	Files     Files
+	MCP       OAuth
+	Hosting   *Hosting
 }
 
 // New returns the service handler: the local app, wrapped by the hosting layer
@@ -53,7 +56,30 @@ func New(cfg Config) (http.Handler, error) {
 	if cfg.Hosting != nil {
 		return newHosted(*cfg.Hosting, local)
 	}
+	if cfg.PublicURL != "" {
+		origin, host, err := publicOrigin(cfg.PublicURL)
+		if err != nil {
+			return nil, err
+		}
+		local = guarded{next: local, origin: origin, host: host}
+	}
 	return recoverer(local), nil
+}
+
+// guarded rejects cross-site and foreign-host requests to the local app.
+type guarded struct {
+	next         http.Handler
+	origin, host string
+}
+
+func (g guarded) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/health" {
+		if message := checkOrigin(r, g.origin, g.host); message != "" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": message})
+			return
+		}
+	}
+	g.next.ServeHTTP(w, r)
 }
 
 type app struct{ cfg Config }
