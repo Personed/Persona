@@ -149,11 +149,9 @@ func (c *Catalog) configureMode(ctx context.Context, botID int64, mode string, r
 			return BindingView{}, err
 		}
 	}
-	if item.Scope != nil {
-		if err := c.ensureReady(ctx, item.ID); err != nil {
-			op.err = err
-			return BindingView{}, err
-		}
+	if err := c.ensureReady(ctx, item.ID); err != nil {
+		op.err = err
+		return BindingView{}, err
 	}
 	view, err := c.Assign(ctx, botID, AssignInput{
 		ComputerID: &item.ID, Revision: revision, RequestID: requestID,
@@ -219,7 +217,7 @@ func (c *Catalog) record(ctx context.Context, botID int64, mode string) (Record,
 }
 
 var randomID = func() string {
-	b := make([]byte, 16)
+	b := make([]byte, 32)
 	_, _ = randRead(b)
 	const digits = "0123456789abcdef"
 	out := make([]byte, 36)
