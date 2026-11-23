@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -440,4 +441,68 @@ func TestComputerJournal(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBrowserSocketDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the Windows temp directory is per user")
+	}
+	base := t.TempDir()
+	// A temp directory that does not exist yet is created, as before.
+	fresh := filepath.Join(base, "missing-tmp", "fresh")
+	if err := privateSocketDir(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(fresh); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("fresh socket directory: %v, %v", info.Mode(), err)
+	}
+	if err := privateSocketDir(fresh); err != nil {
+		t.Fatalf("own socket directory: %v", err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(fresh, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := privateSocketDir(link); code(err) != "EACCES" {
+		t.Fatalf("symlinked socket directory: %v", err)
+	}
+	open := filepath.Join(base, "open")
+	if err := os.Mkdir(open, 0o700); err != nil || os.Chmod(open, 0o755) != nil {
+		t.Fatal(err)
+	}
+	if err := privateSocketDir(open); code(err) != "EACCES" {
+		t.Fatalf("socket directory open to others: %v", err)
+	}
+	// Another user pre-creates the directory with the right mode.
+	other := filepath.Join(base, "other")
+	if err := os.Mkdir(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getuid() == 0 {
+		if err := os.Chown(other, 65534, 65534); err != nil {
+			t.Fatal(err)
+		}
+		if err := privateSocketDir(other); code(err) != "EACCES" {
+			t.Fatalf("socket directory of another user: %v", err)
+		}
+	} else if info, err := os.Lstat(other); err != nil || ownedPrivate(info, os.Getuid()+1) {
+		t.Fatalf("socket directory accepted for another owner: %v", err)
+	}
+}
+
+func TestComputerBrowserSocketRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the Windows temp directory is per user")
+	}
+	eachComputer(t, func(t *testing.T, dir string, dial func(map[string]*MCPConfig) *Client) {
+		socket := browserSocketDir(dir)
+		t.Cleanup(func() { _ = os.Remove(socket) })
+		if err := os.Symlink(t.TempDir(), socket); err != nil {
+			t.Fatal(err)
+		}
+		client := dial(nil)
+		if _, err := client.Observe(context.Background(), "browser"); code(err) != "EACCES" {
+			t.Fatalf("browser with a planted socket directory: %v", err)
+		}
+	})
 }
