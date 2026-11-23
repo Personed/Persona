@@ -10,12 +10,14 @@ import {
   type SpawnOptions,
   spawn,
 } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const database = process.argv[2];
@@ -348,7 +350,7 @@ const options = {
     PI_CODING_AGENT_DIR: agentDir,
     PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
   },
-  stdio: ["pipe", "pipe", "inherit"],
+  stdio: ["pipe", "pipe", "pipe"],
 } satisfies SpawnOptions;
 // Tests stop by killing this fixture, as they kill web-server.ts, and then
 // remove its directory. Serve drains for seconds after stdin closes, so on POSIX
@@ -362,19 +364,26 @@ const launch = () =>
         ...options,
         detached: true,
       });
-// A restart on the same port can start before the killed serve released it.
-const deadline = Date.now() + 15_000;
-let service = launch();
-let port = await listening(service);
-while (port === undefined && Date.now() < deadline) {
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  service = launch();
-  port = await listening(service);
+
+// A killed fixture's serve can still hold the data directory, so a restart on
+// the same directory waits for that process to release it.
+async function startService(): Promise<{ child: ChildProcess; port: number }> {
+  for (let attempt = 0; ; attempt++) {
+    const child = launch();
+    let errors = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      errors += chunk;
+      process.stderr.write(chunk);
+    });
+    const exited = once(child, "exit").then(() => null);
+    const port = await Promise.race([listening(child), exited]);
+    if (port !== null) return { child, port };
+    await exited;
+    if (!errors.includes("data directory is in use") || attempt >= 100)
+      process.exit(1);
+    await delay(100);
+  }
 }
-if (port === undefined) process.exit(1);
-service.on("exit", () => process.exit(1));
-await configure();
-process.send?.({ type: "ready", port, toolName });
 
 async function listening(child: ChildProcess) {
   if (!child.stdout) throw new Error("Service output required");
@@ -385,8 +394,14 @@ async function listening(child: ChildProcess) {
       return Number(address[1]);
     }
   }
-  return undefined;
+  return null;
 }
+
+const { child: service, port } = await startService();
+service.on("exit", () => process.exit(1));
+await configure();
+process.send?.({ type: "ready", port, toolName });
+
 
 // web-server.ts opens every Bot with the faux model and prepares its engine;
 // here each Bot is configured through engines.configure instead.
