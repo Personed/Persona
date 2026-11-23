@@ -299,6 +299,30 @@ jobs:
             docker rm persona-app-test
           done
           docker volume rm persona-app-test
+      - name: Build and verify Go application image
+        run: |
+          docker build -f deploy/go.Dockerfile -t persona-app-go:test .
+          docker volume create persona-app-go-test
+          for cycle in 1 2; do
+            docker run -d --name persona-app-go-test --read-only --cap-drop=ALL --security-opt=no-new-privileges:true --tmpfs /tmp -v persona-app-go-test:/data -p 127.0.0.1:4310:4310 -e PERSONA_PUBLIC_URL=http://127.0.0.1:4310 persona-app-go:test
+            for attempt in $(seq 1 45); do
+              if curl --fail --silent http://127.0.0.1:4310/health >/dev/null; then break; fi
+              sleep 1
+            done
+            curl --fail --silent http://127.0.0.1:4310/health
+            curl --fail --silent http://127.0.0.1:4310/ >/dev/null
+            docker exec persona-app-go-test persona version
+            if [ "$cycle" = 1 ]; then
+              docker cp persona-app-go-test:/data/owner-code "$RUNNER_TEMP/deployment-check"
+              test -s "$RUNNER_TEMP/deployment-check"
+            else
+              docker cp persona-app-go-test:/data/owner-code "$RUNNER_TEMP/deployment-check-2"
+              cmp -s "$RUNNER_TEMP/deployment-check" "$RUNNER_TEMP/deployment-check-2"
+            fi
+            docker stop --time 20 persona-app-go-test
+            docker rm persona-app-go-test
+          done
+          docker volume rm persona-app-go-test
       - name: Verify managed services and Bot work environments
         if: matrix.transport == 'docker'
         env:
