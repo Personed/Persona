@@ -30,7 +30,6 @@ type Command struct {
 	Run     func(ctx context.Context, args []string, stdout io.Writer) error
 }
 
-func pending(context.Context, []string, io.Writer) error { return ErrNotImplemented }
 
 // Commands lists the subcommands in help order.
 var Commands = []Command{
