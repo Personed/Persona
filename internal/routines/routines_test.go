@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/Personed/Persona/internal/approval"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -258,19 +260,28 @@ func TestTools(t *testing.T) {
 	if err := routines.Register(registry, service); err != nil {
 		t.Fatal(err)
 	}
-	approved := 0
-	approve := func(context.Context, tools.Call, tools.Definition) (bool, error) {
+	approved, allow := 0, false
+	var asked approval.Request
+	service.Confirm = func(_ context.Context, _ int64, request approval.Request) (approval.Answer, error) {
 		approved++
-		return true, nil
+		asked = request
+		return approval.Answer{Allow: allow}, nil
 	}
-	call := func(name, callID, input string, approver tools.Approver) (tools.Result, error) {
-		return registry.Call(ctx, tools.Call{BotID: 1, TaskID: 7, CallID: callID, Name: name, Input: json.RawMessage(input)}, approver)
+	call := func(name, callID, input string) (tools.Result, error) {
+		return registry.Call(ctx, tools.Call{BotID: 1, TaskID: 7, CallID: callID, Name: name, Input: json.RawMessage(input)}, nil)
 	}
 	input := `{"title":"Morning brief","instructions":"Summarize unread mail.","schedule":{"type":"cron","expression":"0 9 * * 1-5","timeZone":"Asia/Shanghai"}}`
-	if _, err := call("routine_create", "c1", input, nil); !errors.Is(err, tools.ErrDenied) {
-		t.Fatalf("unapproved create = %v", err)
+	if result, err := call("routine_create", "c1", input); err != nil || result.Content[0].Text != `{"status":"declined"}` {
+		t.Fatalf("declined create = %+v, %v", result, err)
 	}
-	result, err := call("routine_create", "c1", input, approve)
+	wantFields := []approval.Field{{Label: "执行时间", Value: "工作日 09:00"}, {Label: "时区", Value: "Asia/Shanghai"},
+		{Label: "执行期限", Value: "15 分钟（不含等待）"}, {Label: "交付方式", Value: "每次交付"}}
+	if asked.ID != "routine:c1" || asked.Title != "创建定时：Morning brief" || asked.ConfirmLabel != "创建任务" ||
+		asked.Detail != "Summarize unread mail." || !slices.Equal(asked.Fields, wantFields) {
+		t.Fatalf("create card = %+v", asked)
+	}
+	allow = true
+	result, err := call("routine_create", "c1", input)
 	if err != nil || result.IsError {
 		t.Fatalf("create = %+v, %v", result, err)
 	}
@@ -282,7 +293,7 @@ func TestTools(t *testing.T) {
 		t.Fatalf("created = %+v", created)
 	}
 
-	result, err = call("routine_list", "c2", `{}`, nil)
+	result, err = call("routine_list", "c2", `{}`)
 	if err != nil || result.IsError {
 		t.Fatalf("list = %+v, %v", result, err)
 	}
@@ -298,12 +309,15 @@ func TestTools(t *testing.T) {
 		t.Fatalf("listed time zone %q is not schedulable: %v", listing.TimeZone, err)
 	}
 
-	if result, err := call("routine_manage", "c3", `{"action":"pause","id":"`+created.ID+`"}`, approve); err != nil || !result.IsError {
+	if result, err := call("routine_manage", "c3", `{"action":"pause","id":"`+created.ID+`"}`); err != nil || !result.IsError {
 		t.Fatalf("manage without revision = %+v, %v", result, err)
 	}
-	result, err = call("routine_manage", "c4", `{"action":"pause","id":"`+created.ID+`","revision":1}`, approve)
+	result, err = call("routine_manage", "c4", `{"action":"pause","id":"`+created.ID+`","revision":1}`)
 	if err != nil || result.IsError || !strings.Contains(result.Content[0].Text, `"enabled":false`) {
 		t.Fatalf("pause = %+v, %v", result, err)
+	}
+	if asked.Title != "暂停定时：Morning brief" || len(asked.Fields) != 4 {
+		t.Fatalf("pause card = %+v", asked)
 	}
 	if approved != 3 {
 		t.Fatalf("approvals = %d", approved)

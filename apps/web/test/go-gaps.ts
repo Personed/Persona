@@ -11,7 +11,7 @@ export const goGaps: Record<string, string[]> = {
       "takeover card first click opens the browser and resumes after completion",
       "takeover controls the Agent browser and preserves its layout through fullscreen",
     ],
-  "fixture tool: web-server.ts scripts a gated, file-publishing test tool; Go serve has no counterpart and the fixture scripts Pi's ls":
+  "fixture tool: web-server.ts scripts a gated, file-publishing test tool; the Go fixture's echo tool publishes no files":
     [
       "Bot identity stays consistent and image previews work in drafts and history",
       "attachment retry keeps its request and draft after a lost receipt",
@@ -36,10 +36,6 @@ export const goGaps: Record<string, string[]> = {
   // computer runtime; go-server.ts has no command that opens one in serve.
   "shared approval cards: the Go fixture cannot open an approval request": [
     "shared question and approval cards persist answers and terminal states",
-  ],
-  "native Work records: work.records does not yet project native turns": [
-    "Work follows a native turn, opens its record and preserves it after stop and reload",
-    "monitoring stays quiet, delivers one result and opens the native Work record",
   ],
   "MCP apps: Go has no application catalog, connection runner, or OAuth callback composed into serve":
     [

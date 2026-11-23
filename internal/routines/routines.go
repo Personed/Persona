@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Personed/Persona/internal/approval"
 	"slices"
 	"strings"
 	"sync"
@@ -151,6 +152,9 @@ type Service struct {
 	// OnChange fires once after each routine write; the routine runner uses it
 	// to recompute its next scheduled fire. nil ignores the notification.
 	OnChange func()
+	// Confirm asks the user to approve a Bot's routine change, the shared
+	// approval flow's Request. Without it routine_create and routine_manage fail.
+	Confirm func(ctx context.Context, botID int64, request approval.Request) (approval.Answer, error)
 
 	store store.Store
 	now   func() time.Time

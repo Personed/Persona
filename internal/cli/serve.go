@@ -61,7 +61,11 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	contractDir := flags.String("contract", "contracts/api", "API contract directory")
 	headless := flags.Bool("headless", false, "serve only the API, without the web UI")
 	dataDir := flags.String("data", "data", "data directory, unless a hosting config sets one")
-	piExtension := flags.String("pi-extension", "", "Pi extension (pi-tools.mjs) that enables chat through pi --mode rpc")
+	var piExtensions []string
+	flags.Func("pi-extension", "Pi extension (pi-tools.mjs) that enables chat through pi --mode rpc; repeat to load more", func(path string) error {
+		piExtensions = append(piExtensions, path)
+		return nil
+	})
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -168,13 +172,14 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	// Work services shared by the RPC layer and the product tools below.
 	memorySvc := memory.NewService(records, nil)
 	routineSvc := routines.NewService(records, nil)
+	routineSvc.Confirm = approvals.Request
 	skillSvc := skills.NewService(records, os.DirFS(filepath.Join(filesRoot, "skills")), catalog.Workspace)
 	skillSvc.UsePackageDir(filepath.Join(filesRoot, "skills"))
 	work := server.Work{Memory: memorySvc, Routines: routineSvc, Skills: skillSvc}
 	var runtime *agent.Runtime
-	if *piExtension != "" {
+	if len(piExtensions) > 0 {
 		// An idle Bot has no Pi: each closes with the last session of its task.
-		engine := pi.New(pi.Config{Extensions: []string{*piExtension}, IdleTimeout: -1, LocalModels: true,
+		engine := pi.New(pi.Config{Extensions: piExtensions, IdleTimeout: -1, LocalModels: true,
 			SessionDir: filepath.Join(*dataDir, "pi", "sessions"), StateDir: filepath.Join(*dataDir, "pi", "state")})
 		defer engine.Close()
 		registry, err := productTools(records, routineSvc, skillSvc, catalog.Handoff(approvals))

@@ -61,17 +61,37 @@ export function Workspace({
       document.activeViewTransition?.skipTransition();
   });
   useEffect(() => {
+    let pressed = false;
+    const release = () => {
+      pressed = false;
+    };
+    // React starts a queued transition as soon as the skipped one finishes,
+    // and it would capture the press's pointerup, so skip it as well.
+    const skip = (transition: ViewTransition) => {
+      transition.skipTransition();
+      const next = () => {
+        const queued = document.activeViewTransition;
+        if (pressed && queued && queued !== transition) skip(queued);
+      };
+      transition.finished.then(next, next);
+    };
     const interrupt = (event: Event) => {
       const transition = document.activeViewTransition;
       if (!transition || !sizing.root?.contains(event.target as Node)) return;
-      transition.skipTransition();
+      pressed = event.type === "pointerdown";
+      skip(transition);
       flushSync(() => setDragging(false));
     };
     // React pauses synthetic events while the transition snapshot commits.
     window.addEventListener("pointerdown", interrupt, true);
     window.addEventListener("keydown", interrupt, true);
     window.addEventListener("beforeinput", interrupt, true);
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
     return () => {
+      release();
+      window.removeEventListener("pointerup", release, true);
+      window.removeEventListener("pointercancel", release, true);
       window.removeEventListener("pointerdown", interrupt, true);
       window.removeEventListener("keydown", interrupt, true);
       window.removeEventListener("beforeinput", interrupt, true);

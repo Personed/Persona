@@ -73,7 +73,6 @@ var (
 		Name:        "routine_manage",
 		Description: "Propose a routine change for user confirmation. Read routine_list first. Supply its stable ID and current revision. Update only the fields that must change. Execution time excludes waiting for user input.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"action":{"type":"string","enum":["update","pause","resume","run_now","delete"]},"id":{"type":"string"},"revision":{"type":"integer","minimum":0},` + fieldsSchema + `},"required":["action","id","revision"]}`),
-		Mutates:     true,
 	}
 	listDefinition = tools.Definition{
 		Name:        "routine_list",
@@ -85,7 +84,6 @@ var (
 		Name:        "routine_create",
 		Description: "Create a routine after user confirmation. Specify an explicit IANA timeZone. Once uses an ISO timestamp with offset. Cron uses five fields. Bind enabled skills by stable ID. An approval card confirms the schedule and instructions.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + fieldsSchema + `},"required":["title","instructions","schedule"]}`),
-		Mutates:     true,
 	}
 )
 
@@ -111,7 +109,7 @@ func (s *Service) runCreate(ctx context.Context, call tools.Call) (any, error) {
 		return nil, err
 	}
 	change.Action, change.ID, change.Revision = "create", "", nil
-	return s.Manage(ctx, call.BotID, change, call.CallID, source(call))
+	return s.confirmed(ctx, call, change)
 }
 
 func (s *Service) runManage(ctx context.Context, call tools.Call) (any, error) {
@@ -121,6 +119,18 @@ func (s *Service) runManage(ctx context.Context, call tools.Call) (any, error) {
 	}
 	if change.Action == "create" || change.ID == "" || change.Revision == nil {
 		return nil, &Error{BadRequest, "参数无效：需要 action、id 和 revision。"}
+	}
+	return s.confirmed(ctx, call, change)
+}
+
+// confirmed applies a Bot's change once the user approves it.
+func (s *Service) confirmed(ctx context.Context, call tools.Call, change Change) (any, error) {
+	allowed, err := s.confirm(ctx, call.BotID, change, call.CallID)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return map[string]string{"status": "declined"}, nil
 	}
 	return s.Manage(ctx, call.BotID, change, call.CallID, source(call))
 }

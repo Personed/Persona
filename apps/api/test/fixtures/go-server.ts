@@ -37,7 +37,7 @@ type Reply = {
 let scripted: Reply[] = [];
 let gate: PromiseWithResolvers<void> | undefined;
 let toolGate: PromiseWithResolvers<void> | undefined;
-const modelStarted = Promise.withResolvers<void>();
+let modelStarted = Promise.withResolvers<void>();
 
 function lastUserText(body: {
   messages?: { role: string; content: unknown }[];
@@ -171,7 +171,18 @@ async function complete(
       });
     }
   }
-  const calls = reply.toolCalls ?? [];
+  // Pi declares Persona's product tools as mcp__persona__<name>; tests script
+  // the product name, as web-server.ts's tools are called.
+  const declared = new Set(
+    ((body.tools as { function?: { name?: string } }[] | undefined) ?? []).map(
+      (tool) => tool.function?.name,
+    ),
+  );
+  const calls = (reply.toolCalls ?? []).map((call) =>
+    declared.has(`mcp__persona__${call.name}`)
+      ? { ...call, name: `mcp__persona__${call.name}` }
+      : call,
+  );
   for (const [index, call] of calls.entries())
     chunk(response, model, {
       tool_calls: [
@@ -205,6 +216,17 @@ async function complete(
   response.end();
 }
 
+// The fixture tool's Pi extension asks here before it returns, so a gated
+// tool stays running the way web-server.ts's test tool does.
+async function runTool(response: ServerResponse) {
+  const waiting = toolGate;
+  if (waiting) {
+    response.on("close", () => waiting.resolve());
+    await waiting.promise;
+  }
+  response.end();
+}
+
 const ollama = createServer((request, response) => {
   let raw = "";
   request.on("data", (part) => {
@@ -229,6 +251,8 @@ const ollama = createServer((request, response) => {
       });
     if (request.url === "/v1/chat/completions" && request.method === "POST")
       return void complete(JSON.parse(raw || "{}"), response);
+    if (request.url === "/tool" && request.method === "POST")
+      return void runTool(response);
     response.statusCode = 404;
     response.end();
   });
@@ -277,6 +301,31 @@ await writeFile(
     },
   }),
 );
+// This Pi extension stands in for web-server.ts's test tool: it returns the
+// supplied text after the fixture releases a gated tool.
+const toolName = "fixture_echo";
+const toolExtension = join(agentDir, "fixture-tool.js");
+await writeFile(
+  toolExtension,
+  `export default function (pi) {
+  pi.registerTool({
+    name: ${JSON.stringify(toolName)},
+    label: ${JSON.stringify(toolName)},
+    description: "Return the supplied text.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string" }, fail: { type: "boolean" } },
+      required: ["text"],
+    },
+    async execute(_id, params, signal) {
+      await fetch(${JSON.stringify(`http://127.0.0.1:${ollamaAddress.port}/tool`)}, { method: "POST", signal });
+      if (params.fail) throw new Error(params.text);
+      return { content: [{ type: "text", text: params.text }], details: {} };
+    },
+  });
+}
+`,
+);
 const bin = join(root, "packages", "agent", "node_modules", ".bin");
 const args = [
   "serve",
@@ -292,6 +341,8 @@ const args = [
   join(root, "contracts", "api"),
   "-pi-extension",
   join(root, "packages", "agent", "src", "harness", "pi-tools.mjs"),
+  "-pi-extension",
+  toolExtension,
 ];
 const options = {
   // Outside the repository so persona.config.json does not select hosted mode.
@@ -327,8 +378,7 @@ while (port === undefined && Date.now() < deadline) {
 if (port === undefined) process.exit(1);
 service.on("exit", () => process.exit(1));
 await configure();
-// Pi's own ls stands in for web-server.ts's gated test tool.
-process.send?.({ type: "ready", port, toolName: "ls" });
+process.send?.({ type: "ready", port, toolName });
 
 async function listening(child: ChildProcess) {
   if (!child.stdout) throw new Error("Service output required");
@@ -383,6 +433,8 @@ async function configure() {
 let release: (() => void) | undefined;
 process.on("message", async (message) => {
   if (message === "gate") {
+    // wait-model then waits for the request this gate holds.
+    modelStarted = Promise.withResolvers<void>();
     gate = Promise.withResolvers<void>();
     release = gate.resolve;
     process.send?.({ type: "gated" });

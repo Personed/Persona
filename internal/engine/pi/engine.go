@@ -219,12 +219,15 @@ func (e *Engine) agentDir() string {
 }
 
 // extensions returns the Pi flags that load the packaged approval/tool
-// extension. Sessions fail closed: none are launched without one readable file.
+// extension between native tool search and native MCP, with discovery off, as
+// worker.mjs does. Sessions fail closed: none are launched without one
+// readable file.
 func (e *Engine) extensions() ([]string, error) {
 	if len(e.config.Extensions) == 0 {
 		return nil, errors.New("pi: approval/tool extension is not configured")
 	}
-	args := make([]string, 0, 2*len(e.config.Extensions))
+	args := make([]string, 0, 2*len(e.config.Extensions)+5)
+	args = append(args, "--no-extensions", "--extension", "builtin:tool-search")
 	for _, path := range e.config.Extensions {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -235,7 +238,7 @@ func (e *Engine) extensions() ([]string, error) {
 		}
 		args = append(args, "--extension", path)
 	}
-	return args, nil
+	return append(args, "--extension", "builtin:mcp"), nil
 }
 
 // transient runs one Pi without a session for a short exchange and stops it.
