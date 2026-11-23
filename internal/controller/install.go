@@ -51,7 +51,12 @@ func Install(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) < 1 || len(args) > 2 {
 		return errors.New("usage: persona controller install <dir> [source]")
 	}
-	dir := args[0]
+	// The controller resolves relative credential paths against its config
+	// directory; store absolute paths so a relative dir cannot double-join.
+	dir, err := filepath.Abs(args[0])
+	if err != nil {
+		return err
+	}
 	source := "."
 	if len(args) == 2 {
 		source = args[1]

@@ -120,6 +120,26 @@ func TestInstallWritesContainerDeployment(t *testing.T) {
 	}
 }
 
+func TestInstallResolvesRelativeDirectories(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	source := filepath.Join(root, "source")
+	writeRelease(t, source, testRelease())
+	withInstallRunner(func(_ context.Context, args []string) (string, error) {
+		if args[1] == "info" {
+			return `"linux"`, nil
+		}
+		return "", nil
+	}, func() {
+		if err := Install(context.Background(), []string{"control", source}, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := LoadConfig(filepath.Join(root, "control", "controller.json")); err != nil {
+		t.Fatalf("the installed controller.json must load from a relative install: %v", err)
+	}
+}
+
 func TestInstallIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	source := t.TempDir()
