@@ -10,16 +10,20 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
+	"github.com/Personed/Persona/internal/agent"
 	"github.com/Personed/Persona/internal/contract"
 	"github.com/Personed/Persona/internal/hosting"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/server"
+	"github.com/Personed/Persona/internal/store"
 )
 
 // serve runs the local service. Procedures without a Go handler answer NOT_IMPLEMENTED.
+// Without a model registry in Go yet, models.list is empty.
 func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.SetOutput(stdout)
@@ -28,6 +32,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	static := flags.String("static", "apps/web/dist", "web build directory, unless built with -tags embedweb")
 	contractDir := flags.String("contract", "contracts/api", "API contract directory")
 	headless := flags.Bool("headless", false, "serve only the API, without the web UI")
+	dataDir := flags.String("data", "data", "data directory, unless a hosting config sets one")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -48,14 +53,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		listenHost, listenPort = cfg.Host, cfg.Port
-		// Hold the runtime lease so no second service (or maintenance) shares
-		// the data directory, as apps/api's openHostedRuntime does.
-		release, err := hosting.AcquireDataLease(ctx, cfg.DataDir)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = release() }()
+		listenHost, listenPort, *dataDir = cfg.Host, cfg.Port, cfg.DataDir
 		sessions, err := server.NewSessionStore(cfg.DataDir)
 		if err != nil {
 			return err
@@ -76,6 +74,22 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			*static = cfg.StaticDir
 		}
 	}
+	// The store holds the runtime lease of the data directory, so no second
+	// service (or maintenance) shares it, as apps/api's openHostedRuntime does.
+	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
+		return err
+	}
+	records, err := store.Open(ctx, filepath.Join(*dataDir, "persona-go.sqlite"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = records.Close() }()
+	bots, err := agent.Open(ctx, records, agent.Options{FilesRoot: filepath.Join(*dataDir, "agent.sqlite.files")})
+	if err != nil {
+		return err
+	}
+	server.RegisterAgent(procedures, bots)
+	service.Files = server.AgentFiles(bots.Files)
 	var web fs.FS
 	if !*headless {
 		if web, err = webFS(*static); err != nil {
