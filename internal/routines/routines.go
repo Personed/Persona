@@ -127,6 +127,9 @@ type document struct {
 // skill is the part of a "persona.skills" record a routine binding checks.
 type skill struct {
 	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Revision    int     `json:"revision"`
+	Content     string  `json:"content"`
 	EnabledBots []int64 `json:"enabledBots"`
 }
 
@@ -145,11 +148,21 @@ type Service struct {
 	// its requestID, so RunNow must record the task it starts durably and return
 	// that task, without starting another, when a Bot repeats a requestID.
 	RunNow func(ctx context.Context, routine Routine, requestID string) (store.TaskID, error)
+	// OnChange fires once after each routine write; the routine runner uses it
+	// to recompute its next scheduled fire. nil ignores the notification.
+	OnChange func()
 
 	store store.Store
 	now   func() time.Time
 	// mu serializes read-modify-write cycles; store.Store has no conditional writes.
 	mu sync.Mutex
+}
+
+// notify reports a changed routine document.
+func (s *Service) notify() {
+	if s.OnChange != nil {
+		s.OnChange()
+	}
 }
 
 // NewService returns a Service. now defaults to time.Now.
@@ -329,7 +342,11 @@ func (s *Service) apply(ctx context.Context, botID int64, change Change, request
 	} else {
 		doc.Items[index] = item
 	}
-	return item, nil, s.save(ctx, meta, doc)
+	if err := s.save(ctx, meta, doc); err != nil {
+		return item, nil, err
+	}
+	s.notify()
+	return item, nil, nil
 }
 
 // edit merges a create or update into item and validates the result.
@@ -434,7 +451,14 @@ func (s *Service) Report(ctx context.Context, botID int64, taskID store.TaskID, 
 		if view.ID != input.RoutineRunID || view.BotID != botID {
 			continue
 		}
-		if view.Delivery != Conditional || view.Status != "running" {
+		// Only the live turn calls routine_report, so any status before the
+		// terminal ones accepts it: the runner's poll may not have marked the
+		// receipt running yet, and an approval wait does not end the run.
+		switch view.Status {
+		case "done", "failed", "stopped":
+			return none
+		}
+		if view.Delivery != Conditional {
 			return none
 		}
 		if report.Notify && (strings.TrimSpace(report.Text) == "" || strings.TrimSpace(report.Key) == "") {

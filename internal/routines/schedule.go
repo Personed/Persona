@@ -118,3 +118,6 @@ func hostTimeZone() string {
 	}
 	return "UTC"
 }
+
+// HostTimeZone is the host's IANA zone name for prompt sections.
+func HostTimeZone() string { return hostTimeZone() }

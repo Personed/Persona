@@ -152,6 +152,8 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	memorySvc := memory.NewService(records, nil)
 	skillSvc := skills.NewService(records, os.DirFS(filepath.Join(filesRoot, "skills")), catalog.Workspace)
 	skillSvc.UsePackageDir(filepath.Join(filesRoot, "skills"))
+	work := server.Work{Memory: memorySvc, Skills: skillSvc,
+		Routines: routines.NewService(records, nil)}
 	var runtime *agent.Runtime
 	if *piExtension != "" {
 		// An idle Bot has no Pi: each closes with the last session of its task.
@@ -174,11 +176,25 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		})); err != nil {
 			return err
 		}
+		routineSvc := routines.NewService(records, nil)
+		work.Routines = routineSvc
+		if err := routines.Register(registry, routineSvc); err != nil {
+			return err
+		}
 		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
-			Tools: registry, Approvals: approvals})
+			Tools: registry, Approvals: approvals, Memory: memorySvc})
 		if err := runtime.Recover(ctx); err != nil {
 			return err
 		}
+		runner := routines.NewRunner(routineSvc,
+			func(ctx context.Context, in routines.RunSubmit) (store.SubmissionID, error) {
+				return runtime.Submit(ctx, agent.SendInput{BotID: in.BotID, Text: in.Text,
+					RequestID: in.RequestID, WhenBusy: "followUp", DisplayText: in.DisplayText,
+					Source: "routine", RoutineRunID: in.RoutineRunID})
+			},
+			runtime.Stop, approvals)
+		routineSvc.OnChange = runner.Kick
+		go runner.Start(ctx)
 	}
 	defer catalog.Close(context.Background())
 	var botIDs []int64
@@ -195,11 +211,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	server.RegisterEngines(procedures, bots, runtime)
 	// The takeover card lifecycle is the computers slice's part of engines.*.
 	server.RegisterComputerTakeover(procedures, catalog, approvals)
-	server.RegisterWork(procedures, bots, runtime, server.Work{
-		Memory:   memorySvc,
-		Routines: routines.NewService(records, nil),
-		Skills:   skillSvc,
-	})
+	server.RegisterWork(procedures, bots, runtime, work)
 	// Until the computer runtime is composed, managed MCP connections have no
 	// Runner or native catalog, and no OAuth callback route is served.
 	server.RegisterMCP(procedures, bots, mcp.NewService(records, credentials, nil), "")
