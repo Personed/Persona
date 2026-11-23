@@ -48,11 +48,12 @@ type server struct {
 	mu       sync.Mutex
 	requests map[uint32]*request
 	// mcpSessions holds connected managed MCP servers by connection id.
-	mcpSessions map[string]*mcpSession
-	computersMu sync.Mutex
-	computers   map[string]*computerDriver
-	wg          sync.WaitGroup
-	lastRead    atomic.Int64
+	mcpSessions   map[string]*mcpSession
+	computersMu   sync.Mutex
+	computers     map[string]*computerDriver
+	computerLanes map[string]*sync.Mutex
+	wg            sync.WaitGroup
+	lastRead      atomic.Int64
 }
 
 type request struct {

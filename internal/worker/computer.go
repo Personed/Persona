@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -13,11 +12,13 @@ import (
 	_ "image/jpeg" // screenshot dimensions
 	_ "image/png"  // screenshot dimensions
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -29,7 +30,7 @@ import (
 // browser (agent-browser) driver. Dir is the Bot work directory; its .persona
 // folder holds the browser profile and the computer-use journal.
 type ComputerInput struct {
-	Action    string          `json:"action"` // catalog, call, verify
+	Action    string          `json:"action"` // catalog, call, verify, restart
 	Service   string          `json:"service"`
 	Dir       string          `json:"dir"`
 	TaskID    int64           `json:"taskId,omitempty"`
@@ -49,7 +50,8 @@ type ComputerResult struct {
 }
 
 // journalEntry is one line of a task's computer-use journal: intent before
-// dispatch, then result or uncertain. verify clears a service's uncertainty.
+// dispatch, then result or uncertain. verified (desktop) and restarted
+// (browser) clear a service's uncertainty.
 type journalEntry struct {
 	State     string          `json:"state"`
 	CallID    string          `json:"callId,omitempty"`
@@ -57,11 +59,13 @@ type journalEntry struct {
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Result    json.RawMessage `json:"result,omitempty"`
+	// Error is the worker error a driver's protocol rejection returned.
+	Error *Error `json:"error,omitempty"`
 }
 
 type computerDriver struct {
-	mu      sync.Mutex // serializes mutations so each settles before the next
 	session *mcpSession
+	done    chan struct{} // closed when the driver connection ends
 }
 
 // browserObservations read the page without changing it, as in browser-tools.mjs.
@@ -80,6 +84,23 @@ func observation(service, name string) bool {
 
 var errComputerUncertain = &Error{Code: "COMPUTER_UNCERTAIN", Message: "A computer action's outcome is unknown. Observe the computer, confirm the task state, then verify before more actions. Do not replay the action."}
 
+var errBrowserUncertain = &Error{Code: "COMPUTER_UNCERTAIN", Message: "A browser action's outcome is unknown. Observe the page, then use agent_browser_restart before more browser actions. Restart closes this Bot's tabs and unsaved input. Do not replay the action."}
+
+var errComputerBusy = &Error{Code: "COMPUTER_BUSY", Message: "A computer action is still running. Wait for it to settle and observe before recovery."}
+
+var errBrowserRestart = &Error{Code: "COMPUTER_RESTART_REQUIRED", Message: "An unknown browser outcome is cleared only by agent_browser_restart. Restart closes this Bot's tabs and unsaved input."}
+
+// browserCallTimeout bounds a dispatched browser action, which cancellation
+// does not abandon, as in browser-service.mjs.
+const browserCallTimeout = 125 * time.Second
+
+func uncertain(service string) *Error {
+	if service == "browser" {
+		return errBrowserUncertain
+	}
+	return errComputerUncertain
+}
+
 func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerResult, error) {
 	if input.Service != "desktop" && input.Service != "browser" {
 		return nil, codeError("EINVAL", "unknown computer service "+input.Service, "")
@@ -92,7 +113,24 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 		return nil, err
 	}
 	marker := filepath.Join(journal, input.Service+"-uncertain")
-	if input.Action == "verify" {
+	key := input.Service + "\n" + input.Dir
+	switch input.Action {
+	case "verify":
+		// Recovery never waits behind an action: one that settles later must
+		// not have its uncertainty cleared by a verification made before it.
+		lane := s.computerLane(key)
+		if !lane.TryLock() {
+			return nil, errComputerBusy
+		}
+		defer lane.Unlock()
+		if _, err := os.Stat(marker); errors.Is(err, os.ErrNotExist) {
+			return &ComputerResult{}, nil
+		} else if err != nil {
+			return nil, err
+		}
+		if input.Service == "browser" {
+			return nil, errBrowserRestart
+		}
 		if err := appendJournal(journal, input.TaskID, journalEntry{State: "verified", Service: input.Service}); err != nil {
 			return nil, err
 		}
@@ -100,16 +138,25 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 			return nil, err
 		}
 		return &ComputerResult{}, nil
-	}
-	driver, err := s.computerDriver(ctx, input)
-	if err != nil {
-		return nil, mcpError(ctx, err)
-	}
-	switch input.Action {
+	case "restart":
+		if input.Service != "browser" {
+			return nil, codeError("EINVAL", "only the browser restarts", "")
+		}
+		lane := s.computerLane(key)
+		if !lane.TryLock() {
+			return nil, errComputerBusy
+		}
+		defer lane.Unlock()
+		return s.restartBrowser(ctx, input, journal, marker)
 	case "catalog":
+		driver, err := s.computerDriver(ctx, key, input)
+		if err != nil {
+			return nil, mcpError(ctx, err)
+		}
 		var tools []*mcp.Tool
 		for tool, err := range driver.session.session.Tools(ctx, nil) {
 			if err != nil {
+				s.dropBroken(key, driver, err)
 				return nil, mcpError(ctx, err)
 			}
 			tools = append(tools, tool)
@@ -127,8 +174,13 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 		params.Arguments = input.Arguments
 	}
 	if observation(input.Service, input.Name) {
+		driver, err := s.computerDriver(ctx, key, input)
+		if err != nil {
+			return nil, mcpError(ctx, err)
+		}
 		result, err := driver.session.session.CallTool(ctx, params)
 		if err != nil {
+			s.dropBroken(key, driver, err)
 			return nil, mcpError(ctx, err)
 		}
 		raw, err := json.Marshal(result)
@@ -137,22 +189,32 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 	if input.CallID == "" {
 		return nil, codeError("EINVAL", "a call ID is required for computer actions", "")
 	}
-	driver.mu.Lock()
-	defer driver.mu.Unlock()
+	lane := s.computerLane(key)
+	lane.Lock()
+	defer lane.Unlock()
+	// Saved outcomes come from the journal alone, so recovery works while the
+	// driver cannot start.
 	entries, err := readJournal(journal, input.TaskID)
 	if err != nil {
 		return nil, err
 	}
 	if previous, ok := entries[input.CallID]; ok {
-		if previous.State == "result" {
+		switch {
+		case previous.State == "result" && previous.Error != nil:
+			return nil, previous.Error
+		case previous.State == "result":
 			return &ComputerResult{Result: previous.Result, Replayed: true}, nil
 		}
-		return nil, errComputerUncertain
+		return nil, uncertain(input.Service)
 	}
 	if _, err := os.Stat(marker); err == nil {
-		return nil, errComputerUncertain
+		return nil, uncertain(input.Service)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
+	}
+	driver, err := s.computerDriver(ctx, key, input)
+	if err != nil {
+		return nil, mcpError(ctx, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, toError(err)
@@ -167,9 +229,19 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 		_ = os.Remove(marker)
 		return nil, err
 	}
-	result, callErr := driver.session.session.CallTool(ctx, params)
+	callCtx := ctx
+	if input.Service == "browser" {
+		// Cancellation stops queued browser work; dispatched work settles first.
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), browserCallTimeout)
+		defer cancel()
+	}
+	result, callErr := driver.session.session.CallTool(callCtx, params)
 	var wire *jsonrpc.Error
 	if callErr != nil && !errors.As(callErr, &wire) || callErr == nil && uncertainResult(result) {
+		if callErr != nil {
+			s.dropBroken(key, driver, callErr)
+		}
 		entry := journalEntry{State: "uncertain", CallID: input.CallID, Service: input.Service}
 		if callErr == nil {
 			entry.Result, _ = json.Marshal(result)
@@ -178,27 +250,73 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 			return nil, err
 		}
 		if callErr != nil {
-			return nil, errComputerUncertain
+			return nil, uncertain(input.Service)
 		}
 		return &ComputerResult{Result: entry.Result}, nil
 	}
 	// A protocol error means the driver rejected the request without acting.
-	var raw json.RawMessage
+	entry := journalEntry{State: "result", CallID: input.CallID, Service: input.Service}
 	if callErr == nil {
-		raw, _ = json.Marshal(result)
+		entry.Result, _ = json.Marshal(result)
 	} else {
-		raw, _ = json.Marshal(map[string]any{"isError": true, "content": []map[string]string{{"type": "text", "text": wire.Message}}})
+		entry.Error = mcpError(callCtx, callErr)
 	}
-	if err := appendJournal(journal, input.TaskID, journalEntry{State: "result", CallID: input.CallID, Service: input.Service, Result: raw}); err != nil {
+	if err := appendJournal(journal, input.TaskID, entry); err != nil {
 		return nil, err
 	}
 	if err := os.Remove(marker); err != nil {
 		return nil, err
 	}
-	if callErr != nil {
-		return nil, mcpError(ctx, callErr)
+	if entry.Error != nil {
+		return nil, entry.Error
 	}
-	return &ComputerResult{Result: raw}, nil
+	return &ComputerResult{Result: entry.Result}, nil
+}
+
+// restartBrowser closes the Bot browser and its daemon, then reconnects with
+// the same profile. Only this clears an unknown browser outcome.
+func (s *server) restartBrowser(ctx context.Context, input ComputerInput, journal, marker string) (*ComputerResult, error) {
+	key := input.Service + "\n" + input.Dir
+	config, err := driverConfig(input)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(marker, []byte("restart"), 0o600); err != nil {
+		return nil, err
+	}
+	s.computersMu.Lock()
+	old := s.computers[key]
+	delete(s.computers, key)
+	s.computersMu.Unlock()
+	if old != nil {
+		old.session.close()
+	}
+	closeBrowser(ctx, config)
+	if _, err := s.computerDriver(ctx, key, input); err != nil {
+		return nil, mcpError(ctx, err)
+	}
+	if err := appendJournal(journal, input.TaskID, journalEntry{State: "restarted", Service: input.Service}); err != nil {
+		return nil, err
+	}
+	if err := os.Remove(marker); err != nil {
+		return nil, err
+	}
+	return &ComputerResult{}, nil
+}
+
+// closeBrowser runs `agent-browser close` for the Bot session, so the daemon
+// that may still run earlier commands exits before the client reconnects.
+func closeBrowser(ctx context.Context, config *MCPConfig) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	env := stdioEnvironment(config.Env)
+	path, err := ResolveProgram(ctx, config.Command, env)
+	if err != nil || path == "" {
+		return
+	}
+	cmd := exec.CommandContext(ctx, path, "close")
+	cmd.Env = env
+	_ = cmd.Run()
 }
 
 // uncertainResult recognizes agent-browser results that report an unknown outcome.
@@ -215,12 +333,33 @@ func uncertainResult(result *mcp.CallToolResult) bool {
 		strings.HasPrefix(response.Response.Error, "CDP command timed out:")
 }
 
-func (s *server) computerDriver(ctx context.Context, input ComputerInput) (*computerDriver, error) {
-	key := input.Service + "\n" + input.Dir
+// computerLane serializes a service's mutations and recovery in one work directory.
+func (s *server) computerLane(key string) *sync.Mutex {
+	s.computersMu.Lock()
+	defer s.computersMu.Unlock()
+	if s.computerLanes == nil {
+		s.computerLanes = map[string]*sync.Mutex{}
+	}
+	lane := s.computerLanes[key]
+	if lane == nil {
+		lane = &sync.Mutex{}
+		s.computerLanes[key] = lane
+	}
+	return lane
+}
+
+// computerDriver returns the open driver session, replacing one whose driver exited.
+func (s *server) computerDriver(ctx context.Context, key string, input ComputerInput) (*computerDriver, error) {
 	s.computersMu.Lock()
 	defer s.computersMu.Unlock()
 	if driver := s.computers[key]; driver != nil {
-		return driver, nil
+		select {
+		case <-driver.done:
+			delete(s.computers, key)
+			driver.session.close()
+		default:
+			return driver, nil
+		}
 	}
 	config, err := driverConfig(input)
 	if err != nil {
@@ -230,9 +369,28 @@ func (s *server) computerDriver(ctx context.Context, input ComputerInput) (*comp
 	if err != nil {
 		return nil, err
 	}
-	driver := &computerDriver{session: session}
+	driver := &computerDriver{session: session, done: make(chan struct{})}
+	go func() {
+		_ = session.session.Wait()
+		close(driver.done)
+	}()
 	s.computers[key] = driver
 	return driver, nil
+}
+
+// dropBroken discards a driver session after a transport failure. Protocol
+// errors keep the session.
+func (s *server) dropBroken(key string, driver *computerDriver, err error) {
+	var wire *jsonrpc.Error
+	if errors.As(err, &wire) {
+		return
+	}
+	s.computersMu.Lock()
+	if s.computers[key] == driver {
+		delete(s.computers, key)
+	}
+	s.computersMu.Unlock()
+	driver.session.close()
 }
 
 func driverConfig(input ComputerInput) (*MCPConfig, error) {
@@ -345,15 +503,15 @@ func readJournal(dir string, taskID int64) (map[string]journalEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 64<<10), MaxFrame)
-	for scanner.Scan() {
+	// Lines are not bounded by the frame limit: a result too large to send is
+	// still a recorded outcome.
+	for line := range bytes.SplitSeq(data, []byte{'\n'}) {
 		var entry journalEntry
-		if json.Unmarshal(scanner.Bytes(), &entry) == nil && entry.CallID != "" {
+		if json.Unmarshal(line, &entry) == nil && entry.CallID != "" {
 			entries[entry.CallID] = entry
 		}
 	}
-	return entries, scanner.Err()
+	return entries, nil
 }
 
 // ComputerCall is one journaled computer action of a Bot task.
@@ -391,10 +549,19 @@ func (c *Client) Act(ctx context.Context, call ComputerCall) (computer.Observati
 	return toObservation(result.Result)
 }
 
-// VerifyComputer records that the caller observed the computer after an
-// uncertain action and allows further actions on service.
+// VerifyComputer records that the caller observed the desktop after an
+// uncertain action and allows further actions. The browser needs
+// RestartBrowser instead.
 func (c *Client) VerifyComputer(ctx context.Context, dir string, taskID int64, service string) error {
 	_, err := c.computerCall(ctx, ComputerInput{Action: "verify", Service: service, Dir: dir, TaskID: taskID})
+	return err
+}
+
+// RestartBrowser closes the Bot browser and reconnects it with the same
+// profile, the only recovery from an unknown browser outcome. Tabs and unsaved
+// page input are lost.
+func (c *Client) RestartBrowser(ctx context.Context, dir string, taskID int64) error {
+	_, err := c.computerCall(ctx, ComputerInput{Action: "restart", Service: "browser", Dir: dir, TaskID: taskID})
 	return err
 }
 
