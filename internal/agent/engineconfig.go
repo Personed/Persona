@@ -2,13 +2,40 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
+
+	"github.com/Personed/Persona/internal/engine/pi"
 )
 
 // EngineModel is EngineModel in packages/agent/src/harness/types.ts.
 type EngineModel struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID     string   `json:"id"`
+	Name   string   `json:"name"`
+	Images *bool    `json:"images,omitempty"`
+	Effort *Control `json:"effort,omitempty"`
+}
+
+// catalogEngine is an engine that lists its full model definitions, as Pi's
+// get_available_models.
+type catalogEngine interface {
+	Catalog(ctx context.Context) ([]pi.CatalogModel, error)
+}
+
+// engineModel is the model mapping of the Pi provider in
+// packages/agent/src/harness/providers/pi.ts.
+func engineModel(m pi.CatalogModel) EngineModel {
+	model := EngineModel{ID: m.Provider + "/" + m.ID, Name: m.Name}
+	if model.Name == "" {
+		model.Name = m.ID
+	}
+	effort := thinkingControl(Model{Reasoning: m.Reasoning, ThinkingLevelMap: m.ThinkingLevelMap})
+	model.Effort = &effort
+	if m.Input != nil {
+		images := slices.Contains(m.Input, "image")
+		model.Images = &images
+	}
+	return model
 }
 
 // EngineInspection is a native engine connection check, the result of
@@ -46,6 +73,10 @@ type nativeModel struct {
 // saved as the Bot's catalog, as inspect in packages/agent/src/harness/connections.ts.
 func (r *Runtime) Inspect(ctx context.Context, bot int64, config EngineConfig) (EngineInspection, error) {
 	result := r.inspect(ctx, config)
+	// A check the caller abandoned says nothing about the engine.
+	if ctx.Err() != nil {
+		return result, nil
+	}
 	r.inspectMu.Lock()
 	if r.inspected == nil {
 		r.inspected = map[string]EngineInspection{}
@@ -107,13 +138,23 @@ func (r *Runtime) inspect(ctx context.Context, config EngineConfig) EngineInspec
 	if info.Version != "" {
 		result.Version = &info.Version
 	}
-	models, err := r.engine.Models(ctx)
-	if err != nil {
-		return result
-	}
-	for _, m := range models {
-		id := m.Provider + "/" + m.ModelID
-		result.Models = append(result.Models, EngineModel{ID: id, Name: m.ModelID})
+	if catalog, ok := r.engine.(catalogEngine); ok {
+		models, err := catalog.Catalog(ctx)
+		if err != nil {
+			return result
+		}
+		for _, m := range models {
+			result.Models = append(result.Models, engineModel(m))
+		}
+	} else {
+		models, err := r.engine.Models(ctx)
+		if err != nil {
+			return result
+		}
+		for _, m := range models {
+			id := m.Provider + "/" + m.ModelID
+			result.Models = append(result.Models, EngineModel{ID: id, Name: m.ModelID})
+		}
 	}
 	result.Authenticated = len(result.Models) > 0
 	return result
@@ -145,15 +186,25 @@ func (r *Runtime) Select(ctx context.Context, bot int64, current EngineConfig, m
 }
 
 // Configure replaces the Bot's engine configuration, as configure in
-// packages/agent/src/runtime/index.ts. Native option controls are not read
-// yet, so a configuration with options is refused.
+// packages/agent/src/runtime/index.ts. An option must be one the model's
+// effort control or the Bot's last read native controls offer.
 func (r *Runtime) Configure(ctx context.Context, bot int64, in EngineChange) error {
 	if in.Config.Provider != "pi" {
 		return &WorkError{Code: "NOT_IMPLEMENTED", Message: "Go 服务目前只支持 Pi 引擎。"}
 	}
-	connection, err := r.Inspect(ctx, bot, in.Config)
-	if err != nil {
-		return err
+	// As connections.snapshot, the last check stands in for a new one.
+	connection, ok := r.Inspection(in.Config.Provider)
+	if !ok {
+		var err error
+		if connection, err = r.Inspect(ctx, bot, in.Config); err != nil {
+			return err
+		}
+	}
+	var effort *Control
+	if in.Config.Model != nil {
+		if i := slices.IndexFunc(connection.Models, func(m EngineModel) bool { return m.ID == *in.Config.Model }); i >= 0 {
+			effort = connection.Models[i].Effort
+		}
 	}
 	return r.h.Commit(ctx, func(tx *Tx) error {
 		doc, err := Create(tx, EngineDoc, bot)
@@ -173,15 +224,21 @@ func (r *Runtime) Configure(ctx context.Context, bot int64, in EngineChange) err
 		if doc.Revision != in.Revision {
 			return &WorkError{Code: "CONFLICT", Message: "配置已更新。请刷新后重试。"}
 		}
-		if len(in.Config.Options) > 0 {
-			return &WorkError{Code: "BAD_REQUEST", Message: "请先读取此模型的原生配置，再选择可用值。"}
+		reset := doc.Config.Provider != in.Config.Provider || !equalModel(doc.Config.Model, in.Config.Model)
+		var native []Control
+		if !reset {
+			native = nativeControls(doc.Runtime)
+		}
+		for key, value := range in.Config.Options {
+			if !offered(native, effort, key, value) {
+				return &WorkError{Code: "BAD_REQUEST", Message: "请先读取此模型的原生配置，再选择可用值。"}
+			}
 		}
 		// switchSession in packages/agent/src/harness/sessions.ts keeps the
 		// native session when only the model changes.
 		if doc.Config.Provider != in.Config.Provider {
 			doc.SessionID = nil
 		}
-		reset := doc.Config.Provider != in.Config.Provider || !equalModel(doc.Config.Model, in.Config.Model)
 		doc.Config = in.Config
 		doc.Revision++
 		doc.RequestID = in.RequestID
@@ -198,6 +255,31 @@ func (r *Runtime) Configure(ctx context.Context, bot int64, in EngineChange) err
 		doc.Prompt = nil
 		return nil
 	})
+}
+
+// nativeControls reads the option controls cached in the engine document's
+// runtime.controls.
+func nativeControls(runtime map[string]any) []Control {
+	var controls struct {
+		Options []Control `json:"options"`
+	}
+	if data, err := json.Marshal(runtime["controls"]); err == nil {
+		_ = json.Unmarshal(data, &controls)
+	}
+	return controls.Options
+}
+
+// offered reports whether value is a choice of the control named key: a
+// native control when one is cached, else the model's effort control.
+func offered(native []Control, effort *Control, key string, value any) bool {
+	var control *Control
+	if i := slices.IndexFunc(native, func(c Control) bool { return c.ID == key }); i >= 0 {
+		control = &native[i]
+	} else if effort != nil && effort.ID == key {
+		control = effort
+	}
+	text, ok := value.(string)
+	return ok && control != nil && slices.ContainsFunc(control.Options, func(o Option) bool { return o.ID == text })
 }
 
 func equalModel(a, b *string) bool {

@@ -156,6 +156,9 @@ type CatalogModel struct {
 	Reasoning      bool     `json:"reasoning"`
 	ContextWindow  int64    `json:"contextWindow"`
 	ThinkingLevels []string `json:"thinkingLevels,omitempty"`
+	// ThinkingLevelMap is pi-ai's per-level mapping; a null value marks a
+	// level the model does not support.
+	ThinkingLevelMap map[string]*string `json:"thinkingLevelMap,omitempty"`
 }
 
 // Catalog returns Pi's full model definitions from get_available_models.

@@ -40,55 +40,9 @@ export function fixtureServer(name: "web-server" | "onboarding-server") {
   );
 }
 
-const processComputer = {
-  deployment: "native",
-  error: null,
-  id: "process",
-  kind: "process",
-  state: "running",
-  os: "linux",
-  arch: "x64",
-  directory: "/tmp",
-  boundary: "host",
-  network: "host",
-  name: "服务所在电脑",
-  authorized: true,
-  busy: false,
-  capabilities: { commands: true, files: true, desktop: false },
-};
-const binding = { computerId: "process", revision: 0, requestId: "" };
-
-// The Go service does not serve computer.* yet. Answer the reads the web needs
-// to open a Bot with the TypeScript fixture's process computer, in the test
-// layer only; every other computer procedure reaches Go unchanged.
-async function stubComputer(context: BrowserContext) {
-  await context.route(/\/rpc\/computer\/(get|setup|list)$/, async (route) => {
-    const procedure = new URL(route.request().url()).pathname.split("/").pop();
-    let json: unknown = { ...binding, computer: processComputer };
-    if (procedure === "setup")
-      json = { deployment: "native", canIsolate: false };
-    if (procedure === "list") {
-      const bots = await route.fetch({
-        url: route
-          .request()
-          .url()
-          .replace(/computer\/list$/, "bots/list"),
-      });
-      const { json: list } = (await bots.json()) as { json: { id: number }[] };
-      json = {
-        items: [processComputer],
-        defaultId: null,
-        bindings: Object.fromEntries(list.map(({ id }) => [id, binding])),
-      };
-    }
-    await route.fulfill({ json: { json } });
-  });
-}
-
 export const test = base.extend({
   context: async ({ context }, use) => {
     await setTestLanguage(context);
-    if (goService) await stubComputer(context);
     await use(context);
   },
 });
