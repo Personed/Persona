@@ -206,6 +206,51 @@ func TestOnceSchedule(t *testing.T) {
 	}
 }
 
+// The expected runs are what croner 10 computes in "5-part" mode, as the
+// TypeScript service did.
+func TestCronSchedule(t *testing.T) {
+	for _, c := range []struct {
+		expression, zone, after, want string
+	}{
+		{"0 9 L * *", "UTC", "2026-02-15T00:00:00Z", "2026-02-28T09:00:00Z"},
+		{"0 9 L * *", "UTC", "2028-02-15T00:00:00Z", "2028-02-29T09:00:00Z"},
+		{"0 9 LW * *", "UTC", "2026-05-15T00:00:00Z", "2026-05-29T09:00:00Z"},  // May 31 is a Sunday.
+		{"0 9 15W * *", "UTC", "2026-08-01T00:00:00Z", "2026-08-14T09:00:00Z"}, // August 15 is a Saturday.
+		{"0 9 1W * *", "UTC", "2026-07-15T00:00:00Z", "2026-08-03T09:00:00Z"},  // W stays in the month.
+		{"0 9 31W * *", "UTC", "2026-05-01T00:00:00Z", "2026-05-29T09:00:00Z"},
+		{"0 9 * * FRI#2", "UTC", "2026-01-01T00:00:00Z", "2026-01-09T09:00:00Z"},
+		{"0 9 * * 5#L", "UTC", "2026-01-01T00:00:00Z", "2026-01-30T09:00:00Z"},
+		{"0 9 * * 5L", "UTC", "2026-01-01T00:00:00Z", "2026-01-30T09:00:00Z"},
+		{"0 9 * * sun", "UTC", "2026-01-05T00:00:00Z", "2026-01-11T09:00:00Z"},
+		{"0 9 * * 7", "UTC", "2026-01-05T00:00:00Z", "2026-01-11T09:00:00Z"},
+		{"0 9 * * 0", "UTC", "2026-01-05T00:00:00Z", "2026-01-11T09:00:00Z"},
+		{"0 9 15 ? *", "UTC", "2026-01-05T00:00:00Z", "2026-01-15T09:00:00Z"},
+		{"0 9 13 * FRI", "UTC", "2026-01-05T00:00:00Z", "2026-01-09T09:00:00Z"},  // Day of month OR weekday.
+		{"0 9 13 * +FRI", "UTC", "2026-01-05T00:00:00Z", "2026-02-13T09:00:00Z"}, // + requires both.
+		{"0 9 L * MON#1", "UTC", "2026-01-05T00:00:00Z", "2026-01-05T09:00:00Z"},
+		{"30 8 * JAN-MAR MON-FRI", "UTC", "2026-03-31T12:00:00Z", "2027-01-01T08:30:00Z"},
+		{"*/20 9-10 1,15 * *", "Asia/Shanghai", "2026-01-15T02:50:00Z", "2026-02-01T01:00:00Z"},
+		// croner rolls February 30 over to March 2 and resumes there, skipping March 1.
+		{"0 0 1,30 * *", "UTC", "2026-02-15T00:00:00Z", "2026-03-30T00:00:00Z"},
+		{"30 2 * * *", "America/New_York", "2026-03-07T12:00:00Z", "2026-03-08T07:30:00Z"}, // Skipped hour.
+		{"30 1 * * *", "America/New_York", "2026-10-31T12:00:00Z", "2026-11-01T05:30:00Z"}, // Repeated hour.
+		{"30 1 * * *", "America/New_York", "2026-11-01T05:30:00Z", "2026-11-02T06:30:00Z"},
+	} {
+		after, _ := time.Parse(time.RFC3339, c.after)
+		want, _ := time.Parse(time.RFC3339, c.want)
+		schedule := routines.Schedule{Type: routines.Cron, Expression: c.expression, TimeZone: c.zone}
+		if next, err := schedule.Next(after); err != nil || next == nil || !next.Equal(want) {
+			t.Errorf("%q after %s = %v, %v; want %s", c.expression, c.after, next, err, c.want)
+		}
+	}
+	for _, expression := range []string{"0 9 * * 8", "0 9 15W-20 * *", "0 9 * * MON#6", "0 9 L/2 * *", "0 9 * * *  *"} {
+		schedule := routines.Schedule{Type: routines.Cron, Expression: expression, TimeZone: "UTC"}
+		if next, err := schedule.Next(start); err == nil {
+			t.Errorf("%q = %v; want an error", expression, next)
+		}
+	}
+}
+
 func TestTools(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newService(t)

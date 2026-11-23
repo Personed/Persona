@@ -8,8 +8,6 @@ import (
 
 	// Routines resolve IANA zones on hosts without a zoneinfo database (Windows, static images).
 	_ "time/tzdata"
-
-	"github.com/robfig/cron/v3"
 )
 
 // Schedule is when a routine runs: once at an ISO timestamp with offset, or a
@@ -21,6 +19,10 @@ type Schedule struct {
 	TimeZone   string `json:"timeZone"`
 }
 
+// maxFoldCandidates bounds the wall-clock runs checked for one after time, as
+// the TypeScript service does.
+const maxFoldCandidates = 1441
+
 // Schedule types.
 const (
 	Once = "once"
@@ -30,7 +32,6 @@ const (
 var (
 	timeZonePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*$`)
 	offsetPattern   = regexp.MustCompile(`(?:Z|[+-]\d{2}:\d{2})$`)
-	cronParser      = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 )
 
 // Validate checks a schedule and that it still has a run after now.
@@ -74,7 +75,7 @@ func (s Schedule) Next(after time.Time) (*time.Time, error) {
 	if len(fields) != 5 {
 		return nil, &Error{BadRequest, "Cron需要分钟、小时、日、月、星期五个字段。"}
 	}
-	schedule, err := cronParser.Parse(strings.Join(fields, " "))
+	pattern, err := parseCron(fields)
 	if err != nil {
 		return nil, &Error{BadRequest, "Cron表达式无效。"}
 	}
@@ -82,11 +83,20 @@ func (s Schedule) Next(after time.Time) (*time.Time, error) {
 	if err != nil {
 		return nil, &Error{BadRequest, "时区无效。请使用Asia/Shanghai等IANA时区。"}
 	}
-	next := schedule.Next(after.In(location))
-	if next.IsZero() {
-		return nil, nil
+	// Like croner's nextRuns, walk successive wall-clock matches; a repeated
+	// hour can map a later wall time to an instant before after.
+	from := civil(after, location).Truncate(time.Minute).Add(time.Minute)
+	for range maxFoldCandidates {
+		wall, ok := pattern.nextWall(from)
+		if !ok {
+			return nil, nil
+		}
+		if next := instant(wall, location); next.After(after) {
+			return &next, nil
+		}
+		from = wall.Add(time.Minute)
 	}
-	return &next, nil
+	return nil, nil
 }
 
 // hostTimeZone names the service computer's zone for routine_list. Go exposes the

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Personed/Persona/internal/engine"
+	"github.com/Personed/Persona/internal/memory"
 	"github.com/Personed/Persona/internal/store"
 )
 
@@ -452,7 +453,7 @@ func TestRuntimeSessionGetsInstructionsAndDeniesApprovals(t *testing.T) {
 	}
 	session := <-started
 	idle(t, rt)
-	if session.options.SystemPrompt != "Answer in French." || session.options.Env["PERSONA_PI_MCP_URL"] == "" {
+	if !strings.HasPrefix(session.options.SystemPrompt, "Answer in French.\n\n") || session.options.Env["PERSONA_PI_MCP_URL"] == "" {
 		t.Fatalf("options = %+v", session.options)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -469,4 +470,64 @@ func TestRuntimeSessionGetsInstructionsAndDeniesApprovals(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("approval request was never answered")
+}
+
+func TestRuntimeTaskSnapshotsMemoryIntoInstructions(t *testing.T) {
+	ctx := context.Background()
+	started := make(chan *scriptSession, 2)
+	a, rt := runtimeFor(t, true, scriptEngine{frames: strings.Split(answerFrames, "\n"), started: started})
+	bot := int64(a.Root)
+	if _, err := a.Bots.Update(ctx, bot, UpdateBot{Name: "Persona", Instructions: "Answer in French.", RequestID: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	memories := memory.NewService(a.Harness.Store(), nil)
+	if _, err := memories.Save(ctx, bot, memory.Input{Text: "The user drinks green tea.", Category: memory.Profile, RequestID: "m1"}, "user"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Submit(ctx, SendInput{BotID: bot, Text: "hello", RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	session := <-started
+	idle(t, rt)
+	tasks, err := a.Harness.Store().Tasks(ctx, store.TaskQuery{ConversationID: a.Root}, store.Scan{})
+	if err != nil || len(tasks.Items) != 1 {
+		t.Fatalf("tasks = %+v, %v", tasks.Items, err)
+	}
+	task := int64(tasks.Items[0].ID)
+	prompt := session.options.SystemPrompt
+	if !strings.HasPrefix(prompt, "Answer in French.\n\n"+memory.Snapshot(nil, bot)) || !strings.Contains(prompt, "The user drinks green tea.") ||
+		!strings.HasSuffix(prompt, "\n\n"+toolInstructions) {
+		t.Fatalf("system prompt = %q", prompt)
+	}
+	stored, ok, err := Snapshot(ctx, a.Harness, MemorySnapshotDoc, task)
+	if err != nil || !ok || !strings.Contains(stored.Text, "The user drinks green tea.") {
+		t.Fatalf("memory snapshot = %+v, %v, %v", stored, ok, err)
+	}
+	engineDoc, _, err := Snapshot(ctx, a.Harness, EngineDoc, bot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded struct {
+		Text     string            `json:"text"`
+		Sections map[string]string `json:"sections"`
+	}
+	if err := json.Unmarshal(engineDoc.Prompt, &recorded); err != nil || recorded.Text != prompt || recorded.Sections["memory"] != stored.Text {
+		t.Fatalf("engine prompt = %s, %v", engineDoc.Prompt, err)
+	}
+
+	// A later memory enters the next task's snapshot, not the stored one.
+	if _, err := memories.Save(ctx, bot, memory.Input{Text: "The user lives in Lisbon.", Category: memory.Profile, RequestID: "m2"}, "user"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Submit(ctx, SendInput{BotID: bot, Text: "again", RequestID: "r2"}); err != nil {
+		t.Fatal(err)
+	}
+	session = <-started
+	idle(t, rt)
+	if !strings.Contains(session.options.SystemPrompt, "The user lives in Lisbon.") {
+		t.Fatalf("second system prompt = %q", session.options.SystemPrompt)
+	}
+	if again, _, _ := Snapshot(ctx, a.Harness, MemorySnapshotDoc, task); again.Text != stored.Text {
+		t.Fatalf("first task snapshot changed to %q", again.Text)
+	}
 }
