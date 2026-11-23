@@ -9,10 +9,12 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/Personed/Persona/internal/contract"
+	"github.com/Personed/Persona/internal/hosting"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/server"
 )
@@ -37,24 +39,73 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	service := server.Config{RPC: procedures}
+	listenHost, listenPort := *host, *port
+	// Hosted mode: a config file (PERSONA_CONFIG or persona.config.json) puts the
+	// service behind device authentication, as apps/api's openHostedRuntime does.
+	if _, ok := os.LookupEnv("PERSONA_CONFIG"); ok || fileExists("persona.config.json") {
+		cfg, err := hosting.LoadConfig()
+		if err != nil {
+			return err
+		}
+		listenHost, listenPort = cfg.Host, cfg.Port
+		// Hold the runtime lease so no second service (or maintenance) shares
+		// the data directory, as apps/api's openHostedRuntime does.
+		release, err := hosting.AcquireDataLease(ctx, cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = release() }()
+		sessions, err := server.NewSessionStore(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		if err := sessions.Bootstrap(); err != nil {
+			return err
+		}
+		service.Hosting = &server.Hosting{
+			PublicURL:             cfg.PublicURL,
+			Sessions:              sessions,
+			DesktopCredentialFile: cfg.DesktopCredentialFile,
+		}
+		if service.Hosting.PublicURL == "" {
+			service.Hosting.PublicURL = "http://" + net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+		}
+		if cfg.StaticDir != "" {
+			*static = cfg.StaticDir
+		}
+	}
 	var web fs.FS
 	if !*headless {
 		if web, err = webFS(*static); err != nil {
 			return err
 		}
+		service.Static = web
 	}
-	handler, err := server.New(server.Config{RPC: procedures, Static: web})
+	handler, err := server.New(service)
 	if err != nil {
 		return err
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(*host, strconv.Itoa(*port)))
+	listener, err := net.Listen("tcp", net.JoinHostPort(listenHost, strconv.Itoa(listenPort)))
 	if err != nil {
 		return err
+	}
+	// Managed supervisors have no IPC channel: SIGTERM stops the service on
+	// POSIX, and on Windows (or any piped stdin) closing stdin ends it.
+	run := ctx
+	if info, err := os.Stdin.Stat(); err == nil && info.Mode()&os.ModeCharDevice == 0 {
+		stdinCtx, done := context.WithCancel(ctx)
+		defer done()
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			done()
+		}()
+		run = stdinCtx
 	}
 	httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	stopped := make(chan error, 1)
 	go func() {
-		<-ctx.Done()
+		<-run.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		stopped <- httpServer.Shutdown(shutdown)
@@ -67,4 +118,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	return <-stopped
+}
+
+func fileExists(name string) bool {
+	info, err := os.Stat(name)
+	return err == nil && info.Mode().IsRegular()
 }

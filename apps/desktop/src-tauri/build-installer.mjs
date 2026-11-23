@@ -26,8 +26,20 @@ const temporary = join(process.env.RUNNER_TEMP ?? tmpdir(), "opencode");
 await mkdir(temporary, { recursive: true });
 const stage = await mkdtemp(join(temporary, "pi-"));
 await buildRuntime(join(stage, "runtime"));
+// The supervisor launches the Go service; bundle its binary and wire contract.
+const serviceBin = process.env.PERSONA_SERVICE_BIN;
+if (!serviceBin)
+  throw new Error("PERSONA_SERVICE_BIN must point at the built persona binary");
+await cp(serviceBin, join(stage, "runtime", "persona.exe"));
+await cp(
+  join(base, "..", "..", "..", "contracts", "api"),
+  join(stage, "runtime", "contracts", "api"),
+  { recursive: true },
+);
 for (const entry of [
   "runtime/release.json",
+  "runtime/persona.exe",
+  "runtime/contracts/api/procedures.json",
   "runtime/node_modules/@persona/hosting/src/stack.ts",
   "runtime/node_modules/@persona/hosting/src/install.ts",
   "runtime/work/deploy/workspace.Dockerfile",

@@ -206,8 +206,29 @@ func TestFiles(t *testing.T) {
 				t.Fatalf("read %d bytes, err %v", len(read), err)
 			}
 			info, err := client.Stat(ctx, path)
-			if err != nil || info.Size != int64(len(large)) || info.Dir || info.ModTime == 0 {
+			if err != nil || info.Size != int64(len(large)) || info.Dir || info.ModTime == 0 || info.Symlink || info.Links != 1 {
 				t.Fatalf("stat = %+v, %v", info, err)
+			}
+			hard := filepath.Join(dir, "hard.txt")
+			if err := os.Link(path, hard); err != nil {
+				t.Fatal(err)
+			}
+			if info, err := client.Stat(ctx, hard); err != nil || info.Links != 2 || info.Symlink {
+				t.Fatalf("hard link stat = %+v, %v", info, err)
+			}
+			if err := os.Remove(hard); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(dir, "link.txt")
+			if err := os.Symlink(path, link); err == nil {
+				if info, err := client.Stat(ctx, link); err != nil || !info.Symlink || info.Links != 1 || info.Size == int64(len(large)) {
+					t.Fatalf("symlink stat = %+v, %v", info, err)
+				}
+				if err := os.Remove(link); err != nil {
+					t.Fatal(err)
+				}
+			} else if runtime.GOOS != "windows" {
+				t.Fatal(err)
 			}
 			if _, err := client.Stat(ctx, filepath.Join(dir, "missing")); code(err) != "ENOENT" {
 				t.Fatalf("missing stat: %v", err)

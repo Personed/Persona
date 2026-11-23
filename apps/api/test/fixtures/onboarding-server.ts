@@ -78,5 +78,14 @@ process.on("disconnect", () => {
   server.close();
   server.closeAllConnections();
   hosted.close();
-  void runtime.close().then(() => store.close());
+  const cleanup = (async () => {
+    await runtime.close();
+    await store.close();
+  })();
+  // Exit even when cleanup stalls: a wedged child otherwise holds the
+  // parent's teardown until test timeout.
+  void Promise.race([
+    cleanup.catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 10_000)),
+  ]).finally(() => process.exit());
 });
