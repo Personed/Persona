@@ -155,7 +155,8 @@ func (s *Service) storePackage(bundle Bundle) error {
 	if err := os.MkdirAll(s.packageDir, 0o755); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(filepath.Join(s.packageDir, bundle.Hash+".zip"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	path := filepath.Join(s.packageDir, bundle.Hash+".zip")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if errors.Is(err, os.ErrExist) {
 		return nil
 	}
@@ -164,9 +165,14 @@ func (s *Service) storePackage(bundle Bundle) error {
 	}
 	if _, err := file.Write(archive.Bytes()); err != nil {
 		_ = file.Close()
+		_ = os.Remove(path)
 		return err
 	}
-	return file.Close()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 func (s *Service) list(ctx context.Context) ([]Skill, error) {
