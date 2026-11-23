@@ -18,7 +18,9 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/store"
+	"github.com/Personed/Persona/internal/tools"
 )
 
 // Limits shared with the TypeScript backend (packages/agent/src/work/limits.ts).
@@ -151,6 +153,12 @@ type Service struct {
 	// OnChange fires once after each routine write; the routine runner uses it
 	// to recompute its next scheduled fire. nil ignores the notification.
 	OnChange func()
+	// Confirm asks the user to accept a routine change and reports the answer,
+	// matching the TypeScript manage confirmation card. nil refuses the change.
+	Confirm func(ctx context.Context, botID int64, request approval.Request) (bool, error)
+	// Deliver posts a tool result's chat notice, like the TypeScript
+	// details.notice path. nil skips delivery.
+	Deliver func(ctx context.Context, call tools.Call, text string) error
 
 	store store.Store
 	now   func() time.Time
@@ -305,6 +313,29 @@ func (s *Service) apply(ctx context.Context, botID int64, change Change, request
 			return nil, nil, &Error{Conflict, "内容已更新，请刷新后重试。"}
 		}
 	}
+	var previous *Routine
+	if index >= 0 {
+		kept := doc.Items[index]
+		previous = &kept
+	}
+	switch change.Action {
+	case "create", "update":
+		item.Enabled = change.Action == "create" || item.Enabled
+		item.Source = source
+		if err := s.edit(ctx, &item, change, now); err != nil {
+			return nil, nil, err
+		}
+	case "pause", "resume", "run_now", "delete":
+	default:
+		return nil, nil, &Error{BadRequest, "参数无效：action 不受支持。"}
+	}
+	confirmed, err := s.confirmChange(ctx, botID, change.Action, &item, previous, requestID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !confirmed {
+		return map[string]string{"status": "declined"}, nil, nil
+	}
 	switch change.Action {
 	case "run_now":
 		return nil, &item, nil
@@ -313,14 +344,6 @@ func (s *Service) apply(ctx context.Context, botID int64, change Change, request
 		return map[string]string{"status": "deleted"}, nil, s.save(ctx, meta, doc)
 	case "pause", "resume":
 		item.Enabled = change.Action == "resume"
-	case "create", "update":
-		item.Enabled = change.Action == "create" || item.Enabled
-		item.Source = source
-		if err := s.edit(ctx, &item, change, now); err != nil {
-			return nil, nil, err
-		}
-	default:
-		return nil, nil, &Error{BadRequest, "参数无效：action 不受支持。"}
 	}
 	// The runner starts a task for the new revision; a task for an older one ends itself.
 	item.NextAt, item.TaskID = nil, nil
@@ -483,6 +506,113 @@ func (s *Service) Report(ctx context.Context, botID int64, taskID store.TaskID, 
 		return s.save(ctx, meta, doc)
 	}
 	return none
+}
+
+// actionLabels names each action the way the confirmation card does.
+var actionLabels = map[string]string{
+	"create": "创建", "update": "修改", "pause": "暂停",
+	"resume": "恢复", "run_now": "立即执行", "delete": "删除",
+}
+
+// confirmChange asks the user to accept the merged change through the same
+// request card the TypeScript routines manage composes.
+func (s *Service) confirmChange(ctx context.Context, botID int64, action string, item, previous *Routine, requestID string) (bool, error) {
+	if s.Confirm == nil {
+		return false, &Error{BadRequest, "确认服务不可用。"}
+	}
+	label := actionLabels[action]
+	withSkills := len(item.SkillIDs) > 0 || (previous != nil && len(previous.SkillIDs) > 0)
+	fields := s.requestFields(ctx, item, withSkills)
+	detail := item.Instructions
+	if action == "update" && previous != nil {
+		previousFields := s.requestFields(ctx, previous, withSkills)
+		if item.Title != previous.Title {
+			fields = append([]approval.Field{{Label: "任务名称", Value: item.Title}}, fields...)
+			previousFields = append([]approval.Field{{Label: "任务名称", Value: previous.Title}}, previousFields...)
+		}
+		fields = diffFields(fields, previousFields)
+		if item.Instructions == previous.Instructions {
+			detail = ""
+		}
+	}
+	return s.Confirm(ctx, botID, approval.Request{
+		ID:           "routine:" + requestID,
+		Title:        label + "定时：" + item.Title,
+		Detail:       detail,
+		Kind:         approval.Permission,
+		Fields:       fields,
+		ConfirmLabel: label + "任务",
+	})
+}
+
+// requestFields renders a routine the way the confirmation card does.
+func (s *Service) requestFields(ctx context.Context, item *Routine, withSkills bool) []approval.Field {
+	when := item.Schedule.At
+	if item.Schedule.Type == Cron {
+		when = TimeLabel(item.Schedule.Expression)
+	} else if at, err := time.Parse(time.RFC3339Nano, item.Schedule.At); err == nil {
+		if loc, err := time.LoadLocation(item.Schedule.TimeZone); err == nil {
+			when = at.In(loc).Format("2006/1/2 15:04:05")
+		}
+	}
+	delivery := "每次交付"
+	if item.Delivery == Conditional {
+		delivery = "满足条件才通知：" + item.Condition
+	}
+	fields := []approval.Field{
+		{Label: "执行时间", Value: when},
+		{Label: "时区", Value: item.Schedule.TimeZone},
+		{Label: "执行期限", Value: fmt.Sprintf("%d 分钟（不含等待）", cmp.Or(item.ExecutionMs, DefaultExecutionMs)/60_000)},
+		{Label: "交付方式", Value: delivery},
+	}
+	if withSkills {
+		fields = append(fields, approval.Field{Label: "使用技能", Value: s.skillNames(ctx, item.SkillIDs)})
+	}
+	return fields
+}
+
+// skillNames renders bound skills by name, falling back to their IDs.
+func (s *Service) skillNames(ctx context.Context, ids []string) string {
+	var skills struct {
+		Items []skill `json:"items"`
+	}
+	// A missing or unreadable skills document leaves the IDs as their names.
+	_, _ = s.read(ctx, skillsDocKind, &skills)
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		name := id
+		for _, item := range skills.Items {
+			if item.ID == id {
+				name = item.Name
+				break
+			}
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return "未绑定"
+	}
+	return strings.Join(names, "、")
+}
+
+// diffFields keeps only fields that changed, rendered "previous → next".
+func diffFields(fields, previous []approval.Field) []approval.Field {
+	result := make([]approval.Field, 0, len(fields))
+	for _, field := range fields {
+		index := slices.IndexFunc(previous, func(item approval.Field) bool {
+			return item.Label == field.Label
+		})
+		switch {
+		case index < 0:
+			result = append(result, field)
+		case previous[index].Value != field.Value:
+			result = append(result, approval.Field{
+				Label: field.Label,
+				Value: previous[index].Value + " → " + field.Value,
+			})
+		}
+	}
+	return result
 }
 
 func unique(values []string) []string {

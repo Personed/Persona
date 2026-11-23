@@ -2938,10 +2938,14 @@ test("chat routine changes require confirmation and link runs to Work", async ({
   await details.locator("summary").filter({ hasText: "运行记录" }).click();
   await expect(details.locator(".run-list")).toContainText("已完成");
   await expect(details.locator(".run-list")).toContainText("等人");
-  await details
-    .getByRole("button", { name: "查看工作记录", exact: true })
-    .click();
   const record = page.getByRole("dialog", { name: "工作记录", exact: true });
+  await expect(async () => {
+    if (!(await record.isVisible().catch(() => false)))
+      await details
+        .getByRole("button", { name: "查看工作记录", exact: true })
+        .click();
+    await expect(record).toBeVisible();
+  }).toPass({ timeout: 10_000 });
   await expect(record).toContainText("试跑：Daily report");
   await expect(record).toContainText("Read the daily report");
   await page.screenshot({ path: info.outputPath("routine-work-record.png") });

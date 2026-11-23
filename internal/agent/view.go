@@ -46,6 +46,29 @@ func (r *Runtime) View(ctx context.Context, bot int64, before string) (any, erro
 		return nil, err
 	}
 	applyRoutineDelivery(&chat, runs)
+	requests, ok, err := Snapshot(ctx, r.h, RequestsDoc, bot)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		chat.Approvals = requests.Approvals
+		// approvalMessage in messages.ts: each pending request is also a
+		// transcript card on the last user message's turn.
+		turnID := ""
+		for i := len(chat.Messages) - 1; i >= 0; i-- {
+			m, ok := chat.Messages[i].(storedMessage)
+			if !ok || !fieldIs(m.fields, "role", "user") {
+				continue
+			}
+			if v, ok := rawOf(m.fields, "turnId"); ok {
+				turnID, _ = v.(string)
+			}
+			break
+		}
+		for _, raw := range requests.Approvals {
+			chat.Messages = append(chat.Messages, approvalCard(raw, turnID))
+		}
+	}
 	processing, _ := doc.Runtime["processing"].(bool)
 	chat.Busy = chat.Busy || len(doc.Tasks) > 0
 	chat.Processing = len(chat.Approvals) == 0 && (chat.Processing || (doc.ActiveID != nil && processing))
@@ -338,6 +361,49 @@ func (r *Runtime) routineRuns(ctx context.Context, bot int64) ([]RoutineRun, err
 		}
 	}
 	return runs, nil
+}
+
+// approvalCard mirrors approvalMessage(request, "pending") in messages.ts:
+// the pending request rendered as a transcript card on its turn.
+func approvalCard(raw json.RawMessage, turnID string) map[string]any {
+	var request struct {
+		ID          string          `json:"id"`
+		Detail      string          `json:"detail"`
+		Takeover    map[string]any  `json:"takeover"`
+		Preview     json.RawMessage `json:"preview"`
+		RequestedAt int64           `json:"requestedAt"`
+	}
+	_ = json.Unmarshal(raw, &request)
+	message := map[string]any{
+		"id":      "approval:" + request.ID + ":" + strconv.FormatInt(request.RequestedAt, 10),
+		"role":    "assistant",
+		"pending": true,
+		"approval": map[string]any{
+			"request": raw,
+			"state":   "pending",
+		},
+	}
+	if request.RequestedAt != 0 {
+		message["timestamp"] = request.RequestedAt
+	}
+	if turnID != "" {
+		message["turnId"] = turnID
+	}
+	if request.Takeover != nil {
+		content := []any{map[string]any{"type": "text", "text": request.Detail, "key": request.ID}}
+		if len(request.Preview) != 0 {
+			var preview map[string]any
+			if json.Unmarshal(request.Preview, &preview) == nil {
+				preview["key"] = request.ID + ":preview"
+				content = append(content, preview)
+			}
+		}
+		message["content"] = content
+		message["takeover"] = request.Takeover
+	} else {
+		message["content"] = []any{}
+	}
+	return message
 }
 
 func rawOf(fields map[string]json.RawMessage, key string) (any, bool) {

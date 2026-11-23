@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/routines"
 	"github.com/Personed/Persona/internal/store"
 	"github.com/Personed/Persona/internal/tools"
@@ -28,7 +29,11 @@ func newService(t *testing.T) (*routines.Service, *store.SQLite) {
 			t.Error(err)
 		}
 	})
-	return routines.NewService(records, func() time.Time { return start }), records
+	service := routines.NewService(records, func() time.Time { return start })
+	service.Confirm = func(context.Context, int64, approval.Request) (bool, error) {
+		return true, nil
+	}
+	return service, records
 }
 
 func code(err error) routines.ErrorCode {
@@ -258,19 +263,20 @@ func TestTools(t *testing.T) {
 	if err := routines.Register(registry, service); err != nil {
 		t.Fatal(err)
 	}
-	approved := 0
-	approve := func(context.Context, tools.Call, tools.Definition) (bool, error) {
-		approved++
-		return true, nil
-	}
-	call := func(name, callID, input string, approver tools.Approver) (tools.Result, error) {
-		return registry.Call(ctx, tools.Call{BotID: 1, TaskID: 7, CallID: callID, Name: name, Input: json.RawMessage(input)}, approver)
+	call := func(name, callID, input string) (tools.Result, error) {
+		return registry.Call(ctx, tools.Call{BotID: 1, TaskID: 7, CallID: callID, Name: name, Input: json.RawMessage(input)}, nil)
 	}
 	input := `{"title":"Morning brief","instructions":"Summarize unread mail.","schedule":{"type":"cron","expression":"0 9 * * 1-5","timeZone":"Asia/Shanghai"}}`
-	if _, err := call("routine_create", "c1", input, nil); !errors.Is(err, tools.ErrDenied) {
-		t.Fatalf("unapproved create = %v", err)
+	service.Confirm = nil
+	if result, err := call("routine_create", "c1", input); err != nil || !result.IsError {
+		t.Fatalf("unconfirmed create = %+v, %v", result, err)
 	}
-	result, err := call("routine_create", "c1", input, approve)
+	confirmed := 0
+	service.Confirm = func(context.Context, int64, approval.Request) (bool, error) {
+		confirmed++
+		return true, nil
+	}
+	result, err := call("routine_create", "c1", input)
 	if err != nil || result.IsError {
 		t.Fatalf("create = %+v, %v", result, err)
 	}
@@ -282,7 +288,7 @@ func TestTools(t *testing.T) {
 		t.Fatalf("created = %+v", created)
 	}
 
-	result, err = call("routine_list", "c2", `{}`, nil)
+	result, err = call("routine_list", "c2", `{}`)
 	if err != nil || result.IsError {
 		t.Fatalf("list = %+v, %v", result, err)
 	}
@@ -298,15 +304,15 @@ func TestTools(t *testing.T) {
 		t.Fatalf("listed time zone %q is not schedulable: %v", listing.TimeZone, err)
 	}
 
-	if result, err := call("routine_manage", "c3", `{"action":"pause","id":"`+created.ID+`"}`, approve); err != nil || !result.IsError {
+	if result, err := call("routine_manage", "c3", `{"action":"pause","id":"`+created.ID+`"}`); err != nil || !result.IsError {
 		t.Fatalf("manage without revision = %+v, %v", result, err)
 	}
-	result, err = call("routine_manage", "c4", `{"action":"pause","id":"`+created.ID+`","revision":1}`, approve)
+	result, err = call("routine_manage", "c4", `{"action":"pause","id":"`+created.ID+`","revision":1}`)
 	if err != nil || result.IsError || !strings.Contains(result.Content[0].Text, `"enabled":false`) {
 		t.Fatalf("pause = %+v, %v", result, err)
 	}
-	if approved != 3 {
-		t.Fatalf("approvals = %d", approved)
+	if confirmed != 2 {
+		t.Fatalf("confirmations = %d", confirmed)
 	}
 }
 

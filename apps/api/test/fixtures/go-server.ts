@@ -173,6 +173,18 @@ async function complete(
       });
     }
   }
+  // Specs script bare tool names; map them to the name the engine declared —
+  // persona tools arrive as mcp__persona__<name> and Pi's native tools as-is.
+  const declared = new Map<string, string>();
+  for (const tool of (body.tools ?? []) as {
+    function?: { name?: string };
+  }[]) {
+    const name = tool.function?.name;
+    if (!name) continue;
+    declared.set(name, name);
+    const bare = name.replace(/^mcp__persona__/, "");
+    if (!declared.has(bare)) declared.set(bare, name);
+  }
   const calls = reply.toolCalls ?? [];
   for (const [index, call] of calls.entries())
     chunk(response, model, {
@@ -182,8 +194,8 @@ async function complete(
           id: call.id,
           type: "function",
           function: {
-            name: call.name,
-            arguments: JSON.stringify(call.arguments),
+            name: declared.get(call.name) ?? call.name,
+            arguments: JSON.stringify(call.arguments ?? {}),
           },
         },
       ],

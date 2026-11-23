@@ -32,8 +32,6 @@ export const goGaps: Record<string, string[]> = {
       "large histories render a bounded window and retain the earlier reading anchor",
       "panel transitions preserve the transcript and draft through rapid toggles and reduced motion",
     ],
-  "routine tools: Pi's scripted routine_create call shows no routine approval card in chat":
-    ["chat routine changes require confirmation and link runs to Work"],
   // The spec injects approval requests through the TypeScript worker's
   // computer runtime; go-server.ts has no command that opens one in serve.
   "shared approval cards: the Go fixture cannot open an approval request": [
