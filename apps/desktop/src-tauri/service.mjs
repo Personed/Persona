@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
@@ -296,6 +296,10 @@ function savedWorkComputer(profile) {
   return value;
 }
 
+// The Go service is an explicit opt-in until its app handlers land; the
+// Node service-child stays the default.
+const goService = () => process.env.PERSONA_SERVICE === "go";
+
 // The Go service binary: an explicit override, then the bundled runtime, then PATH.
 function serviceCommand() {
   if (process.env.PERSONA_SERVICE_BIN) return process.env.PERSONA_SERVICE_BIN;
@@ -369,7 +373,7 @@ async function startService(directory, retain) {
   const stop = () => {
     stopping ??= (async () => {
       const graceful = child
-        ? await stopOwnedChild(child, exited, 30_000, 5_000, false)
+        ? await stopOwnedChild(child, exited, 30_000, 5_000, !goService())
         : true;
       // A killed writer cannot attest runtime cleanup; retain its disposable evidence.
       if (graceful && !retain)
@@ -384,13 +388,15 @@ async function startService(directory, retain) {
     const profile = await savedProfile(directory);
     const model = savedModel(profile);
     const workComputer = savedWorkComputer(profile);
-    // The desktop exchanges this file for an admin session at POST /hosting/desktop.
+    // With the Go service the desktop exchanges this file for an admin
+    // session at POST /hosting/desktop.
     const desktopCredentialFile = join(directory, "desktop-credential");
-    await writeFile(
-      desktopCredentialFile,
-      randomBytes(24).toString("base64url"),
-      { mode: 0o600 },
-    );
+    if (goService())
+      await writeFile(
+        desktopCredentialFile,
+        randomBytes(24).toString("base64url"),
+        { mode: 0o600 },
+      );
     await writeFile(
       config,
       JSON.stringify({
@@ -401,7 +407,7 @@ async function startService(directory, retain) {
         port,
         dataDir: join(directory, "data"),
         staticDir: fileURLToPath(staticDirectory),
-        desktopCredentialFile,
+        ...(goService() ? { desktopCredentialFile } : {}),
       }),
       { flag: retain ? "w" : "wx" },
     );
@@ -449,16 +455,29 @@ async function startService(directory, retain) {
       "PATHEXT",
     ])
       if (process.env[key]) env[key] = process.env[key];
-    // The Go service stops on SIGTERM; it has no Node IPC channel.
-    child = spawn(
-      serviceCommand(),
-      ["serve", "--contract", contractDirectory()],
-      {
-        env,
-        cwd: directory,
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    if (goService()) {
+      // The Go service stops on SIGTERM or stdin EOF; it has no Node IPC channel.
+      child = spawn(
+        serviceCommand(),
+        ["serve", "--contract", contractDirectory()],
+        {
+          env,
+          cwd: directory,
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      );
+    } else {
+      child = fork(
+        fileURLToPath(new URL("./service-child.mjs", import.meta.url)),
+        [],
+        {
+          env,
+          cwd: directory,
+          execArgv: [],
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        },
+      );
+    }
     exited = once(child, "exit");
     // Consume logs without leaking bootstrap/session credentials to the terminal.
     child.stderr.resume();
@@ -471,8 +490,10 @@ async function startService(directory, retain) {
       const fail = () => finish(new Error("Service exited before ready"));
       const receive = (chunk) => {
         output = (output + chunk).slice(-4096);
-        if (output.includes(`persona: listening on http://127.0.0.1:${port}`))
-          finish();
+        const ready = goService()
+          ? `persona: listening on http://127.0.0.1:${port}`
+          : `Persona: http://127.0.0.1:${port}`;
+        if (output.includes(ready)) finish();
       };
       const finish = (error) => {
         clearTimeout(timer);
@@ -494,20 +515,56 @@ async function startService(directory, retain) {
       exited,
       stop,
       pair: () =>
-        new Promise((resolve, reject) => {
-          const fail = () => reject(new Error("Service exited during pairing"));
-          child.once("exit", fail);
-          pairDesktop(`http://127.0.0.1:${port}`, desktopCredentialFile).then(
-            (session) => {
-              child.off("exit", fail);
-              resolve(session);
-            },
-            (error) => {
-              child.off("exit", fail);
-              reject(error);
-            },
-          );
-        }),
+        goService()
+          ? new Promise((resolve, reject) => {
+              const fail = () =>
+                reject(new Error("Service exited during pairing"));
+              child.once("exit", fail);
+              pairDesktop(
+                `http://127.0.0.1:${port}`,
+                desktopCredentialFile,
+              ).then(
+                (session) => {
+                  child.off("exit", fail);
+                  resolve(session);
+                },
+                (error) => {
+                  child.off("exit", fail);
+                  reject(error);
+                },
+              );
+            })
+          : new Promise((resolve, reject) => {
+              const timer = setTimeout(
+                () => finish(new Error("Pairing timed out")),
+                10_000,
+              );
+              const fail = () =>
+                finish(new Error("Service exited during pairing"));
+              const receive = (message) => {
+                if (
+                  message?.type === "desktop-session" &&
+                  typeof message.token === "string" &&
+                  Number.isFinite(message.expires)
+                )
+                  finish(undefined, {
+                    token: message.token,
+                    expires: message.expires,
+                  });
+              };
+              const finish = (error, session) => {
+                clearTimeout(timer);
+                child.off("message", receive);
+                child.off("exit", fail);
+                if (error) reject(error);
+                else resolve(session);
+              };
+              child.on("message", receive);
+              child.once("exit", fail);
+              child.send("pair-desktop", (error) => {
+                if (error) finish(error);
+              });
+            }),
     };
   } catch (error) {
     await stop();

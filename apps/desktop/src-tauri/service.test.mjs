@@ -22,6 +22,7 @@ test("real temporary service: private pairing, auth, shutdown and cleanup", {
   timeout: 120_000,
 }, async () => {
   const service = await startTestService();
+  let anonymous;
   try {
     const health = await fetch(`${service.origin}/health`);
     assert.equal(health.status, 200);
@@ -31,16 +32,16 @@ test("real temporary service: private pairing, auth, shutdown and cleanup", {
       (await fetch(`${service.origin}/hosting/session`)).status,
       401,
     );
-    // The endpoint exists now; without the desktop credential it refuses.
-    assert.equal(
-      (
-        await fetch(`${service.origin}/hosting/desktop`, {
-          method: "POST",
-          headers: { origin: service.origin },
-        })
-      ).status,
-      401,
-    );
+    // The endpoint exists on both services: the opt-in Go service refuses
+    // anonymous callers with 401; the default Node child only wires it when a
+    // desktopCredentialFile is configured, answering 404 here.
+    anonymous = (
+      await fetch(`${service.origin}/hosting/desktop`, {
+        method: "POST",
+        headers: { origin: service.origin },
+      })
+    ).status;
+    assert.equal(anonymous, process.env.PERSONA_SERVICE === "go" ? 401 : 404);
     const session = await service.pair();
     assert.ok(session.token.length >= 32);
     assert.ok(session.expires > Date.now());
@@ -68,7 +69,7 @@ test("real temporary service: private pairing, auth, shutdown and cleanup", {
   assert.equal(signal, null);
   await assert.rejects(access(service.directory), { code: "ENOENT" });
   console.log(
-    "health=200 anonymous=401 desktop-http=401 paired=200 cross-origin=403 shutdown=0 temporary-data=removed",
+    `health=200 anonymous=401 desktop-http=${anonymous} paired=200 cross-origin=403 shutdown=0 temporary-data=removed`,
   );
 });
 
