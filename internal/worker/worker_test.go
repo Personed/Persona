@@ -56,7 +56,11 @@ func TestMain(m *testing.M) {
 			}
 			os.Exit(0)
 		case "close":
-			_ = os.WriteFile(os.Getenv("TEST_BROWSER_CLOSED"), []byte(os.Getenv("AGENT_BROWSER_SESSION")), 0o600)
+			_ = os.WriteFile(os.Getenv("TEST_BROWSER_CLOSED"), []byte(os.Getenv("AGENT_BROWSER_SOCKET_DIR")+"\n"+os.Getenv("AGENT_BROWSER_SESSION")), 0o600)
+			os.Exit(0)
+		case "linger":
+			// A browser daemon that ignores `close`.
+			time.Sleep(time.Minute)
 			os.Exit(0)
 		case "set", "install":
 			if log := os.Getenv("TEST_BROWSER_CLI"); log != "" {

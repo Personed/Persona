@@ -312,9 +312,15 @@ func (s *server) restartBrowser(ctx context.Context, input ComputerInput, journa
 	if old != nil {
 		old.session.close()
 	}
-	closeBrowser(ctx, config)
+	if err := closeBrowser(ctx, config); err != nil {
+		return nil, err
+	}
 	if _, err := s.computerDriver(ctx, key, input); err != nil {
 		return nil, mcpError(ctx, err)
+	}
+	// The restart completes only once the new browser takes the viewport.
+	if err := prepareBrowser(ctx, config); err != nil {
+		return nil, codeError("EIO", "the browser restarted but did not prepare: "+err.Error(), "")
 	}
 	if err := appendJournal(journal, input.TaskID, journalEntry{State: "restarted", Service: input.Service}); err != nil {
 		return nil, err
@@ -325,12 +331,42 @@ func (s *server) restartBrowser(ctx context.Context, input ComputerInput, journa
 	return &ComputerResult{}, nil
 }
 
-// closeBrowser runs `agent-browser close` for the Bot session, so the daemon
-// that may still run earlier commands exits before the client reconnects.
-func closeBrowser(ctx context.Context, config *MCPConfig) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	_, _ = browserCLI(ctx, config, "close")
+// closeBrowser runs `agent-browser close` for the Bot session and confirms
+// that its daemon, which may still run earlier commands, exited before the
+// client reconnects. It stops a daemon that outlives the close.
+func closeBrowser(ctx context.Context, config *MCPConfig) error {
+	pid := 0
+	data, err := os.ReadFile(filepath.Join(config.Env["AGENT_BROWSER_SOCKET_DIR"], config.Env["AGENT_BROWSER_SESSION"]+".pid"))
+	if err == nil {
+		pid, err = strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || pid < 1 || pid == os.Getpid() {
+			return codeError("EIO", "the browser daemon's process is not confirmed", "")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	closing, cancel := context.WithTimeout(ctx, 3*time.Second)
+	_, _ = browserCLI(closing, config, "close")
+	cancel()
+	if pid == 0 {
+		return nil
+	}
+	for _, stop := range []bool{false, true} {
+		if stop {
+			killProcess(pid)
+		}
+		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+			if !processAlive(pid) {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	return codeError("EIO", "the browser daemon did not exit", "")
 }
 
 // browserCLI runs an agent-browser command for the Bot session with the
@@ -434,14 +470,8 @@ func (s *server) computerStatus(ctx context.Context, input ComputerInput, key, j
 		if err := os.WriteFile(filepath.Join(input.Dir, ".persona", "browser-mode.json"), mode, 0o600); err != nil {
 			return nil, err
 		}
-		if _, err := s.restartBrowser(ctx, input, journal, marker); err != nil {
-			return status(err), nil
-		}
-		config, err = driverConfig(input)
-		if err != nil {
-			return nil, err
-		}
-		return status(prepareBrowser(ctx, config)), nil
+		_, err := s.restartBrowser(ctx, input, journal, marker)
+		return status(err), nil
 	}
 	if uncertainNow {
 		return status(nil), nil
@@ -452,11 +482,11 @@ func (s *server) computerStatus(ctx context.Context, input ComputerInput, key, j
 // prepareBrowser sets the Bot browser viewport, retrying while the browser
 // starts and reports an unknown outcome, as browser-service.mjs does.
 func prepareBrowser(ctx context.Context, config *MCPConfig) error {
-	for attempt := 0; ; attempt++ {
-		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		_, err := browserCLI(ctx, config, "set", "viewport", "1280", "720", "--json")
+	for tries := 0; ; tries++ {
+		attempt, cancel := context.WithTimeout(ctx, 15*time.Second)
+		_, err := browserCLI(attempt, config, "set", "viewport", "1280", "720", "--json")
 		cancel()
-		if err == nil || attempt >= 2 || !strings.Contains(err.Error(), "outcome_unknown") {
+		if err == nil || tries >= 2 || !strings.Contains(err.Error(), "outcome_unknown") {
 			return err
 		}
 		select {
