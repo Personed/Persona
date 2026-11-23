@@ -36,7 +36,9 @@ export const goGaps: Record<string, string[]> = {
   "routine tools: serve does not offer routine_* to Pi's native MCP catalog": [
     "chat routine changes require confirmation and link runs to Work",
   ],
-  "native questions: Pi's ask_user is not stored as a shared question card": [
+  // The spec injects approval requests through the TypeScript worker's
+  // computer runtime; go-server.ts has no command that opens one in serve.
+  "shared approval cards: the Go fixture cannot open an approval request": [
     "shared question and approval cards persist answers and terminal states",
   ],
   "native Work records: work.records does not yet project native turns": [
