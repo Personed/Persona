@@ -38,6 +38,14 @@ func (r *Runtime) View(ctx context.Context, bot int64, before string) (any, erro
 			chat.Messages = append(chat.Messages, *draft)
 		}
 	}
+	// Routine delivery, applyRoutineDelivery in routine-delivery.ts: a
+	// routine run's input stays stored but hidden, and its answer carries the
+	// routine source card; conditional runs hide everything else they wrote.
+	runs, err := r.routineRuns(ctx, bot)
+	if err != nil {
+		return nil, err
+	}
+	applyRoutineDelivery(&chat, runs)
 	processing, _ := doc.Runtime["processing"].(bool)
 	chat.Busy = chat.Busy || len(doc.Tasks) > 0
 	chat.Processing = len(chat.Approvals) == 0 && (chat.Processing || (doc.ActiveID != nil && processing))
@@ -315,4 +323,130 @@ func diffViews(previous, view map[string]any) map[string]any {
 		return nil
 	}
 	return map[string]any{"type": "update", "state": state, "messages": messages, "removed": removed}
+}
+
+// routineRuns returns the Bot's routine run receipts.
+func (r *Runtime) routineRuns(ctx context.Context, bot int64) ([]RoutineRun, error) {
+	doc, ok, err := Snapshot(ctx, r.h, RoutinesDoc, 0)
+	if err != nil || !ok {
+		return nil, err
+	}
+	runs := []RoutineRun{}
+	for _, run := range doc.Runs {
+		if run.BotID == bot {
+			runs = append(runs, run)
+		}
+	}
+	return runs, nil
+}
+
+func rawOf(fields map[string]json.RawMessage, key string) (any, bool) {
+	var value any
+	raw, ok := fields[key]
+	if !ok || json.Unmarshal(raw, &value) != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func fieldIs(fields map[string]json.RawMessage, key, value string) bool {
+	v, ok := rawOf(fields, key)
+	s, _ := v.(string)
+	return ok && s == value
+}
+
+func routineCard(fields map[string]json.RawMessage, key string, run RoutineRun) {
+	source, _ := json.Marshal(map[string]any{
+		"runId": run.ID, "title": run.Title, "scheduledAt": run.ScheduledAt})
+	fields[key] = source
+}
+
+// applyRoutineDelivery mirrors routine-delivery.ts over the projected chat.
+func applyRoutineDelivery(chat *ChatView, runs []RoutineRun) {
+	for _, run := range runs {
+		if run.RequestID == "" {
+			continue
+		}
+		input := -1
+		turnID := run.TurnID
+		for i := range chat.Messages {
+			m, ok := chat.Messages[i].(storedMessage)
+			if !ok || !fieldIs(m.fields, "role", "user") {
+				continue
+			}
+			matched := fieldIs(m.fields, "requestId", run.RequestID)
+			if !matched {
+				if v, ok := rawOf(m.fields, "routine"); ok {
+					if card, ok := v.(map[string]any); ok && card["runId"] == run.ID {
+						matched = true
+					}
+				}
+			}
+			if !matched {
+				continue
+			}
+			input = i
+			if turnID == "" {
+				if v, ok := rawOf(m.fields, "turnId"); ok {
+					turnID, _ = v.(string)
+				}
+			}
+		}
+		if input < 0 {
+			continue
+		}
+		in := chat.Messages[input].(storedMessage)
+		routineCard(in.fields, "routine", run)
+		in.fields["hidden"], _ = json.Marshal(true)
+		if run.Delivery == "conditional" {
+			for i := range chat.Messages {
+				m, ok := chat.Messages[i].(storedMessage)
+				if !ok || !fieldIs(m.fields, "turnId", turnID) {
+					continue
+				}
+				id, _ := rawOf(m.fields, "id")
+				str, _ := id.(string)
+				if str == "routine-result:"+run.ID || str == "routine-status:"+run.ID {
+					continue
+				}
+				if _, has := m.fields["approval"]; has {
+					continue
+				}
+				if _, has := m.fields["takeover"]; has {
+					continue
+				}
+				m.fields["hidden"], _ = json.Marshal(true)
+			}
+			if chat.ActiveTurnID != nil && *chat.ActiveTurnID == turnID {
+				chat.Processing = false
+			}
+			continue
+		}
+		for i := range chat.Messages {
+			m, ok := chat.Messages[i].(storedMessage)
+			if !ok || !fieldIs(m.fields, "role", "assistant") || !fieldIs(m.fields, "turnId", turnID) {
+				continue
+			}
+			if _, has := m.fields["approval"]; has {
+				continue
+			}
+			if _, has := m.fields["takeover"]; has {
+				continue
+			}
+			content, _ := rawOf(m.fields, "content")
+			parts, _ := content.([]any)
+			text := false
+			for _, part := range parts {
+				p, _ := part.(map[string]any)
+				if p["type"] == "text" && p["text"] != "" {
+					text = true
+				}
+			}
+			if !text {
+				continue
+			}
+			routineCard(m.fields, "routine", run)
+			break
+		}
+	}
 }

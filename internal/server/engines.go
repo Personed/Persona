@@ -85,8 +85,9 @@ func (r agentRoutes) engineConfig(ctx context.Context, id int64) (agent.EngineSt
 }
 
 // profileOf is profile in packages/agent/src/runtime. Without a computer
-// runtime no Bot has a bound work computer, so the catalog and connection come
-// from the last engine inspection on the service computer.
+// runtime no Bot has a bound work computer, so the connection is the last
+// engine inspection on the service computer and the catalog falls back to the
+// Bot's saved one.
 func (r agentRoutes) profileOf(ctx context.Context, id int64) (any, error) {
 	doc, config, err := r.engineConfig(ctx, id)
 	if err != nil {
@@ -97,14 +98,18 @@ func (r agentRoutes) profileOf(ctx context.Context, id int64) (any, error) {
 	var connection, model any
 	for i, e := range engines {
 		entry := map[string]any{"id": e.ID, "name": e.Name, "version": nil, "models": []agent.EngineModel{}}
-		if inspected, ok := r.rt.Inspection(e.ID); ok {
-			entry["version"], entry["models"] = inspected.Version, inspected.Models
-			if e.ID == config.Provider {
+		models, version, err := r.rt.Catalog(ctx, id, e.ID)
+		if err != nil {
+			return nil, err
+		}
+		entry["version"], entry["models"] = version, models
+		if e.ID == config.Provider {
+			if inspected, ok := r.rt.Inspection(e.ID); ok {
 				connection = inspected
-				for _, m := range inspected.Models {
-					if config.Model != nil && m.ID == *config.Model {
-						model = m
-					}
+			}
+			for _, m := range models {
+				if config.Model != nil && m.ID == *config.Model {
+					model = m
 				}
 			}
 		}
@@ -151,7 +156,7 @@ func (r agentRoutes) inspect(ctx context.Context, input json.RawMessage) (any, e
 		}
 		in.Config = &config
 	}
-	return r.rt.Inspect(ctx, *in.Config), nil
+	return r.rt.Inspect(ctx, id, *in.Config)
 }
 
 func (r agentRoutes) configure(ctx context.Context, input json.RawMessage) (any, error) {

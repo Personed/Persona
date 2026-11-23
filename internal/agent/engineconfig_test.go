@@ -47,12 +47,30 @@ func TestConfigurePreparesInspectedModel(t *testing.T) {
 	if err := rt.Select(ctx, bot, doc.Config, &missing, nil, 1, "c"); !errors.As(err, &work) || work.Code != "BAD_REQUEST" {
 		t.Fatalf("unknown model: %v", err)
 	}
+	session := "native-1"
+	if err := a.Harness.Commit(ctx, func(tx *Tx) error {
+		doc, err := Edit(tx, EngineDoc, bot)
+		doc.SessionID = &session
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	other := "ollama/m2"
 	if err := rt.Select(ctx, bot, doc.Config, &other, nil, 1, "d"); err != nil {
 		t.Fatal(err)
 	}
 	if doc, _, _ = Snapshot(ctx, a.Harness, EngineDoc, bot); doc.Revision != 2 || *doc.Config.Model != other {
 		t.Fatalf("selected doc = %+v", doc)
+	}
+	if doc.SessionID == nil || *doc.SessionID != session {
+		t.Fatalf("a model change dropped the native session: %v", doc.SessionID)
+	}
+	restarted := NewRuntime(a, RuntimeOptions{Engine: modelEngine{}, Native: true})
+	if models, version, err := restarted.Catalog(ctx, bot, "pi"); err != nil || len(models) != 2 || version == nil || *version != "1.0.0" {
+		t.Fatalf("saved catalog = %v %v %v", models, version, err)
+	}
+	if models, _, err := restarted.Catalog(ctx, bot+1, "pi"); err != nil || len(models) != 0 {
+		t.Fatalf("another Bot's catalog = %v %v", models, err)
 	}
 }
 
@@ -69,7 +87,10 @@ func TestSelectAcceptsOfferedEffort(t *testing.T) {
 	bot := int64(a.Root)
 	model := "faux/r1"
 	config := EngineConfig{Provider: "pi", Model: &model}
-	inspected := rt.Inspect(ctx, config)
+	inspected, err := rt.Inspect(ctx, bot, config)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(inspected.Models) != 1 {
 		t.Fatalf("models = %+v", inspected.Models)
 	}

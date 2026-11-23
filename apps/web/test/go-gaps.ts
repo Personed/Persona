@@ -23,10 +23,6 @@ export const goGaps: Record<string, string[]> = {
       "published files wait for the complete reply",
       "typing follows the Bot and failures retain their error message",
     ],
-  "routine runner: persona.routine tasks and work.routines.test are unported (Go only runs engine/chat turns)":
-    [
-      "Bot details manage identity, memory, shared skills, routines and actual prompts",
-    ],
   "chat window: Go reads a fixed 50-entry page; pi-durable's view window grows to 100 entries and pages older ones":
     [
       "chat reads older pages and retains them through live updates",

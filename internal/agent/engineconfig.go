@@ -50,30 +50,79 @@ type EngineInspection struct {
 	Message       string        `json:"message"`
 }
 
-// Inspect checks the runtime's engine on the service computer. Only Pi runs in
-// the Go service, and it is authenticated when it lists a model, as the Pi
-// provider in packages/agent/src/harness/providers/pi.ts.
-func (r *Runtime) Inspect(ctx context.Context, config EngineConfig) EngineInspection {
+// NativeModelsDoc keeps each Bot's last ready engine catalog across restarts,
+// the persona.native-models document of packages/agent/src/harness/model-catalog.ts.
+var NativeModelsDoc = Doc[nativeModels]{Kind: "persona.native-models", Scope: "session",
+	Initial: func() nativeModels { return nativeModels{Items: []nativeModel{}} }}
+
+type nativeModels struct {
+	Items []nativeModel `json:"items"`
+}
+
+type nativeModel struct {
+	BotID      int64         `json:"botId"`
+	ComputerID *string       `json:"computerId"`
+	Provider   string        `json:"provider"`
+	Models     []EngineModel `json:"models"`
+	Version    *string       `json:"version,omitempty"`
+}
+
+// Inspect checks the runtime's engine on the service computer for bot. Only Pi
+// runs in the Go service, and it is authenticated when it lists a model, as the
+// Pi provider in packages/agent/src/harness/providers/pi.ts. A ready result is
+// saved as the Bot's catalog, as inspect in packages/agent/src/harness/connections.ts.
+func (r *Runtime) Inspect(ctx context.Context, bot int64, config EngineConfig) (EngineInspection, error) {
 	result := r.inspect(ctx, config)
 	// A check the caller abandoned says nothing about the engine.
 	if ctx.Err() != nil {
-		return result
+		return result, nil
 	}
 	r.inspectMu.Lock()
-	defer r.inspectMu.Unlock()
 	if r.inspected == nil {
 		r.inspected = map[string]EngineInspection{}
 	}
 	r.inspected[config.Provider] = result
-	return result
+	r.inspectMu.Unlock()
+	if !result.Ready {
+		return result, nil
+	}
+	return result, r.h.Commit(ctx, func(tx *Tx) error {
+		doc, err := Edit(tx, NativeModelsDoc, 0)
+		if err != nil {
+			return err
+		}
+		doc.Items = slices.DeleteFunc(doc.Items, func(item nativeModel) bool {
+			return item.BotID == bot && item.ComputerID == nil && item.Provider == config.Provider
+		})
+		doc.Items = append(doc.Items, nativeModel{BotID: bot, Provider: config.Provider, Models: result.Models, Version: result.Version})
+		return nil
+	})
 }
 
-// Inspection returns the provider's last Inspect result.
+// Inspection returns the provider's last Inspect result in this process.
 func (r *Runtime) Inspection(provider string) (EngineInspection, bool) {
 	r.inspectMu.Lock()
 	defer r.inspectMu.Unlock()
 	result, ok := r.inspected[provider]
 	return result, ok
+}
+
+// Catalog is the provider's models for bot: the last Inspect in this process,
+// else the Bot's saved catalog, as catalog in packages/agent/src/harness/connections.ts.
+func (r *Runtime) Catalog(ctx context.Context, bot int64, provider string) ([]EngineModel, *string, error) {
+	if inspected, ok := r.Inspection(provider); ok {
+		return inspected.Models, inspected.Version, nil
+	}
+	doc, _, err := Snapshot(ctx, r.h, NativeModelsDoc, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, item := range doc.Items {
+		if item.BotID == bot && item.ComputerID == nil && item.Provider == provider {
+			return item.Models, item.Version, nil
+		}
+	}
+	return []EngineModel{}, nil, nil
 }
 
 func (r *Runtime) inspect(ctx context.Context, config EngineConfig) EngineInspection {
@@ -125,7 +174,11 @@ type EngineChange struct {
 // Select changes the Bot's model within its configured engine, as select in
 // packages/agent/src/runtime/index.ts.
 func (r *Runtime) Select(ctx context.Context, bot int64, current EngineConfig, model *string, options map[string]any, revision int, requestID string) error {
-	if !r.Inspect(ctx, current).offers(model) {
+	connection, err := r.Inspect(ctx, bot, current)
+	if err != nil {
+		return err
+	}
+	if !connection.offers(model) {
 		return &WorkError{Code: "BAD_REQUEST", Message: "请选择工作电脑上可用的模型。"}
 	}
 	config := EngineConfig{Provider: current.Provider, Model: model, Options: options}
@@ -142,7 +195,10 @@ func (r *Runtime) Configure(ctx context.Context, bot int64, in EngineChange) err
 	// As connections.snapshot, the last check stands in for a new one.
 	connection, ok := r.Inspection(in.Config.Provider)
 	if !ok {
-		connection = r.Inspect(ctx, in.Config)
+		var err error
+		if connection, err = r.Inspect(ctx, bot, in.Config); err != nil {
+			return err
+		}
 	}
 	var effort *Control
 	if in.Config.Model != nil {
@@ -178,7 +234,9 @@ func (r *Runtime) Configure(ctx context.Context, bot int64, in EngineChange) err
 				return &WorkError{Code: "BAD_REQUEST", Message: "请先读取此模型的原生配置，再选择可用值。"}
 			}
 		}
-		if reset {
+		// switchSession in packages/agent/src/harness/sessions.ts keeps the
+		// native session when only the model changes.
+		if doc.Config.Provider != in.Config.Provider {
 			doc.SessionID = nil
 		}
 		doc.Config = in.Config

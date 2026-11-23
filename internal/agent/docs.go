@@ -213,12 +213,47 @@ var (
 	UsageTaskDoc      = Doc[TaskItems]{Kind: "persona.engine-usage", Scope: "task", Initial: emptyItems}
 	CompactionTaskDoc = Doc[TaskItems]{Kind: "persona.engine-compaction", Scope: "task", Initial: emptyItems}
 	RequestsDoc       = Doc[ComputerRequests]{Kind: "persona.computer-requests", Scope: "conversation", History: "latest", Fork: "initial"}
+	RoutinesDoc       = Doc[RoutinesState]{Kind: "persona.routines", Scope: "session"}
+	SkillsDoc         = Doc[SkillsState]{Kind: "persona.skills", Scope: "session"}
 )
 
 // ComputerRequests is the persona.computer-requests document; internal/approval
 // owns its writes and the chat shows its pending approvals.
 type ComputerRequests struct {
 	Approvals []json.RawMessage `json:"approvals"`
+}
+
+// SkillItem is the part of a persona.skills record the prompt section reads.
+type SkillItem struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	EnabledBots []int64 `json:"enabledBots"`
+}
+
+// SkillsState is the part of persona.skills this package reads.
+type SkillsState struct {
+	Items []SkillItem `json:"items"`
+}
+
+// RoutineRun is the run receipt fields the runtime and chat projection read,
+// RoutineRun in packages/agent/src/work/routine-state.ts.
+type RoutineRun struct {
+	ID          string `json:"id"`
+	RoutineID   string `json:"routineId"`
+	BotID       int64  `json:"botId"`
+	Title       string `json:"title"`
+	Mode        string `json:"mode"`
+	ScheduledAt int64  `json:"scheduledAt"`
+	Status      string `json:"status"`
+	RequestID   string `json:"requestId"`
+	Delivery    string `json:"delivery,omitempty"`
+	TurnID      string `json:"turnId,omitempty"`
+}
+
+// RoutinesState is the part of persona.routines this package reads.
+type RoutinesState struct {
+	Runs []RoutineRun `json:"runs"`
 }
 
 // Entry kinds read by the chat projection.
