@@ -30,7 +30,6 @@ type Command struct {
 	Run     func(ctx context.Context, args []string, stdout io.Writer) error
 }
 
-
 // Commands lists the subcommands in help order.
 var Commands = []Command{
 	{Name: "serve", Summary: "Run the HTTP/RPC service and web UI.", Run: serve},
