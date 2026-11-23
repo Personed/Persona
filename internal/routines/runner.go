@@ -424,7 +424,7 @@ func (r *Runner) roundtrip(ctx context.Context, in taskInput, runID string) (str
 	// or approval does not burn execution time, so expiry can only revoke the
 	// run's own turn, never an unrelated one.
 	var charged int64
-	var engineTask store.TaskID
+	turn := fmt.Sprintf("engine:%d", int64(subID))
 	tracked := "queued"
 	lastTick := r.s.now()
 	tick := time.NewTicker(200 * time.Millisecond)
@@ -447,16 +447,18 @@ func (r *Runner) roundtrip(ctx context.Context, in taskInput, runID string) (str
 		}
 		now := r.s.now()
 		state := "queued"
-		if engineTask == 0 {
-			engineTask = r.engineTask(ctx, in.BotID, subID)
-		}
-		if engineTask != 0 {
-			if active, err := r.taskActive(ctx, in.BotID, engineTask); err == nil && active {
-				state = "running"
-			}
-			if state == "running" && r.approvals != nil {
-				if pending, err := r.approvals.Pending(ctx, in.BotID); err == nil && len(pending) > 0 {
-					state = "waiting_approval"
+		if active, startedAt, err := r.turnActive(ctx, in.BotID, turn); err == nil && active {
+			state = "running"
+			// Only requests this turn raised count as waiting; a card left open
+			// by an earlier turn or a crash does not pause the deadline.
+			if r.approvals != nil {
+				if pending, err := r.approvals.Pending(ctx, in.BotID); err == nil {
+					for _, request := range pending {
+						if startedAt == 0 || request.RequestedAt >= startedAt {
+							state = "waiting_approval"
+							break
+						}
+					}
 				}
 			}
 		}
@@ -487,50 +489,37 @@ func (r *Runner) roundtrip(ctx context.Context, in taskInput, runID string) (str
 	}
 }
 
-// engineTask resolves the run's engine turn task once its submission is
-// admitted; its kind is agent.EngineTurn, which routines cannot import.
-func (r *Runner) engineTask(ctx context.Context, botID int64, subID store.SubmissionID) store.TaskID {
-	tasks, err := r.s.store.Tasks(ctx, store.TaskQuery{
-		ConversationID: store.ConversationID(botID), Kind: "persona.engine-turn"}, store.Scan{Limit: 200})
-	if err != nil {
-		return 0
-	}
-	for _, task := range tasks.Items {
-		if task.State.Status == store.TaskTerminal {
-			continue
-		}
-		var input struct {
-			SubmissionID store.SubmissionID `json:"submissionId"`
-		}
-		if json.Unmarshal(task.Input, &input) == nil && input.SubmissionID == subID {
-			return task.ID
-		}
-	}
-	return 0
-}
-
-// taskActive reports whether the run's engine turn is the Bot's active task,
-// reading the conversation's persona.engine document.
-func (r *Runner) taskActive(ctx context.Context, botID int64, taskID store.TaskID) (bool, error) {
+// turnActive reports whether the run's engine turn is the Bot's active task,
+// reading the conversation's persona.engine document, and returns the turn's
+// start time for attributing pending approval requests.
+func (r *Runner) turnActive(ctx context.Context, botID int64, turn string) (bool, int64, error) {
 	meta, err := r.s.store.FindDocument(ctx, "persona.engine",
 		store.Scope{Kind: "conversation", ConversationID: store.ConversationID(botID)}, "", store.Current)
 	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
+		return false, 0, nil
 	}
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	value, err := r.s.store.Document(ctx, meta.ID, store.Current)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	var doc struct {
-		ActiveID *int64 `json:"activeId"`
+		ActiveID   *int64  `json:"activeId"`
+		ActiveTurn *string `json:"activeTurn"`
 	}
 	if err := json.Unmarshal(value.Value, &doc); err != nil {
-		return false, err
+		return false, 0, err
 	}
-	return doc.ActiveID != nil && *doc.ActiveID == int64(taskID), nil
+	if doc.ActiveID == nil || doc.ActiveTurn == nil || *doc.ActiveTurn != turn {
+		return false, 0, nil
+	}
+	var startedAt int64
+	if task, err := r.s.store.Task(ctx, store.TaskID(*doc.ActiveID)); err == nil && task.StartedAt != nil {
+		startedAt = *task.StartedAt
+	}
+	return true, startedAt, nil
 }
 
 // finish settles the run receipt and reschedules or disables the routine,
