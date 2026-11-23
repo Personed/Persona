@@ -35,6 +35,7 @@ type Client struct {
 	err     error
 	cmd     *exec.Cmd
 	closed  atomic.Bool
+	options Options
 }
 
 type pending struct {
@@ -47,6 +48,8 @@ type Options struct {
 	ID   string
 	Name string
 	Kind computer.Kind
+	// MCPNotification receives notifications from connected MCP servers.
+	MCPNotification func(id string, notification MCPNotification)
 }
 
 // Transport builds the command that starts a worker printing token on its sync line.
@@ -95,7 +98,7 @@ func Dial(ctx context.Context, transport Transport, options Options) (*Client, e
 // Connect speaks the protocol over an established stream: it waits for the
 // sync line carrying token, then sends hello.
 func Connect(ctx context.Context, in io.Reader, out io.WriteCloser, token string, options Options) (*Client, error) {
-	c := &Client{
+	c := &Client{options: options,
 		reader: bufio.NewReaderSize(in, 64<<10), writer: out,
 		calls: map[uint32]*pending{}, done: make(chan struct{}),
 	}
@@ -171,6 +174,8 @@ func (c *Client) readLoop() {
 		}
 		c.mu.Unlock()
 		switch {
+		case call == nil && f.Type == frameEvent && f.ID == 0:
+			c.workerEvent(f.JSON)
 		case call == nil:
 		case f.Type == frameEvent && call.event != nil:
 			call.event(f.JSON, f.Payload)
@@ -730,4 +735,27 @@ func (w *limitedWriter) Write(p []byte) (int, error) {
 		w.buffer.Write(p[:min(len(p), room)])
 	}
 	return len(p), nil
+}
+
+func (c *Client) workerEvent(raw json.RawMessage) {
+	var event mcpEvent
+	if json.Unmarshal(raw, &event) == nil && event.Type == "mcpNotification" && event.Notification != nil && c.options.MCPNotification != nil {
+		c.options.MCPNotification(event.ID, *event.Notification)
+	}
+}
+
+// MCP runs one managed MCP operation on the work computer. progress receives
+// the server's progress notifications for a forwarded request.
+func (c *Client) MCP(ctx context.Context, input MCPInput, progress func(MCPProgress)) (MCPResult, error) {
+	var result MCPResult
+	raw, _, err := c.call(ctx, "mcp", input, nil, func(raw json.RawMessage, _ []byte) {
+		var event mcpEvent
+		if progress != nil && json.Unmarshal(raw, &event) == nil && event.Type == "progress" && event.Progress != nil {
+			progress(*event.Progress)
+		}
+	})
+	if err == nil {
+		err = json.Unmarshal(raw, &result)
+	}
+	return result, err
 }
