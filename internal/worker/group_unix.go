@@ -3,8 +3,13 @@
 package worker
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -33,4 +38,52 @@ func processAlive(pid int) bool {
 	return err == nil || err == syscall.EPERM
 }
 
-func killProcess(pid int) { _ = syscall.Kill(pid, syscall.SIGKILL) }
+// processIdentity reports pid's executable and whether the worker's user
+// owns it. found is false once pid has exited.
+func processIdentity(ctx context.Context, pid int) (executable string, owned, found bool, err error) {
+	if runtime.GOOS == "linux" {
+		proc := "/proc/" + strconv.Itoa(pid)
+		info, err := os.Stat(proc)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, false, nil
+		}
+		if err != nil {
+			return "", false, false, err
+		}
+		executable, err := os.Readlink(proc + "/exe")
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, false, nil
+		}
+		if err != nil {
+			return "", false, false, err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		return executable, ok && int(stat.Uid) == os.Getuid(), true, nil
+	}
+	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "uid=", "-o", "comm=").Output()
+	line := strings.TrimSpace(string(output))
+	if line == "" {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return "", false, false, nil
+		}
+		if err == nil {
+			err = errors.New("ps reported no process identity")
+		}
+		return "", false, false, err
+	}
+	uid, comm, _ := strings.Cut(line, " ")
+	return strings.TrimSpace(comm), uid == strconv.Itoa(os.Getuid()), true, nil
+}
+
+// killTree kills pid's process group, which the daemon leads.
+func killTree(pid int) error {
+	err := syscall.Kill(-pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		err = syscall.Kill(pid, syscall.SIGKILL)
+	}
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}

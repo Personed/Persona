@@ -354,22 +354,60 @@ func closeBrowser(ctx context.Context, config *MCPConfig) error {
 	if pid == 0 {
 		return nil
 	}
-	for _, stop := range []bool{false, true} {
-		if stop {
-			killProcess(pid)
-		}
-		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-			if !processAlive(pid) {
-				return nil
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(50 * time.Millisecond):
-			}
-		}
+	if exited, err := waitExit(ctx, pid, time.Second); exited || err != nil {
+		return err
+	}
+	if err := stopBrowserDaemon(ctx, config, pid); err != nil {
+		return err
+	}
+	if exited, err := waitExit(ctx, pid, 5*time.Second); exited || err != nil {
+		return err
 	}
 	return codeError("EIO", "the browser daemon did not exit", "")
+}
+
+func waitExit(ctx context.Context, pid int, wait time.Duration) (bool, error) {
+	for deadline := time.Now().Add(wait); time.Now().Before(deadline); {
+		if !processAlive(pid) {
+			return true, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	return !processAlive(pid), nil
+}
+
+// stopBrowserDaemon force-stops the daemon's process tree only when pid is
+// still agent-browser run by the worker's user: a crashed daemon leaves its
+// pid file, and the system may have given that pid to another program.
+func stopBrowserDaemon(ctx context.Context, config *MCPConfig, pid int) error {
+	executable, owned, found, err := processIdentity(ctx, pid)
+	if err != nil || !found {
+		return err
+	}
+	launcher, err := ResolveProgram(ctx, config.Command, stdioEnvironment(config.Env))
+	if err != nil {
+		return err
+	}
+	if !owned || executable == "" || launcher == "" || !samePath(executable, launcher) {
+		return codeError("EIO", "the browser daemon's process identity is not confirmed; it was not stopped", "")
+	}
+	return killTree(pid)
+}
+
+func samePath(a, b string) bool {
+	a, errA := filepath.EvalSymlinks(a)
+	b, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // browserCLI runs an agent-browser command for the Bot session with the

@@ -1,10 +1,14 @@
 package worker
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 )
 
 // isolate starts the program in a new process group. Windows has no group
@@ -38,8 +42,30 @@ func processAlive(pid int) bool {
 	return syscall.GetExitCodeProcess(handle, &code) == nil && code == stillActive
 }
 
-func killProcess(pid int) {
-	if process, err := os.FindProcess(pid); err == nil {
-		_ = process.Kill()
+// processIdentity reports pid's executable and whether the worker's user
+// owns it. found is false once pid has exited.
+func processIdentity(ctx context.Context, pid int) (executable string, owned, found bool, err error) {
+	script := "$p = Get-CimInstance Win32_Process -Filter 'ProcessId=" + strconv.Itoa(pid) + "'; if ($p) { [pscustomobject]@{ path = $p.ExecutablePath; owned = ((Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid).Sid -eq [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value) } | ConvertTo-Json -Compress }"
+	query, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(query, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	if err != nil {
+		return "", false, false, err
 	}
+	if strings.TrimSpace(string(output)) == "" {
+		return "", false, false, nil
+	}
+	var identity struct {
+		Path  string `json:"path"`
+		Owned bool   `json:"owned"`
+	}
+	if err := json.Unmarshal(output, &identity); err != nil {
+		return "", false, false, err
+	}
+	return identity.Path, identity.Owned, true, nil
+}
+
+// killTree ends pid's process tree.
+func killTree(pid int) error {
+	return exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
 }
