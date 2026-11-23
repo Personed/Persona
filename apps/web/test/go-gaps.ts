@@ -29,8 +29,6 @@ export const goGaps: Record<string, string[]> = {
     ],
   "untriaged: needs web-server.ts scripting (seeded history, tool calls, approvals, files) or an unported Go behavior":
     [
-      "Apps completes and cancels browser OAuth with stored state",
-      "Apps manages a real MCP connection and Bot grants across reloads and themes",
       "Bot details share the desktop with chat and cover narrow screens",
       "Markdown keeps one message scale across elements, themes, and text enlargement",
       "Work follows a native turn, opens its record and preserves it after stop and reload",
