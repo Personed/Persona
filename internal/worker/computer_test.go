@@ -634,9 +634,9 @@ func TestComputerStatus(t *testing.T) {
 }
 
 func TestBrowserDaemonExecutable(t *testing.T) {
-	platform := map[string]string{"windows": "win32"}[runtime.GOOS]
-	if platform == "" {
-		platform = runtime.GOOS
+	names := browserNativeNames()
+	if len(names) == 0 {
+		t.Skip("agent-browser has no native binary for " + runtime.GOARCH)
 	}
 	root := t.TempDir()
 	bin := filepath.Join(root, "node_modules", "agent-browser", "bin")
@@ -644,9 +644,10 @@ func TestBrowserDaemonExecutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	launcher := filepath.Join(bin, "agent-browser.js")
-	native := filepath.Join(bin, "agent-browser-"+platform+"-x64")
-	other := filepath.Join(root, "agent-browser-"+platform+"-x64")
-	for _, path := range []string{launcher, native, other} {
+	native := filepath.Join(bin, names[0])
+	similar := filepath.Join(bin, names[0]+"-helper")
+	other := filepath.Join(root, names[0])
+	for _, path := range []string{launcher, native, similar, other} {
 		if err := os.WriteFile(path, nil, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -654,7 +655,7 @@ func TestBrowserDaemonExecutable(t *testing.T) {
 	for _, check := range []struct {
 		executable string
 		want       bool
-	}{{launcher, true}, {native, true}, {other, false}, {filepath.Join(bin, "node"), false}} {
+	}{{launcher, true}, {native, true}, {similar, false}, {other, false}, {filepath.Join(bin, "node"), false}} {
 		if got := browserDaemonExecutable(check.executable, launcher); got != check.want {
 			t.Errorf("browserDaemonExecutable(%s) = %v", check.executable, got)
 		}
