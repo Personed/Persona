@@ -18,14 +18,12 @@ const flushDelay = 50 * time.Millisecond
 // document, EngineProjection in projection.ts. Events of a turn that is no
 // longer active are dropped.
 type projection struct {
-	r     *Runtime
-	bot   int64
-	task  int64
-	turn  string
-	entry store.EntryID
-	// routineRun is the routine run the turn executes; a conditional run's
-	// messages are stored hidden, as projection.ts does.
-	routineRun string
+	r       *Runtime
+	bot     int64
+	task    int64
+	turn    string
+	entry   store.EntryID
+	routine *RoutineRun
 
 	mu         sync.Mutex
 	write      sync.Mutex
@@ -88,6 +86,16 @@ func (p *projection) emit(ctx context.Context, event map[string]any) {
 		}
 		received := now
 		message = &Draft{ID: messageID, TurnID: p.turn, Role: role, Content: []map[string]any{}, Timestamp: now, ReceivedAt: &received}
+		if p.routine != nil && p.routine.Delivery == "conditional" {
+			message.Hidden = true
+			message.Routine, _ = json.Marshal(map[string]any{
+				"runId":       p.routine.ID,
+				"title":       p.routine.Title,
+				"scheduledAt": p.routine.ScheduledAt,
+				"turnId":      p.turn,
+				"delivery":    p.routine.Delivery,
+			})
+		}
 		p.messages = append(p.messages, message)
 	}
 	if native, ok := event["native"]; ok && native != nil {
@@ -235,16 +243,7 @@ func (p *projection) flush(ctx context.Context) {
 					return err
 				}
 			}
-			run, err := p.run(tx)
-			if err != nil {
-				return err
-			}
 			for _, draft := range drafts {
-				if run != nil && run.Delivery == "conditional" {
-					draft.Routine, _ = json.Marshal(map[string]any{"runId": run.ID, "title": run.Title,
-						"scheduledAt": run.ScheduledAt, "turnId": p.turn, "delivery": run.Delivery})
-					draft.Hidden = true
-				}
 				index := slices.IndexFunc(doc.Drafts, func(item *Draft) bool { return item.ID == draft.ID })
 				if index < 0 {
 					doc.Drafts = append(doc.Drafts, draft)
@@ -256,13 +255,6 @@ func (p *projection) flush(ctx context.Context) {
 			return nil
 		})
 	}
-}
-
-func (p *projection) run(tx *Tx) (*RoutineRun, error) {
-	if p.routineRun == "" {
-		return nil, nil
-	}
-	return p.r.routineRun(tx, p.bot, p.routineRun)
 }
 
 func (p *projection) apply(tx *Tx, doc *EngineState, event map[string]any) error {

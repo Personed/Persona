@@ -586,28 +586,31 @@ func TestRuntimeGatewayServesRegistry(t *testing.T) {
 	}
 }
 
-func TestRuntimeConditionalRoutineRunKeepsPreview(t *testing.T) {
-	for delivery, want := range map[string]string{"conditional": "instructions", "always": "Hi there"} {
-		ctx := context.Background()
-		a, rt := runtimeFor(t, true, scriptEngine{frames: strings.Split(answerFrames, "\n")})
-		bot := int64(a.Root)
-		if err := a.Harness.Commit(ctx, func(tx *Tx) error {
-			doc, err := Edit(tx, RoutinesDoc, 0)
-			if err != nil {
-				return err
-			}
-			doc.Runs = append(doc.Runs, RoutineRun{ID: "run1", BotID: bot, Title: "Monitor", RequestID: "routine:run1", Delivery: delivery})
-			return nil
-		}); err != nil {
-			t.Fatal(err)
+func TestConditionalRoutineStaysOutOfPreview(t *testing.T) {
+	ctx := context.Background()
+	a, rt := runtimeFor(t, true, scriptEngine{frames: strings.Split(answerFrames, "\n")})
+	bot := int64(a.Root)
+	if err := a.Harness.Commit(ctx, func(tx *Tx) error {
+		doc, err := Create(tx, RoutinesDoc, 0)
+		if err != nil {
+			return err
 		}
-		if _, err := rt.Submit(ctx, SendInput{BotID: bot, Text: "Scheduled task", RequestID: "routine:run1",
-			Source: "routine", RoutineRunID: "run1"}); err != nil {
-			t.Fatal(err)
-		}
-		idle(t, rt)
-		if got, _, err := botPreview(ctx, a.Harness.Store(), bot, "instructions"); err != nil || got != want {
-			t.Fatalf("%s preview = %q, %v; want %q", delivery, got, err, want)
-		}
+		doc.Runs = append(doc.Runs, RoutineRun{ID: "run-1", RoutineID: "routine-1", BotID: bot,
+			Title: "version check", ScheduledAt: 7, RequestID: "routine:r1:7", Delivery: "conditional"})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Submit(ctx, SendInput{BotID: bot, Text: "Scheduled task: version check\nUse routine_report once after checking evidence.",
+		DisplayText: "定时任务：version check", RequestID: "routine:r1:7", Source: "routine", RoutineRunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	idle(t, rt)
+	preview, _, err := botPreview(ctx, a.Harness.Store(), bot, "bot instructions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview != "bot instructions" {
+		t.Fatalf("preview = %q", preview)
 	}
 }
