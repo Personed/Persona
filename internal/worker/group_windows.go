@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -45,9 +46,11 @@ func processAlive(pid int) bool {
 // processIdentity reports pid's executable and whether the worker's user
 // owns it. found is false once pid has exited.
 func processIdentity(ctx context.Context, pid int) (executable string, owned, found bool, err error) {
-	script := "$p = Get-CimInstance Win32_Process -Filter 'ProcessId=" + strconv.Itoa(pid) + "'; if ($p) { [pscustomobject]@{ path = $p.ExecutablePath; owned = ((Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid).Sid -eq [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value) } | ConvertTo-Json -Compress }"
+	script := "$p = Get-CimInstance Win32_Process -Filter 'ProcessId=" + strconv.Itoa(pid) + "'; if ($p) { [pscustomobject]@{ path = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$p.ExecutablePath)); owned = ((Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid).Sid -eq [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value) } | ConvertTo-Json -Compress }"
 	query, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	// The path travels as base64 UTF-8, which the console code page
+	// cannot alter.
 	output, err := exec.CommandContext(query, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).Output()
 	if err != nil {
 		return "", false, false, err
@@ -62,7 +65,11 @@ func processIdentity(ctx context.Context, pid int) (executable string, owned, fo
 	if err := json.Unmarshal(output, &identity); err != nil {
 		return "", false, false, err
 	}
-	return identity.Path, identity.Owned, true, nil
+	path, err := base64.StdEncoding.DecodeString(identity.Path)
+	if err != nil {
+		return "", false, false, err
+	}
+	return string(path), identity.Owned, true, nil
 }
 
 // killTree ends pid's process tree.

@@ -398,10 +398,33 @@ func stopBrowserDaemon(ctx context.Context, config *MCPConfig, pid int) error {
 	if err != nil {
 		return err
 	}
-	if !owned || executable == "" || launcher == "" || !samePath(executable, launcher) {
+	if !owned || executable == "" || launcher == "" || !browserDaemonExecutable(executable, launcher) {
 		return codeError("EIO", "the browser daemon's process identity is not confirmed; it was not stopped", "")
 	}
 	return killTree(pid)
+}
+
+// browserDaemonExecutable reports whether executable runs the browser
+// daemon that launcher starts: the launcher itself, or the native binary next
+// to the npm package's script launcher (bin/agent-browser-<os>-<arch>).
+func browserDaemonExecutable(executable, launcher string) bool {
+	if samePath(executable, launcher) {
+		return true
+	}
+	executable, errExecutable := filepath.EvalSymlinks(executable)
+	launcher, errLauncher := filepath.EvalSymlinks(launcher)
+	if errExecutable != nil || errLauncher != nil || !samePath(filepath.Dir(executable), filepath.Dir(launcher)) {
+		return false
+	}
+	platform := map[string]string{"windows": "win32"}[runtime.GOOS]
+	if platform == "" {
+		platform = runtime.GOOS
+	}
+	name := filepath.Base(executable)
+	if runtime.GOOS == "windows" {
+		name = strings.ToLower(name)
+	}
+	return strings.HasPrefix(name, "agent-browser-"+platform+"-")
 }
 
 func samePath(a, b string) bool {
