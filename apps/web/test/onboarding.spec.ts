@@ -3,9 +3,9 @@ import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   expect,
+  fixtureServer,
   type Page,
   setTestLanguage,
   stopWorker,
@@ -52,9 +52,7 @@ test("first use prepares the default Bot with a computer and model before shared
   test.setTimeout(60_000);
   const directory = await mkdtemp(join(tmpdir(), "persona-onboarding-web-"));
   const worker = fork(
-    fileURLToPath(
-      new URL("../../api/test/fixtures/onboarding-server.ts", import.meta.url),
-    ),
+    fixtureServer("onboarding-server"),
     [join(directory, "data")],
     { silent: true, execArgv: [] },
   );

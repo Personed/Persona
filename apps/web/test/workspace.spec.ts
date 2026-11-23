@@ -4,10 +4,15 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { mcpFixture } from "../../../packages/agent/test/fixtures/mcp.mjs";
 import { codexWork } from "../../../packages/agent/test/fixtures/native-work.ts";
-import { expect, setTestLanguage, stopWorker, test } from "./fixtures.ts";
+import {
+  expect,
+  fixtureServer,
+  setTestLanguage,
+  stopWorker,
+  test,
+} from "./fixtures.ts";
 
 let worker: ChildProcess;
 let directory: string;
@@ -768,9 +773,7 @@ test("long bubbles fold with a fade and retain full text without outgoing timest
 test.beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "persona-workspace-"));
   worker = fork(
-    fileURLToPath(
-      new URL("../../api/test/fixtures/web-server.ts", import.meta.url),
-    ),
+    fixtureServer("web-server"),
     [join(directory, "data.sqlite"), "0"],
     { silent: true, execArgv: [] },
   );
@@ -923,9 +926,7 @@ test("native Harness controls persist and client accounts retain model access", 
 }, info) => {
   await stopWorker(worker);
   worker = fork(
-    fileURLToPath(
-      new URL("../../api/test/fixtures/web-server.ts", import.meta.url),
-    ),
+    fixtureServer("web-server"),
     [join(directory, "data.sqlite"), "0", "hosting"],
     { silent: true, execArgv: [] },
   );

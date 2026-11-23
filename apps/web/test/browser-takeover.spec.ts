@@ -3,12 +3,11 @@ import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
 import type { AppRouter } from "../../api/src/router.ts";
-import { expect, stopWorker, test } from "./fixtures.ts";
+import { expect, fixtureServer, stopWorker, test } from "./fixtures.ts";
 
 let worker: ChildProcess;
 let directory: string;
@@ -16,9 +15,7 @@ let url: string;
 test.beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "persona-takeover-"));
   worker = fork(
-    fileURLToPath(
-      new URL("../../api/test/fixtures/web-server.ts", import.meta.url),
-    ),
+    fixtureServer("web-server"),
     [
       join(directory, "data.sqlite"),
       "0",

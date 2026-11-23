@@ -55,6 +55,10 @@ type Runtime struct {
 	native    bool
 	tools     tools.Registry
 	approvals *approval.Service
+	// inspected holds each engine's last connection check by provider, as
+	// the connection cache in packages/agent/src/harness/connections.ts.
+	inspectMu sync.Mutex
+	inspected map[string]EngineInspection
 	now       func() time.Time
 
 	mu sync.Mutex
