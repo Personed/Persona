@@ -241,6 +241,45 @@ func TestStalledStdinHonorsContext(t *testing.T) {
 	}
 }
 
+type gatedWriter struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w *gatedWriter) Write(p []byte) (int, error) {
+	close(w.started)
+	<-w.release
+	return len(p), nil
+}
+
+func TestSendWaitsForAcceptedWriteAfterEOF(t *testing.T) {
+	outR, outW := io.Pipe()
+	writer := &gatedWriter{started: make(chan struct{}), release: make(chan struct{})}
+	client := NewClient(outR, writer)
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Send(context.Background(), map[string]string{"type": "extension_ui_response"})
+	}()
+
+	<-writer.started
+	_ = outW.Close()
+	<-client.Done()
+	select {
+	case err := <-done:
+		t.Fatalf("Send returned before its accepted write completed: %v", err)
+	default:
+	}
+	close(writer.release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Send = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Send did not return after the write completed")
+	}
+}
+
 func TestResponseBeforeEOFWins(t *testing.T) {
 	for range 50 {
 		pi := newFakePi(t)

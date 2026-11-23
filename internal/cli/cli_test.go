@@ -42,12 +42,13 @@ func TestRun(t *testing.T) {
 // startServe runs serve with args and returns its URL; the server stops when the test ends.
 func startServe(t *testing.T, args ...string) string {
 	t.Helper()
+	data := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	reader, writer := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
 		defer writer.Close()
-		done <- serve(ctx, append([]string{"--port", "0", "--contract", filepath.Join("..", "..", "contracts", "api")}, args...), writer)
+		done <- serve(ctx, append([]string{"--port", "0", "--data", data, "--contract", filepath.Join("..", "..", "contracts", "api")}, args...), writer)
 	}()
 	lines := make(chan string, 1)
 	go func() {
@@ -128,5 +129,71 @@ func TestServeHeadless(t *testing.T) {
 	}
 	if code, _ := get(t, url+"/rpc/bots/list"); code == http.StatusNotFound {
 		t.Errorf("headless did not serve the API: %d", code)
+	}
+}
+
+func TestServeEndsSubscriptionsOnShutdown(t *testing.T) {
+	var stream *http.Response
+	t.Cleanup(func() {
+		if stream != nil {
+			_ = stream.Body.Close()
+		}
+	})
+	url := startServe(t, "--headless")
+	req, err := http.NewRequest(http.MethodPost, url+"/rpc/bots/subscribe", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", url)
+	if stream, err = http.DefaultClient.Do(req); err != nil {
+		t.Fatal(err)
+	}
+	r := bufio.NewReader(stream.Body)
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(line, "event: message") {
+			break
+		}
+	}
+	// startServe's cleanup fails the test unless serve stops without error
+	// while this subscription is still open.
+}
+
+func TestServeOriginGuard(t *testing.T) {
+	url := startServe(t, "--headless")
+	request := func(method string, header map[string]string) int {
+		req, err := http.NewRequest(method, url+"/rpc/bots/list", strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for key, value := range header {
+			req.Header.Set(key, value)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	for name, c := range map[string]struct {
+		method string
+		header map[string]string
+		want   int
+	}{
+		"same origin":     {http.MethodPost, map[string]string{"Origin": url}, http.StatusOK},
+		"no origin":       {http.MethodPost, nil, http.StatusForbidden},
+		"foreign origin":  {http.MethodPost, map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		"cross-site GET":  {http.MethodGet, map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		"same-origin GET": {http.MethodGet, map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusOK},
+	} {
+		if got := request(c.method, c.header); got != c.want {
+			t.Errorf("%s: status %d, want %d", name, got, c.want)
+		}
 	}
 }

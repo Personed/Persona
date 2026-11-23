@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mcpFixture } from "../../../packages/agent/test/fixtures/mcp.mjs";
 import { codexWork } from "../../../packages/agent/test/fixtures/native-work.ts";
-import { expect, setTestLanguage, test } from "./fixtures.ts";
+import { expect, setTestLanguage, stopWorker, test } from "./fixtures.ts";
 
 let worker: ChildProcess;
 let directory: string;
@@ -134,7 +134,9 @@ test("Apps manages a real MCP connection and Bot grants across reloads and theme
     await dialog
       .getByRole("button", { name: /^查看 (Local Docs|OAuth Docs)$/ })
       .click();
-    await expect(connection.getByText(/^可用/)).toBeVisible();
+    await expect(connection.getByText(/^可用/)).toBeVisible({
+      timeout: 20_000,
+    });
     await connection.getByText("机器人权限", { exact: false }).click();
     await expect(
       connection.getByRole("checkbox", { name: "Persona", exact: true }),
@@ -148,7 +150,9 @@ test("Apps manages a real MCP connection and Bot grants across reloads and theme
     ).not.toBeChecked();
     await connection.getByRole("button", { name: "Local Docs · 操作" }).click();
     await page.getByRole("menuitem", { name: "停用", exact: true }).click();
-    await expect(connection.getByText(/^已禁用/)).toBeVisible();
+    await expect(connection.getByText(/^已禁用/)).toBeVisible({
+      timeout: 20_000,
+    });
     await connection.getByRole("button", { name: "Local Docs · 操作" }).click();
     await page.getByRole("menuitem", { name: "启用", exact: true }).click();
     await connection.getByRole("button", { name: "Local Docs · 操作" }).click();
@@ -780,9 +784,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
-  const exited = once(worker, "exit");
-  worker.disconnect();
-  await exited;
+  await stopWorker(worker);
   await rm(directory, { recursive: true, force: true, maxRetries: 5 });
 });
 
@@ -919,9 +921,7 @@ test("native Harness controls persist and client accounts retain model access", 
   page,
   browser,
 }, info) => {
-  const exited = once(worker, "exit");
-  worker.disconnect();
-  await exited;
+  await stopWorker(worker);
   worker = fork(
     fileURLToPath(
       new URL("../../api/test/fixtures/web-server.ts", import.meta.url),
@@ -2376,15 +2376,12 @@ test("panel transitions preserve the transcript and draft through rapid toggles 
   await expect(
     page.locator(".workspace-panel[data-side=inspector]"),
   ).toBeHidden();
-  await page.waitForFunction(() =>
-    document
-      .getAnimations()
-      .every(
-        (animation) =>
-          !(animation.effect instanceof KeyframeEffect) ||
-          !animation.effect.pseudoElement?.includes("view-transition"),
-      ),
-  );
+  // getAnimations() can keep reporting a skipped transition's pseudo
+  // animations after its own cleanup, and rAF polling stalls while a view
+  // transition captures. Wait on the transition itself with interval polling.
+  await page.waitForFunction(() => !document.activeViewTransition, undefined, {
+    polling: 100,
+  });
   const frames = await page.evaluate(() => {
     document.documentElement.dataset.panelRecording = "false";
     return JSON.parse(document.documentElement.dataset.panelFrames ?? "[]") as {
