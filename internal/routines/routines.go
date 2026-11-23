@@ -18,7 +18,9 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/store"
+	"github.com/Personed/Persona/internal/tools"
 )
 
 // Limits shared with the TypeScript backend (packages/agent/src/work/limits.ts).
@@ -151,6 +153,12 @@ type Service struct {
 	// OnChange fires once after each routine write; the routine runner uses it
 	// to recompute its next scheduled fire. nil ignores the notification.
 	OnChange func()
+	// Confirm asks the user to accept a routine change and reports the answer,
+	// matching the TypeScript manage confirmation card. nil refuses the change.
+	Confirm func(ctx context.Context, botID int64, request approval.Request) (bool, error)
+	// Deliver posts a tool result's chat notice, like the TypeScript
+	// details.notice path. nil skips delivery.
+	Deliver func(ctx context.Context, call tools.Call, text string) error
 
 	store store.Store
 	now   func() time.Time
@@ -253,7 +261,7 @@ func (s *Service) List(ctx context.Context, botID int64) (Listing, error) {
 // "bot:<id>/tool:<call>". A repeated requestID returns the stored routine unchanged.
 // Created and resumed routines become enabled; an update keeps the current state.
 func (s *Service) Manage(ctx context.Context, botID int64, change Change, requestID, source string) (any, error) {
-	result, test, err := s.apply(ctx, botID, change, requestID, source)
+	result, test, err := s.apply(ctx, botID, change, requestID, source, true)
 	if err != nil || test == nil {
 		return result, err
 	}
@@ -267,26 +275,33 @@ func (s *Service) Manage(ctx context.Context, botID int64, change Change, reques
 	return map[string]store.TaskID{"taskId": taskID}, nil
 }
 
-// apply commits a change. For run_now it returns the routine to run and commits nothing.
-func (s *Service) apply(ctx context.Context, botID int64, change Change, requestID, source string) (any, *Routine, error) {
+// apply merges the change into the document. When confirm is set (routine_*
+// tool calls), it asks the shared approver between preparing the merge and
+// committing it, without holding the service lock: a pending card must not
+// block the runner or other routines. The commit re-reads the document and
+// re-checks dedupe and revision, so a change landed during the wait is a
+// conflict rather than a silent overwrite. For run_now it returns the routine
+// to run and commits nothing.
+func (s *Service) apply(ctx context.Context, botID int64, change Change, requestID, source string, confirm bool) (any, *Routine, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	var doc document
-	meta, err := s.read(ctx, DocKind, &doc)
-	if err != nil {
+	if _, err := s.read(ctx, DocKind, &doc); err != nil {
+		s.mu.Unlock()
 		return nil, nil, err
 	}
-	now := s.now()
 	item := Routine{BotID: botID}
 	index := -1
 	if change.Action == "create" {
 		if repeated := slices.IndexFunc(doc.Items, func(item Routine) bool {
 			return item.BotID == botID && item.RequestID == requestID
 		}); repeated >= 0 {
-			return doc.Items[repeated], nil, nil
+			stored := doc.Items[repeated]
+			s.mu.Unlock()
+			return stored, nil, nil
 		}
 		id, err := s.store.MintID(ctx)
 		if err != nil {
+			s.mu.Unlock()
 			return nil, nil, err
 		}
 		item.ID = fmt.Sprintf("routine-%d", id)
@@ -295,14 +310,84 @@ func (s *Service) apply(ctx context.Context, botID int64, change Change, request
 			return item.BotID == botID && item.ID == change.ID
 		})
 		if index < 0 {
+			s.mu.Unlock()
 			return nil, nil, &Error{NotFound, "定时任务不存在。"}
 		}
 		item = doc.Items[index]
 		if item.RequestID == requestID {
+			s.mu.Unlock()
 			return item, nil, nil
 		}
 		if change.Revision == nil || *change.Revision != item.Revision {
+			s.mu.Unlock()
 			return nil, nil, &Error{Conflict, "内容已更新，请刷新后重试。"}
+		}
+	}
+	var previous *Routine
+	if index >= 0 {
+		kept := doc.Items[index]
+		previous = &kept
+	}
+	switch change.Action {
+	case "create", "update":
+		item.Enabled = change.Action == "create" || item.Enabled
+		item.Source = source
+		if err := s.edit(ctx, &item, change, s.now()); err != nil {
+			s.mu.Unlock()
+			return nil, nil, err
+		}
+	case "pause", "resume", "run_now", "delete":
+	default:
+		s.mu.Unlock()
+		return nil, nil, &Error{BadRequest, "参数无效：action 不受支持。"}
+	}
+	s.mu.Unlock()
+	if confirm {
+		confirmed, err := s.confirmChange(ctx, botID, change.Action, &item, previous, requestID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !confirmed {
+			return map[string]string{"status": "declined"}, nil, nil
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc = document{}
+	meta, err := s.read(ctx, DocKind, &doc)
+	if err != nil {
+		return nil, nil, err
+	}
+	index = -1
+	if change.Action == "create" {
+		if repeated := slices.IndexFunc(doc.Items, func(item Routine) bool {
+			return item.BotID == botID && item.RequestID == requestID
+		}); repeated >= 0 {
+			return doc.Items[repeated], nil, nil
+		}
+	} else {
+		index = slices.IndexFunc(doc.Items, func(item Routine) bool {
+			return item.BotID == botID && item.ID == change.ID
+		})
+		if index < 0 {
+			return nil, nil, &Error{NotFound, "定时任务不存在。"}
+		}
+		stored := doc.Items[index]
+		if stored.RequestID == requestID {
+			return stored, nil, nil
+		}
+		// item carries the revision read before the wait; a newer one means
+		// another change landed meanwhile and this confirmation is stale.
+		if stored.Revision != item.Revision {
+			return nil, nil, &Error{Conflict, "内容已更新，请刷新后重试。"}
+		}
+		// Runner.finish commits a newer baseline without bumping the revision;
+		// keep it only when this change left the monitoring inputs alone —
+		// a delivery or condition change resets them even if both were empty.
+		monitoringReset := previous != nil && (item.Delivery != previous.Delivery ||
+			item.Condition != previous.Condition)
+		if previous != nil && !monitoringReset {
+			item.Baseline, item.NotifiedKey = stored.Baseline, stored.NotifiedKey
 		}
 	}
 	switch change.Action {
@@ -313,18 +398,13 @@ func (s *Service) apply(ctx context.Context, botID int64, change Change, request
 		return map[string]string{"status": "deleted"}, nil, s.save(ctx, meta, doc)
 	case "pause", "resume":
 		item.Enabled = change.Action == "resume"
-	case "create", "update":
-		item.Enabled = change.Action == "create" || item.Enabled
-		item.Source = source
-		if err := s.edit(ctx, &item, change, now); err != nil {
-			return nil, nil, err
-		}
-	default:
-		return nil, nil, &Error{BadRequest, "参数无效：action 不受支持。"}
 	}
 	// The runner starts a task for the new revision; a task for an older one ends itself.
 	item.NextAt, item.TaskID = nil, nil
 	if item.Enabled {
+		// now is read after any approval wait so an occurrence that passed
+		// while pending does not fire immediately.
+		now := s.now()
 		if err := item.Schedule.Validate(now); err != nil {
 			return nil, nil, err
 		}
@@ -483,6 +563,113 @@ func (s *Service) Report(ctx context.Context, botID int64, taskID store.TaskID, 
 		return s.save(ctx, meta, doc)
 	}
 	return none
+}
+
+// actionLabels names each action the way the confirmation card does.
+var actionLabels = map[string]string{
+	"create": "创建", "update": "修改", "pause": "暂停",
+	"resume": "恢复", "run_now": "立即执行", "delete": "删除",
+}
+
+// confirmChange asks the user to accept the merged change through the same
+// request card the TypeScript routines manage composes.
+func (s *Service) confirmChange(ctx context.Context, botID int64, action string, item, previous *Routine, requestID string) (bool, error) {
+	if s.Confirm == nil {
+		return false, &Error{BadRequest, "确认服务不可用。"}
+	}
+	label := actionLabels[action]
+	withSkills := len(item.SkillIDs) > 0 || (previous != nil && len(previous.SkillIDs) > 0)
+	fields := s.requestFields(ctx, item, withSkills)
+	detail := item.Instructions
+	if action == "update" && previous != nil {
+		previousFields := s.requestFields(ctx, previous, withSkills)
+		if item.Title != previous.Title {
+			fields = append([]approval.Field{{Label: "任务名称", Value: item.Title}}, fields...)
+			previousFields = append([]approval.Field{{Label: "任务名称", Value: previous.Title}}, previousFields...)
+		}
+		fields = diffFields(fields, previousFields)
+		if item.Instructions == previous.Instructions {
+			detail = ""
+		}
+	}
+	return s.Confirm(ctx, botID, approval.Request{
+		ID:           "routine:" + requestID,
+		Title:        label + "定时：" + item.Title,
+		Detail:       detail,
+		Kind:         approval.Permission,
+		Fields:       fields,
+		ConfirmLabel: label + "任务",
+	})
+}
+
+// requestFields renders a routine the way the confirmation card does.
+func (s *Service) requestFields(ctx context.Context, item *Routine, withSkills bool) []approval.Field {
+	when := item.Schedule.At
+	if item.Schedule.Type == Cron {
+		when = TimeLabel(item.Schedule.Expression)
+	} else if at, err := time.Parse(time.RFC3339Nano, item.Schedule.At); err == nil {
+		if loc, err := time.LoadLocation(item.Schedule.TimeZone); err == nil {
+			when = at.In(loc).Format("2006/1/2 15:04:05")
+		}
+	}
+	delivery := "每次交付"
+	if item.Delivery == Conditional {
+		delivery = "满足条件才通知：" + item.Condition
+	}
+	fields := []approval.Field{
+		{Label: "执行时间", Value: when},
+		{Label: "时区", Value: item.Schedule.TimeZone},
+		{Label: "执行期限", Value: fmt.Sprintf("%d 分钟（不含等待）", cmp.Or(item.ExecutionMs, DefaultExecutionMs)/60_000)},
+		{Label: "交付方式", Value: delivery},
+	}
+	if withSkills {
+		fields = append(fields, approval.Field{Label: "使用技能", Value: s.skillNames(ctx, item.SkillIDs)})
+	}
+	return fields
+}
+
+// skillNames renders bound skills by name, falling back to their IDs.
+func (s *Service) skillNames(ctx context.Context, ids []string) string {
+	var skills struct {
+		Items []skill `json:"items"`
+	}
+	// A missing or unreadable skills document leaves the IDs as their names.
+	_, _ = s.read(ctx, skillsDocKind, &skills)
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		name := id
+		for _, item := range skills.Items {
+			if item.ID == id {
+				name = item.Name
+				break
+			}
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return "未绑定"
+	}
+	return strings.Join(names, "、")
+}
+
+// diffFields keeps only fields that changed, rendered "previous → next".
+func diffFields(fields, previous []approval.Field) []approval.Field {
+	result := make([]approval.Field, 0, len(fields))
+	for _, field := range fields {
+		index := slices.IndexFunc(previous, func(item approval.Field) bool {
+			return item.Label == field.Label
+		})
+		switch {
+		case index < 0:
+			result = append(result, field)
+		case previous[index].Value != field.Value:
+			result = append(result, approval.Field{
+				Label: field.Label,
+				Value: previous[index].Value + " → " + field.Value,
+			})
+		}
+	}
+	return result
 }
 
 func unique(values []string) []string {

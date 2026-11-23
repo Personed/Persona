@@ -11,7 +11,7 @@ import (
 )
 
 // Register adds the routine_* product tools to a registry. routine_create and
-// routine_manage change routines only after the shared approver accepts the call.
+// routine_manage change routines only after Service.Confirm accepts the change.
 func Register(registry tools.Registry, service *Service) error {
 	for _, tool := range []tools.Tool{
 		&tool{definition: reportDefinition, run: service.runReport},
@@ -73,7 +73,6 @@ var (
 		Name:        "routine_manage",
 		Description: "Propose a routine change for user confirmation. Read routine_list first. Supply its stable ID and current revision. Update only the fields that must change. Execution time excludes waiting for user input.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"action":{"type":"string","enum":["update","pause","resume","run_now","delete"]},"id":{"type":"string"},"revision":{"type":"integer","minimum":0},` + fieldsSchema + `},"required":["action","id","revision"]}`),
-		Mutates:     true,
 	}
 	listDefinition = tools.Definition{
 		Name:        "routine_list",
@@ -85,7 +84,6 @@ var (
 		Name:        "routine_create",
 		Description: "Create a routine after user confirmation. Specify an explicit IANA timeZone. Once uses an ISO timestamp with offset. Cron uses five fields. Bind enabled skills by stable ID. An approval card confirms the schedule and instructions.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + fieldsSchema + `},"required":["title","instructions","schedule"]}`),
-		Mutates:     true,
 	}
 )
 
@@ -111,7 +109,16 @@ func (s *Service) runCreate(ctx context.Context, call tools.Call) (any, error) {
 		return nil, err
 	}
 	change.Action, change.ID, change.Revision = "create", "", nil
-	return s.Manage(ctx, call.BotID, change, call.CallID, source(call))
+	result, err := s.Manage(ctx, call.BotID, change, call.CallID, source(call))
+	if err != nil {
+		return nil, err
+	}
+	if item, ok := result.(Routine); ok && item.Title != "" && s.Deliver != nil {
+		if err := s.Deliver(ctx, call, "已创建定时　◷　"+item.Title); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) runManage(ctx context.Context, call tools.Call) (any, error) {

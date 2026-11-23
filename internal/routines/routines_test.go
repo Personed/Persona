@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/routines"
 	"github.com/Personed/Persona/internal/store"
 	"github.com/Personed/Persona/internal/tools"
@@ -28,7 +29,11 @@ func newService(t *testing.T) (*routines.Service, *store.SQLite) {
 			t.Error(err)
 		}
 	})
-	return routines.NewService(records, func() time.Time { return start }), records
+	service := routines.NewService(records, func() time.Time { return start })
+	service.Confirm = func(context.Context, int64, approval.Request) (bool, error) {
+		return true, nil
+	}
+	return service, records
 }
 
 func code(err error) routines.ErrorCode {
@@ -138,6 +143,81 @@ func TestManageLifecycle(t *testing.T) {
 	}
 	if listing, err := service.List(ctx, 1); err != nil || len(listing.Items) != 0 {
 		t.Fatalf("List after delete = %+v, %v", listing, err)
+	}
+}
+
+// The details-panel switch is the user's own click: it commits directly
+// instead of opening a confirmation card.
+func TestEnableSkipsConfirmation(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newService(t)
+	created := create(t, service, 1, "r1")
+	service.Confirm = func(context.Context, int64, approval.Request) (bool, error) {
+		return false, errors.New("confirmation must not run")
+	}
+	if err := service.Enable(ctx, 1, created.ID, false, created.Revision, "r2"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := service.List(ctx, 1)
+	if err != nil || len(item.Items) != 1 || item.Items[0].Enabled {
+		t.Fatalf("after disable = %+v, %v", item.Items, err)
+	}
+	if err := service.Enable(ctx, 1, created.ID, true, item.Items[0].Revision, "r3"); err != nil {
+		t.Fatal(err)
+	}
+	item, err = service.List(ctx, 1)
+	if err != nil || !item.Items[0].Enabled || item.Items[0].NextAt == nil {
+		t.Fatalf("after enable = %+v, %v", item.Items, err)
+	}
+}
+
+// A conditional run that finishes while the user reviews the card commits its
+// baseline without bumping the revision; the approved change must keep it.
+func TestApplyKeepsBaselineCommittedDuringConfirm(t *testing.T) {
+	ctx := context.Background()
+	service, records := newService(t)
+	created := create(t, service, 1, "r1")
+	service.Confirm = func(context.Context, int64, approval.Request) (bool, error) {
+		listing, err := service.List(ctx, 1)
+		if err != nil {
+			return false, err
+		}
+		listing.Items[0].Baseline = "new baseline"
+		listing.Items[0].NotifiedKey = "new key"
+		payload, err := json.Marshal(map[string]any{"items": listing.Items, "runs": listing.Runs})
+		if err != nil {
+			return false, err
+		}
+		writeDocument(t, records, routines.DocKind, string(payload))
+		return true, nil
+	}
+	change := routines.Change{Action: "update", ID: created.ID, Revision: pointer(created.Revision), Title: pointer("Renamed")}
+	if _, err := service.Manage(ctx, 1, change, "r2", "user"); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := service.List(ctx, 1)
+	if err != nil || len(listing.Items) != 1 {
+		t.Fatalf("List = %+v, %v", listing, err)
+	}
+	got := listing.Items[0]
+	if got.Baseline != "new baseline" || got.NotifiedKey != "new key" || got.Title != "Renamed" || got.Revision != 2 {
+		t.Fatalf("committed routine = %+v", got)
+	}
+
+	// A condition change resets monitoring state; a baseline that landed
+	// during the wait belongs to the old condition and must not carry over.
+	change = routines.Change{Action: "update", ID: created.ID, Revision: pointer(2),
+		Delivery: routines.Conditional, Condition: pointer("A new invoice arrived.")}
+	if _, err := service.Manage(ctx, 1, change, "r3", "user"); err != nil {
+		t.Fatal(err)
+	}
+	listing, err = service.List(ctx, 1)
+	if err != nil || len(listing.Items) != 1 {
+		t.Fatalf("List = %+v, %v", listing, err)
+	}
+	got = listing.Items[0]
+	if got.Baseline != "" || got.NotifiedKey != "" || got.Condition != "A new invoice arrived." {
+		t.Fatalf("condition change kept stale monitoring state: %+v", got)
 	}
 }
 
@@ -258,19 +338,20 @@ func TestTools(t *testing.T) {
 	if err := routines.Register(registry, service); err != nil {
 		t.Fatal(err)
 	}
-	approved := 0
-	approve := func(context.Context, tools.Call, tools.Definition) (bool, error) {
-		approved++
-		return true, nil
-	}
-	call := func(name, callID, input string, approver tools.Approver) (tools.Result, error) {
-		return registry.Call(ctx, tools.Call{BotID: 1, TaskID: 7, CallID: callID, Name: name, Input: json.RawMessage(input)}, approver)
+	call := func(name, callID, input string) (tools.Result, error) {
+		return registry.Call(ctx, tools.Call{BotID: 1, TaskID: 7, CallID: callID, Name: name, Input: json.RawMessage(input)}, nil)
 	}
 	input := `{"title":"Morning brief","instructions":"Summarize unread mail.","schedule":{"type":"cron","expression":"0 9 * * 1-5","timeZone":"Asia/Shanghai"}}`
-	if _, err := call("routine_create", "c1", input, nil); !errors.Is(err, tools.ErrDenied) {
-		t.Fatalf("unapproved create = %v", err)
+	service.Confirm = nil
+	if result, err := call("routine_create", "c1", input); err != nil || !result.IsError {
+		t.Fatalf("unconfirmed create = %+v, %v", result, err)
 	}
-	result, err := call("routine_create", "c1", input, approve)
+	confirmed := 0
+	service.Confirm = func(context.Context, int64, approval.Request) (bool, error) {
+		confirmed++
+		return true, nil
+	}
+	result, err := call("routine_create", "c1", input)
 	if err != nil || result.IsError {
 		t.Fatalf("create = %+v, %v", result, err)
 	}
@@ -282,7 +363,7 @@ func TestTools(t *testing.T) {
 		t.Fatalf("created = %+v", created)
 	}
 
-	result, err = call("routine_list", "c2", `{}`, nil)
+	result, err = call("routine_list", "c2", `{}`)
 	if err != nil || result.IsError {
 		t.Fatalf("list = %+v, %v", result, err)
 	}
@@ -298,15 +379,15 @@ func TestTools(t *testing.T) {
 		t.Fatalf("listed time zone %q is not schedulable: %v", listing.TimeZone, err)
 	}
 
-	if result, err := call("routine_manage", "c3", `{"action":"pause","id":"`+created.ID+`"}`, approve); err != nil || !result.IsError {
+	if result, err := call("routine_manage", "c3", `{"action":"pause","id":"`+created.ID+`"}`); err != nil || !result.IsError {
 		t.Fatalf("manage without revision = %+v, %v", result, err)
 	}
-	result, err = call("routine_manage", "c4", `{"action":"pause","id":"`+created.ID+`","revision":1}`, approve)
+	result, err = call("routine_manage", "c4", `{"action":"pause","id":"`+created.ID+`","revision":1}`)
 	if err != nil || result.IsError || !strings.Contains(result.Content[0].Text, `"enabled":false`) {
 		t.Fatalf("pause = %+v, %v", result, err)
 	}
-	if approved != 3 {
-		t.Fatalf("approvals = %d", approved)
+	if confirmed != 2 {
+		t.Fatalf("confirmations = %d", confirmed)
 	}
 }
 
