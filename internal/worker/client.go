@@ -50,6 +50,10 @@ type Options struct {
 	Kind computer.Kind
 	// MCPNotification receives notifications from connected MCP servers.
 	MCPNotification func(id string, notification MCPNotification)
+	// WorkDir is the Bot work directory that Execute and Observe use.
+	WorkDir string
+	// ComputerDrivers replaces the desktop or browser driver, by service.
+	ComputerDrivers map[string]*MCPConfig
 }
 
 // Transport builds the command that starts a worker printing token on its sync line.
@@ -712,15 +716,24 @@ func (p *process) Kill() error {
 	return p.client.send(frameCancel, p.id, map[string]string{"mode": "kill"}, nil)
 }
 
-// Execute implements computer.Target. Browser and desktop actions are bridged
-// to agent-browser and cua-driver by the computer service, not this connection.
-func (c *Client) Execute(context.Context, computer.Action) (computer.Observation, error) {
-	return computer.Observation{}, errors.ErrUnsupported
+// Execute implements computer.Target for Options.WorkDir. It journals the action
+// under a fresh call ID; task callers use Act with the engine's call ID.
+func (c *Client) Execute(ctx context.Context, action computer.Action) (computer.Observation, error) {
+	callID, err := newToken()
+	if err != nil {
+		return computer.Observation{}, err
+	}
+	return c.Act(ctx, ComputerCall{Dir: c.options.WorkDir, CallID: callID, Action: action})
 }
 
-// Observe implements computer.Target; see Execute.
-func (c *Client) Observe(context.Context, string) (computer.Observation, error) {
-	return computer.Observation{}, errors.ErrUnsupported
+// Observe implements computer.Target with the driver's native observation:
+// get_desktop_state for the desktop, agent_browser_snapshot for the browser.
+func (c *Client) Observe(ctx context.Context, service string) (computer.Observation, error) {
+	name := "get_desktop_state"
+	if service == "browser" {
+		name = "agent_browser_snapshot"
+	}
+	return c.Act(ctx, ComputerCall{Dir: c.options.WorkDir, Action: computer.Action{Service: service, Name: name}})
 }
 
 // Close ends the connection. The worker then kills every program it started.
