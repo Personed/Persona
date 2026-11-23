@@ -15,6 +15,7 @@ import (
 
 	"github.com/Personed/Persona/internal/agent"
 	"github.com/Personed/Persona/internal/contract"
+	"github.com/Personed/Persona/internal/engine/pi"
 	"github.com/Personed/Persona/internal/hosting"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/server"
@@ -32,6 +33,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	contractDir := flags.String("contract", "contracts/api", "API contract directory")
 	headless := flags.Bool("headless", false, "serve only the API, without the web UI")
 	dataDir := flags.String("data", "data", "data directory, unless a hosting config sets one")
+	piExtension := flags.String("pi-extension", "", "Pi extension (pi-tools.mjs) that enables chat through pi --mode rpc")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -95,7 +97,13 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	server.RegisterAgent(procedures, bots)
+	var runtime *agent.Runtime
+	if *piExtension != "" {
+		engine := pi.New(pi.Config{Extensions: []string{*piExtension},
+			SessionDir: filepath.Join(*dataDir, "pi", "sessions"), StateDir: filepath.Join(*dataDir, "pi", "state")})
+		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true})
+	}
+	server.RegisterAgent(procedures, bots, runtime)
 	service.Files = server.AgentFiles(bots.Files)
 	if !*headless {
 		if service.Static, err = webFS(*static); err != nil {
