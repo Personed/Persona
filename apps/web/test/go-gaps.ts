@@ -15,6 +15,9 @@ export const goGaps: Record<string, string[]> = {
     [
       "Bot identity stays consistent and image previews work in drafts and history",
       "attachment retry keeps its request and draft after a lost receipt",
+      // The fixture holds the model request after ls, not the tool, so input
+      // steered while it waits joins a later turn instead of that request.
+      "chat keeps sending available while the Bot is working",
       "composer menu adds task materials, keeps drafts, and fits both themes",
       "delivered images form a gallery with viewer downloads and keyboard navigation",
       "file drafts, real tools, and published downloads survive Bot switches and restart",
