@@ -322,6 +322,17 @@ func (m *mcpSession) close() {
 	}
 }
 
+// kill stops the server's process group before closing the session, so a
+// server that is still running a request does not get to finish it.
+func (m *mcpSession) kill() {
+	if m.group != nil {
+		m.group.kill()
+	}
+	if m.session != nil {
+		_ = m.session.Close()
+	}
+}
+
 // mcpError keeps protocol errors from the server, reports authorization as
 // MCP_AUTH, and hides other connection details.
 func mcpError(ctx context.Context, err error) *Error {

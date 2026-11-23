@@ -249,7 +249,12 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 	result, callErr := driver.session.session.CallTool(callCtx, params)
 	var wire *jsonrpc.Error
 	if callErr != nil && !errors.As(callErr, &wire) || callErr == nil && uncertainResult(result) {
-		if callErr != nil {
+		switch {
+		case callErr != nil && input.Service == "desktop":
+			// Cua finishes a direct action and ignores MCP cancellation, so
+			// stopping its process is what cancels the action.
+			s.dropBroken(context.WithoutCancel(callCtx), key, driver, callErr)
+		case callErr != nil:
 			s.dropBroken(callCtx, key, driver, callErr)
 		}
 		entry := journalEntry{State: "uncertain", CallID: input.CallID, Service: input.Service}
@@ -401,7 +406,7 @@ func (s *server) dropBroken(ctx context.Context, key string, driver *computerDri
 		delete(s.computers, key)
 	}
 	s.computersMu.Unlock()
-	driver.session.close()
+	driver.session.kill()
 }
 
 func driverConfig(input ComputerInput) (*MCPConfig, error) {

@@ -39,6 +39,12 @@ func testComputerDriver() *mcp.Server {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
+	server.AddTool(&mcp.Tool{Name: "stubborn", InputSchema: object}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Like Cua's direct mode, this runs to the end despite cancellation.
+		time.Sleep(time.Second)
+		_ = os.WriteFile(os.Getenv("TEST_STUBBORN_DONE"), nil, 0o600)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "done"}}}, nil
+	})
 	server.AddTool(&mcp.Tool{Name: "crash", InputSchema: object}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		os.Exit(1)
 		return nil, nil
@@ -249,6 +255,27 @@ func TestComputerBrowserRestart(t *testing.T) {
 	})
 }
 
+func TestComputerDesktopCancel(t *testing.T) {
+	eachComputer(t, func(t *testing.T, dir string, dial func(map[string]*MCPConfig) *Client) {
+		done := filepath.Join(dir, "stubborn-done")
+		client := dial(map[string]*MCPConfig{"desktop": {Transport: "stdio", Command: executable(t), Args: []string{"computer-driver"},
+			Env: map[string]string{"TEST_STUBBORN_DONE": done}}})
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_, err := client.Act(ctx, ComputerCall{Dir: dir, TaskID: 7, CallID: "a", Action: computer.Action{Service: "desktop", Name: "stubborn"}})
+		cancel()
+		if code(err) != "COMPUTER_UNCERTAIN" && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("cancelled action: %v", err)
+		}
+		time.Sleep(1500 * time.Millisecond)
+		if _, err := os.Stat(done); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("desktop action kept running after cancellation: %v", err)
+		}
+		if _, err := act(client, dir, "b", "desktop", "click"); code(err) != "COMPUTER_UNCERTAIN" {
+			t.Fatalf("action after cancellation: %v", err)
+		}
+	})
+}
+
 func TestComputerDriverExit(t *testing.T) {
 	eachComputer(t, func(t *testing.T, dir string, dial func(map[string]*MCPConfig) *Client) {
 		client := dial(nil)
@@ -365,7 +392,7 @@ func TestComputerJournal(t *testing.T) {
 				}})
 			}
 			tools, err := client.ComputerCatalog(ctx, dir, "desktop")
-			if err != nil || len(tools) != 4 {
+			if err != nil || len(tools) != 5 {
 				t.Fatalf("catalog = %d tools, %v", len(tools), err)
 			}
 			first, err := click(client, "a")
