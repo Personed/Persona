@@ -60,6 +60,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
+		defer func() { _ = sessions.Close() }()
 		if err := sessions.Bootstrap(); err != nil {
 			return err
 		}

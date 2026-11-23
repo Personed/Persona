@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -98,6 +99,99 @@ func TestSessionStoreLogoutEndsTrack(t *testing.T) {
 		t.Fatal("tracked context did not end on logout")
 	}
 	release()
+}
+
+// A TypeScript profile keeps its paired devices and pairings on the Go
+// service: both sides share data/hosting.sqlite, so valid rows carry over and
+// expired ones still do not authenticate.
+func TestSessionStorePreservesTypescriptDevices(t *testing.T) {
+	dir := t.TempDir()
+	db, err := openSessionDB(filepath.Join(dir, "hosting.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	oldToken := "typescript-session-token"
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS devices (
+			id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL,
+			scope TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS pairings (
+			hash TEXT PRIMARY KEY, scope TEXT NOT NULL, expires INTEGER NOT NULL
+		);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO devices VALUES
+			('dev-old', ?, 'laptop', 'admin', ?, ?),
+			('dev-dead', ?, 'phone', 'admin', ?, ?)`,
+		digest(oldToken), now-1000, now+30*24*3600*1000,
+		digest("expired-token"), now-60*24*3600*1000, now-1000,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		"INSERT INTO pairings VALUES (?, 'admin', ?)",
+		digest("old-pairing"), now+60_000,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := s.Authenticate(oldToken)
+	if !ok || got.ID != "dev-old" || got.Scope != "admin" || got.Label != "laptop" {
+		t.Fatalf("typescript device lost: %+v ok=%v", got, ok)
+	}
+	if _, ok := s.Authenticate("expired-token"); ok {
+		t.Fatal("expired device authenticated")
+	}
+	if err := s.Revoke("dev-old"); err == nil {
+		t.Fatal("revoked the last admin device")
+	}
+	token, device, ok, err := s.Exchange("old-pairing", "new")
+	if err != nil || !ok || device.Scope != "admin" {
+		t.Fatalf("typescript pairing code rejected: %v %v %+v", ok, err, device)
+	}
+	if _, ok := s.Authenticate(token); !ok {
+		t.Fatal("new device token not stored in sqlite")
+	}
+	devices, err := s.List()
+	if err != nil || len(devices) != 2 || devices[0].ID != "dev-old" {
+		t.Fatalf("list: %+v", devices)
+	}
+}
+
+// Devices a sessions.json build wrote migrate into hosting.sqlite once.
+func TestSessionStoreMigratesLegacyJSON(t *testing.T) {
+	dir := t.TempDir()
+	token := "legacy-json-token"
+	now := time.Now().UnixMilli()
+	if err := os.WriteFile(
+		filepath.Join(dir, "sessions.json"),
+		[]byte(`{"devices":[{"id":"dev-json","hash":"`+digest(token)+
+			`","label":"laptop","scope":"admin","created":`+
+			fmt.Sprint(now)+`,"expires":`+fmt.Sprint(now+3600_000)+`}],"pairings":[]}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSessionStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := s.Authenticate(token); !ok || got.ID != "dev-json" {
+		t.Fatalf("legacy device lost: %+v ok=%v", got, ok)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sessions.json.migrated")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSessionStoreBootstrapOwnerCode(t *testing.T) {
