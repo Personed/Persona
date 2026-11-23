@@ -506,3 +506,78 @@ func TestComputerBrowserSocketRefused(t *testing.T) {
 		}
 	})
 }
+
+func TestComputerStatus(t *testing.T) {
+	eachComputer(t, func(t *testing.T, dir string, dial func(map[string]*MCPConfig) *Client) {
+		log := filepath.Join(dir, "cli")
+		browser := func(env map[string]string) *MCPConfig {
+			env["TEST_BROWSER_CLOSED"] = filepath.Join(dir, "closed")
+			env["TEST_BROWSER_CLI"] = log
+			return &MCPConfig{Transport: "stdio", Command: executable(t), Args: []string{"browser-driver"}, Env: env}
+		}
+		client := dial(map[string]*MCPConfig{"browser": browser(map[string]string{})})
+		ctx := context.Background()
+		calls := func() []string {
+			data, _ := os.ReadFile(log)
+			return strings.Split(strings.TrimSpace(string(data)), "\n")
+		}
+
+		if status, err := client.PrepareComputer(ctx, dir, "desktop"); err != nil || !status.Available {
+			t.Fatalf("desktop prepare: %+v, %v", status, err)
+		}
+		status, err := client.PrepareComputer(ctx, dir, "browser")
+		if err != nil || !status.Available || status.Mode != "headless" || status.SharedDesktop {
+			t.Fatalf("browser prepare: %+v, %v", status, err)
+		}
+		if got := calls(); len(got) != 1 || !strings.HasPrefix(got[0], "set viewport 1280 720 --json") {
+			t.Fatalf("prepare commands: %q", got)
+		}
+		if status, err := client.InstallBrowser(ctx, dir); err != nil || !status.Available {
+			t.Fatalf("install: %+v, %v", status, err)
+		}
+		if got := calls(); !strings.HasPrefix(got[len(got)-1], "install --use-system-ca") {
+			t.Fatalf("install command: %q", got)
+		}
+		if _, err := client.SetBrowserMode(ctx, dir, "windowed"); code(err) != "EINVAL" {
+			t.Fatalf("invalid mode: %v", err)
+		}
+
+		if _, err := act(client, dir, "a", "browser", "agent_browser_wedge"); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.SettleComputer(ctx, dir, "browser"); code(err) != "COMPUTER_UNCERTAIN" {
+			t.Fatalf("settle with an unknown outcome: %v", err)
+		}
+		headless := calls()[0]
+		status, err = client.SetBrowserMode(ctx, dir, "headed")
+		if err != nil || !status.Available || status.Mode != "headed" || !status.SharedDesktop {
+			t.Fatalf("headed mode: %+v, %v", status, err)
+		}
+		if closed, err := os.ReadFile(filepath.Join(dir, "closed")); err != nil || len(closed) == 0 {
+			t.Fatalf("mode change did not restart the browser: %v", err)
+		}
+		if got := calls(); got[len(got)-1] == headless {
+			t.Fatalf("headed browser prepared like the headless one: %q", got)
+		}
+		if err := client.SettleComputer(ctx, dir, "browser"); err != nil {
+			t.Fatalf("settle after restart: %v", err)
+		}
+		if _, err := act(client, dir, "b", "browser", "agent_browser_click"); err != nil {
+			t.Fatalf("action after mode change: %v", err)
+		}
+		if err := client.SettleComputer(ctx, dir, "desktop"); err != nil {
+			t.Fatalf("desktop settle: %v", err)
+		}
+
+		broken := dial(map[string]*MCPConfig{
+			"browser": browser(map[string]string{"TEST_BROWSER_FAIL": "1"}),
+			"desktop": {Transport: "stdio", Command: filepath.Join(dir, "missing-driver")},
+		})
+		if status, err := broken.PrepareComputer(ctx, dir, "browser"); err != nil || status.Available || !strings.Contains(status.Error, "browser unavailable") {
+			t.Fatalf("failing browser prepare: %+v, %v", status, err)
+		}
+		if status, err := broken.PrepareComputer(ctx, dir, "desktop"); err != nil || status.Available || status.Error == "" {
+			t.Fatalf("missing desktop driver prepare: %+v, %v", status, err)
+		}
+	})
+}

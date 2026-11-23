@@ -30,13 +30,15 @@ import (
 // browser (agent-browser) driver. Dir is the Bot work directory; its .persona
 // folder holds the browser profile and the computer-use journal.
 type ComputerInput struct {
-	Action    string          `json:"action"` // catalog, call, verify, restart
+	Action    string          `json:"action"` // catalog, call, verify, restart, prepare, install, mode, settle
 	Service   string          `json:"service"`
 	Dir       string          `json:"dir"`
 	TaskID    int64           `json:"taskId,omitempty"`
 	CallID    string          `json:"callId,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+	// Mode is the browser mode a mode action switches to.
+	Mode string `json:"mode,omitempty"`
 	// Driver replaces the default `cua-driver mcp` or `agent-browser mcp`.
 	Driver *MCPConfig `json:"driver,omitempty"`
 }
@@ -47,6 +49,8 @@ type ComputerResult struct {
 	Result json.RawMessage `json:"result,omitempty"`
 	// Replayed is set when Result is the journaled result of an earlier dispatch.
 	Replayed bool `json:"replayed,omitempty"`
+	// Status answers prepare, install and mode.
+	Status *ComputerStatus `json:"status,omitempty"`
 }
 
 // journalEntry is one line of a task's computer-use journal: intent before
@@ -148,6 +152,8 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 		}
 		defer lane.Unlock()
 		return s.restartBrowser(ctx, input, journal, marker)
+	case "prepare", "install", "mode", "settle":
+		return s.computerStatus(ctx, input, key, journal, marker)
 	case "catalog":
 		driver, err := s.computerDriver(ctx, key, input)
 		if err != nil {
@@ -324,14 +330,169 @@ func (s *server) restartBrowser(ctx context.Context, input ComputerInput, journa
 func closeBrowser(ctx context.Context, config *MCPConfig) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	_, _ = browserCLI(ctx, config, "close")
+}
+
+// browserCLI runs an agent-browser command for the Bot session with the
+// driver's environment and returns its output.
+func browserCLI(ctx context.Context, config *MCPConfig, args ...string) ([]byte, error) {
 	env := stdioEnvironment(config.Env)
 	path, err := ResolveProgram(ctx, config.Command, env)
-	if err != nil || path == "" {
-		return
+	if err != nil {
+		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, path, "close")
+	if path == "" {
+		return nil, codeError("ENOENT", config.Command+" is not installed for this user", config.Command)
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = env
-	_ = cmd.Run()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = strings.TrimSpace(stdout.String())
+		}
+		if message == "" {
+			message = err.Error()
+		}
+		return stdout.Bytes(), errors.New(message)
+	}
+	return stdout.Bytes(), nil
+}
+
+// ComputerStatus reports whether a computer service can be used, as prepare,
+// install and mode do in browser-service.mjs and computer-service.mjs.
+type ComputerStatus struct {
+	Available bool   `json:"available"`
+	Error     string `json:"error,omitempty"`
+	// Mode is the browser's "headless" or "headed" mode.
+	Mode string `json:"mode,omitempty"`
+	// SharedDesktop is set when the headed browser shares desktop control.
+	SharedDesktop bool `json:"sharedDesktop,omitempty"`
+}
+
+func browserMode(dir string) string {
+	mode := "headless"
+	if data, err := os.ReadFile(filepath.Join(dir, ".persona", "browser-mode.json")); err == nil {
+		_ = json.Unmarshal(data, &mode)
+	}
+	return mode
+}
+
+// computerStatus serves prepare, install, mode and settle. Each waits for the
+// service's dispatched actions to settle first.
+func (s *server) computerStatus(ctx context.Context, input ComputerInput, key, journal, marker string) (*ComputerResult, error) {
+	if (input.Action == "install" || input.Action == "mode") && input.Service != "browser" {
+		return nil, codeError("EINVAL", input.Action+" is a browser operation", "")
+	}
+	lane := s.computerLane(key)
+	lane.Lock()
+	defer lane.Unlock()
+	_, statErr := os.Stat(marker)
+	uncertainNow := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, statErr
+	}
+	if input.Action == "settle" {
+		if uncertainNow {
+			return nil, uncertain(input.Service)
+		}
+		return &ComputerResult{}, nil
+	}
+	if input.Service == "desktop" {
+		return &ComputerResult{Status: s.prepareDesktop(ctx, key, input)}, nil
+	}
+	status := func(err error) *ComputerResult {
+		mode := browserMode(input.Dir)
+		result := &ComputerStatus{Available: err == nil, Mode: mode, SharedDesktop: mode == "headed"}
+		if err != nil {
+			result.Error = err.Error()
+		}
+		return &ComputerResult{Status: result}
+	}
+	config, err := driverConfig(input)
+	if err != nil {
+		return nil, err
+	}
+	switch input.Action {
+	case "install":
+		_, err := browserCLI(ctx, config, "install", "--use-system-ca")
+		if err != nil {
+			return &ComputerResult{Status: &ComputerStatus{Error: err.Error()}}, nil
+		}
+		return &ComputerResult{Status: &ComputerStatus{Available: true}}, nil
+	case "mode":
+		if input.Mode != "headless" && input.Mode != "headed" {
+			return nil, codeError("EINVAL", "browser mode must be headless or headed", "")
+		}
+		if input.Mode == browserMode(input.Dir) && !uncertainNow {
+			return status(prepareBrowser(ctx, config)), nil
+		}
+		// A mode change is a confirmed restart: tabs and unsaved input close.
+		mode, _ := json.Marshal(input.Mode)
+		if err := os.WriteFile(filepath.Join(input.Dir, ".persona", "browser-mode.json"), mode, 0o600); err != nil {
+			return nil, err
+		}
+		if _, err := s.restartBrowser(ctx, input, journal, marker); err != nil {
+			return status(err), nil
+		}
+		config, err = driverConfig(input)
+		if err != nil {
+			return nil, err
+		}
+		return status(prepareBrowser(ctx, config)), nil
+	}
+	if uncertainNow {
+		return status(nil), nil
+	}
+	return status(prepareBrowser(ctx, config)), nil
+}
+
+// prepareBrowser sets the Bot browser viewport, retrying while the browser
+// starts and reports an unknown outcome, as browser-service.mjs does.
+func prepareBrowser(ctx context.Context, config *MCPConfig) error {
+	for attempt := 0; ; attempt++ {
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		_, err := browserCLI(ctx, config, "set", "viewport", "1280", "720", "--json")
+		cancel()
+		if err == nil || attempt >= 2 || !strings.Contains(err.Error(), "outcome_unknown") {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// prepareDesktop checks that the graphical session provides a screenshot.
+func (s *server) prepareDesktop(ctx context.Context, key string, input ComputerInput) *ComputerStatus {
+	driver, err := s.computerDriver(ctx, key, input)
+	if err != nil {
+		return &ComputerStatus{Error: mcpError(ctx, err).Error()}
+	}
+	result, err := driver.session.session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "get_desktop_state", Arguments: map[string]any{"max_image_dimension": 320},
+	})
+	if err != nil {
+		s.dropBroken(ctx, key, driver, err)
+		return &ComputerStatus{Error: mcpError(ctx, err).Error()}
+	}
+	for _, part := range result.Content {
+		if _, ok := part.(*mcp.ImageContent); ok && !result.IsError {
+			return &ComputerStatus{Available: true}
+		}
+	}
+	message := "The graphical session cannot provide a screen. Sign in to the work computer and check screen recording permission."
+	for _, part := range result.Content {
+		if text, ok := part.(*mcp.TextContent); ok && text.Text != "" {
+			message = text.Text
+			break
+		}
+	}
+	return &ComputerStatus{Error: message}
 }
 
 // uncertainResult recognizes agent-browser results that report an unknown outcome.
@@ -441,10 +602,7 @@ func driverConfig(input ComputerInput) (*MCPConfig, error) {
 	if err := os.MkdirAll(downloads, 0o755); err != nil {
 		return nil, err
 	}
-	mode := "headless"
-	if data, err := os.ReadFile(filepath.Join(state, "browser-mode.json")); err == nil {
-		_ = json.Unmarshal(data, &mode)
-	}
+	mode := browserMode(input.Dir)
 	settings, _ := json.Marshal(map[string]any{
 		"profile": filepath.Join(state, "browser"), "headed": mode == "headed", "downloadPath": downloads,
 		"contentBoundaries": true, "maxOutput": 32000, "useSystemCa": true,
@@ -605,6 +763,38 @@ func (c *Client) VerifyComputer(ctx context.Context, dir string, taskID int64, s
 // page input are lost.
 func (c *Client) RestartBrowser(ctx context.Context, dir string, taskID int64) error {
 	_, err := c.computerCall(ctx, ComputerInput{Action: "restart", Service: "browser", Dir: dir, TaskID: taskID})
+	return err
+}
+
+func (c *Client) computerStatus(ctx context.Context, input ComputerInput) (ComputerStatus, error) {
+	result, err := c.computerCall(ctx, input)
+	if err != nil || result.Status == nil {
+		return ComputerStatus{}, err
+	}
+	return *result.Status, nil
+}
+
+// PrepareComputer reports whether service can be used: the desktop provides
+// a screenshot, or the Bot browser starts with its viewport.
+func (c *Client) PrepareComputer(ctx context.Context, dir, service string) (ComputerStatus, error) {
+	return c.computerStatus(ctx, ComputerInput{Action: "prepare", Service: service, Dir: dir})
+}
+
+// InstallBrowser installs the browser agent-browser drives.
+func (c *Client) InstallBrowser(ctx context.Context, dir string) (ComputerStatus, error) {
+	return c.computerStatus(ctx, ComputerInput{Action: "install", Service: "browser", Dir: dir})
+}
+
+// SetBrowserMode switches the Bot browser to "headless" or "headed". A change,
+// or an unknown browser outcome, restarts the browser with the same profile.
+func (c *Client) SetBrowserMode(ctx context.Context, dir, mode string) (ComputerStatus, error) {
+	return c.computerStatus(ctx, ComputerInput{Action: "mode", Service: "browser", Dir: dir, Mode: mode})
+}
+
+// SettleComputer waits for service's dispatched actions to settle. It fails
+// with COMPUTER_UNCERTAIN when an outcome is unknown.
+func (c *Client) SettleComputer(ctx context.Context, dir, service string) error {
+	_, err := c.computerCall(ctx, ComputerInput{Action: "settle", Service: service, Dir: dir})
 	return err
 }
 
