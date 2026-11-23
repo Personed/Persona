@@ -187,3 +187,6 @@ func stripJSONComments(content []byte) []byte {
 	}
 	return out
 }
+
+// Name is the provider display name Pi shows for the server kind.
+func (k Kind) Name() string { return names[k] }
