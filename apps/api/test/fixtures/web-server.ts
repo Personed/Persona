@@ -489,10 +489,16 @@ process.on("disconnect", () => {
   server.closeAllConnections();
   server.close();
   hosted?.close();
-  void (async () => {
+  const cleanup = (async () => {
     await computer.close(BACKGROUND_CONTEXT);
     await harness.close(BACKGROUND_CONTEXT);
     await credentialStore.close();
     await store?.close();
-  })().finally(() => process.exit());
+  })();
+  // Exit even when cleanup stalls (e.g. a browser worker still starting up):
+  // a wedged child otherwise holds the parent's afterEach until test timeout.
+  void Promise.race([
+    cleanup.catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 10_000)),
+  ]).finally(() => process.exit());
 });

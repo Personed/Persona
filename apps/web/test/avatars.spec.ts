@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { characterIdentity } from "@persona/ui/characters";
-import { expect, test } from "./fixtures.ts";
+import { expect, stopWorker, test } from "./fixtures.ts";
 
 test("plush identities load, animate and survive profile changes", async ({
   page,
@@ -199,8 +199,7 @@ test("plush identities load, animate and survive profile changes", async ({
     expect(response.headers()["content-type"]).toContain("image/png");
     expect(errors).toEqual([]);
   } finally {
-    worker.disconnect();
-    await once(worker, "exit");
+    await stopWorker(worker);
     await rm(directory, { recursive: true, force: true });
   }
 });
