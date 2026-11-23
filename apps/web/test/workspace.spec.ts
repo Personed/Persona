@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mcpFixture } from "../../../packages/agent/test/fixtures/mcp.mjs";
 import { codexWork } from "../../../packages/agent/test/fixtures/native-work.ts";
-import { expect, setTestLanguage, test } from "./fixtures.ts";
+import { expect, setTestLanguage, stopWorker, test } from "./fixtures.ts";
 
 let worker: ChildProcess;
 let directory: string;
@@ -780,9 +780,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
-  const exited = once(worker, "exit");
-  worker.disconnect();
-  await exited;
+  await stopWorker(worker);
   await rm(directory, { recursive: true, force: true, maxRetries: 5 });
 });
 
@@ -919,9 +917,7 @@ test("native Harness controls persist and client accounts retain model access", 
   page,
   browser,
 }, info) => {
-  const exited = once(worker, "exit");
-  worker.disconnect();
-  await exited;
+  await stopWorker(worker);
   worker = fork(
     fileURLToPath(
       new URL("../../api/test/fixtures/web-server.ts", import.meta.url),
