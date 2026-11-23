@@ -261,11 +261,11 @@ func (r *Runtime) submitEngine(tx *Tx, bot store.ConversationID, in SendInput, f
 	if err != nil {
 		return 0, err
 	}
-	text, err := materialText(in.Text, materials)
+	promptText, err := materialText(in.Text, materials)
 	if err != nil {
 		return 0, err
 	}
-	parts := []string{text}
+	parts := []string{promptText}
 	for _, file := range files {
 		parts = append(parts, "Uploaded file: "+file.Path)
 	}
