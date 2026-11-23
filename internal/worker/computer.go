@@ -30,27 +30,30 @@ import (
 // browser (agent-browser) driver. Dir is the Bot work directory; its .persona
 // folder holds the browser profile and the computer-use journal.
 type ComputerInput struct {
-	Action    string          `json:"action"` // catalog, call, verify, restart, prepare, install, mode, settle
+	Action    string          `json:"action"` // catalog, call, verify, restart, prepare, install, mode, settle, view
 	Service   string          `json:"service"`
 	Dir       string          `json:"dir"`
 	TaskID    int64           `json:"taskId,omitempty"`
 	CallID    string          `json:"callId,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
-	// Mode is the browser mode a mode action switches to.
-	Mode string `json:"mode,omitempty"`
+	// View sub-operations of the "view" action: open, next, send, close.
+	View        string          `json:"view,omitempty"`
+	ViewID      string          `json:"viewId,omitempty"`
+	Message     json.RawMessage `json:"message,omitempty"`
+	Mode        string          `json:"mode,omitempty"`
+	CursorColor string          `json:"cursorColor,omitempty"`
 	// Driver replaces the default `cua-driver mcp` or `agent-browser mcp`.
 	Driver *MCPConfig `json:"driver,omitempty"`
 }
 
-// ComputerResult answers a ComputerInput. Result is the native CallToolResult.
+// ComputerResult answers a ComputerInput. Result is the native CallToolResult,
+// or the ComputerStatus that prepare, install and mode report.
 type ComputerResult struct {
 	Tools  []*mcp.Tool     `json:"tools,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
 	// Replayed is set when Result is the journaled result of an earlier dispatch.
 	Replayed bool `json:"replayed,omitempty"`
-	// Status answers prepare, install and mode.
-	Status *ComputerStatus `json:"status,omitempty"`
 }
 
 // journalEntry is one line of a task's computer-use journal: intent before
@@ -437,7 +440,7 @@ func (s *server) computerStatus(ctx context.Context, input ComputerInput, key, j
 		return &ComputerResult{}, nil
 	}
 	if input.Service == "desktop" {
-		return &ComputerResult{Status: s.prepareDesktop(ctx, key, input)}, nil
+		return statusResult(s.prepareDesktop(ctx, key, input)), nil
 	}
 	status := func(err error) *ComputerResult {
 		mode := browserMode(input.Dir)
@@ -445,7 +448,7 @@ func (s *server) computerStatus(ctx context.Context, input ComputerInput, key, j
 		if err != nil {
 			result.Error = err.Error()
 		}
-		return &ComputerResult{Status: result}
+		return statusResult(result)
 	}
 	config, err := driverConfig(input)
 	if err != nil {
@@ -455,9 +458,9 @@ func (s *server) computerStatus(ctx context.Context, input ComputerInput, key, j
 	case "install":
 		_, err := browserCLI(ctx, config, "install", "--use-system-ca")
 		if err != nil {
-			return &ComputerResult{Status: &ComputerStatus{Error: err.Error()}}, nil
+			return statusResult(&ComputerStatus{Error: err.Error()}), nil
 		}
-		return &ComputerResult{Status: &ComputerStatus{Available: true}}, nil
+		return statusResult(&ComputerStatus{Available: true}), nil
 	case "mode":
 		if input.Mode != "headless" && input.Mode != "headed" {
 			return nil, codeError("EINVAL", "browser mode must be headless or headed", "")
@@ -498,6 +501,11 @@ func prepareBrowser(ctx context.Context, config *MCPConfig) error {
 }
 
 // prepareDesktop checks that the graphical session provides a screenshot.
+func statusResult(status *ComputerStatus) *ComputerResult {
+	data, _ := json.Marshal(status)
+	return &ComputerResult{Result: data}
+}
+
 func (s *server) prepareDesktop(ctx context.Context, key string, input ComputerInput) *ComputerStatus {
 	driver, err := s.computerDriver(ctx, key, input)
 	if err != nil {
@@ -796,12 +804,22 @@ func (c *Client) RestartBrowser(ctx context.Context, dir string, taskID int64) e
 	return err
 }
 
+// ComputerRequest sends a ComputerRequest operation (service-types.ts):
+// settle, catalog, prepare, install, mode, view and call. The view
+// sub-operations ride in View ("open", "next", "send", "close") with the
+// viewer id and message.
+func (c *Client) ComputerRequest(ctx context.Context, input ComputerInput) (ComputerResult, error) {
+	return c.computerCall(ctx, input)
+}
+
 func (c *Client) computerStatus(ctx context.Context, input ComputerInput) (ComputerStatus, error) {
 	result, err := c.computerCall(ctx, input)
-	if err != nil || result.Status == nil {
+	if err != nil {
 		return ComputerStatus{}, err
 	}
-	return *result.Status, nil
+	var status ComputerStatus
+	err = json.Unmarshal(result.Result, &status)
+	return status, err
 }
 
 // PrepareComputer reports whether service can be used: the desktop provides

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Personed/Persona/internal/agent"
 	"github.com/Personed/Persona/internal/apitest"
+	"github.com/Personed/Persona/internal/computers"
 	"github.com/Personed/Persona/internal/engine"
 	"github.com/Personed/Persona/internal/mcp"
 	"github.com/Personed/Persona/internal/memory"
@@ -81,7 +82,8 @@ func fixtureService(t *testing.T, file string) (http.Handler, *rpc.Server) {
 	}
 	rt := agent.NewRuntime(a, agent.RuntimeOptions{Engine: answer, Native: answer.native})
 	procedures := newRPC(t)
-	RegisterAgent(procedures, a, rt)
+	RegisterAgent(procedures, a, rt, computers.New(computers.ServiceConfig{DataDir: dir, Deployment: "native", Computer: computers.Config{Kind: "process"}}, a.Harness))
+	RegisterComputer(procedures, computers.New(computers.ServiceConfig{DataDir: dir, Deployment: "native", Computer: computers.Config{Kind: "process"}}, a.Harness))
 	RegisterEngines(procedures, a, rt)
 	RegisterWork(procedures, a, rt, Work{Memory: memory.NewService(records, nil), Routines: routines.NewService(records, nil),
 		Skills: skills.NewService(records, os.DirFS(filepath.Join(opts.FilesRoot, "skills")), nil)})
