@@ -14,6 +14,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { flushSync } from "react-dom";
 import { client } from "../../client.ts";
 import { flushModelSettings } from "../models/model-state.ts";
 import { chatCopy } from "./copy.ts";
@@ -127,8 +128,17 @@ export function useChat(botId: number, onModelRequired?: () => void) {
       if (!pending || controller.signal.aborted) return;
       const next = pending;
       pending = undefined;
-      setView(current.current ?? next);
-      setConnected(true);
+      const apply = () => {
+        setView(current.current ?? next);
+        setConnected(true);
+      };
+      const transition = document.activeViewTransition;
+      if (!next.busy && store.snapshot().view?.busy && transition) {
+        // A finishing turn must re-enable the composer even if a transcript
+        // transition is still waiting to commit its DOM update.
+        transition.skipTransition();
+        flushSync(apply);
+      } else apply();
     };
     const visible = () => {
       if (!document.hidden) flush();
