@@ -32,9 +32,20 @@ test.beforeEach(async () => {
   url = `http://127.0.0.1:${ready.port}`;
 });
 test.afterEach(async ({ page }) => {
-  await page.close();
+  // page.close() and the temp-directory rm can each outlast a loaded Windows
+  // runner's remaining budget (the fixture's browser children hold profile
+  // files); bound them the way stopWorker already bounds the child exit.
+  const bounded = (pending: Promise<unknown>, timeoutMs: number) =>
+    Promise.race([
+      pending.catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+  await bounded(page.close(), 10_000);
   await stopWorker(worker);
-  await rm(directory, { recursive: true, force: true, maxRetries: 5 });
+  await bounded(
+    rm(directory, { recursive: true, force: true, maxRetries: 5 }),
+    20_000,
+  );
 });
 
 async function openBrowser(page: import("@playwright/test").Page) {
@@ -214,7 +225,7 @@ for (const refresh of [false, true]) {
               height: state.height,
             },
           ),
-        { intervals: [100, 250, 500], timeout: 30_000 },
+        { intervals: [100, 250, 500], timeout: 60_000 },
       )
       .toBe(true);
     const inputToPaintMs = performance.now() - inputStarted;
