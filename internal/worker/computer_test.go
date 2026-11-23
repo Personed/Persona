@@ -3,20 +3,26 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"image/png"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Personed/Persona/internal/computer"
@@ -30,8 +36,20 @@ func testComputerDriver() *mcp.Server {
 	server.AddTool(&mcp.Tool{Name: "get_desktop_state", InputSchema: object}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var data bytes.Buffer
 		_ = png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 2, 1)))
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("clicks %d", clicks.Load())}, &mcp.ImageContent{MIMEType: "image/png", Data: data.Bytes()}}}, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("clicks %d", clicks.Load())}, &mcp.ImageContent{MIMEType: "image/png", Data: data.Bytes()}},
+			StructuredContent: map[string]any{"screenshot_width": 2, "screenshot_height": 1}}, nil
 	})
+	// Viewer input lands in TEST_DESKTOP_LOG, one JSON call per line.
+	for _, name := range []string{"type_text", "hotkey", "press_key", "drag", "move_cursor", "scroll"} {
+		server.AddTool(&mcp.Tool{Name: name, InputSchema: object}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			file, err := os.OpenFile(os.Getenv("TEST_DESKTOP_LOG"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+			if err == nil {
+				fmt.Fprintf(file, "%s %s\n", name, r.Params.Arguments)
+				_ = file.Close()
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: name}}}, nil
+		})
+	}
 	server.AddTool(&mcp.Tool{Name: "click", InputSchema: object}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("click %d %s", clicks.Add(1), r.Params.Arguments)}}}, nil
 	})
@@ -393,7 +411,7 @@ func TestComputerJournal(t *testing.T) {
 				}})
 			}
 			tools, err := client.ComputerCatalog(ctx, dir, "desktop")
-			if err != nil || len(tools) != 5 {
+			if err != nil || len(tools) != 11 {
 				t.Fatalf("catalog = %d tools, %v", len(tools), err)
 			}
 			first, err := click(client, "a")
@@ -578,6 +596,243 @@ func TestComputerStatus(t *testing.T) {
 		}
 		if status, err := broken.PrepareComputer(ctx, dir, "desktop"); err != nil || status.Available || status.Error == "" {
 			t.Fatalf("missing desktop driver prepare: %+v, %v", status, err)
+		}
+	})
+}
+
+func TestComputerDesktopView(t *testing.T) {
+	eachComputer(t, func(t *testing.T, dir string, dial func(map[string]*MCPConfig) *Client) {
+		log := filepath.Join(dir, "desktop-input")
+		client := dial(map[string]*MCPConfig{"desktop": {Transport: "stdio", Command: executable(t), Args: []string{"computer-driver"},
+			Env: map[string]string{"TEST_DESKTOP_LOG": log}}})
+		ctx := context.Background()
+		view, err := client.OpenView(ctx, dir, "desktop")
+		if err != nil {
+			t.Fatal(err)
+		}
+		frame, err := view.Next(ctx)
+		if err != nil || frame.Seq != 1 || frame.MimeType != "image/png" || frame.Width != 2 || frame.Height != 1 || len(frame.Data) == 0 {
+			t.Fatalf("first frame: %+v, %v", frame, err)
+		}
+		waiting, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		if _, err := view.Next(waiting); err == nil || waiting.Err() == nil {
+			t.Fatalf("frame before acknowledgement: %v", err)
+		}
+		cancel()
+		if err := view.Send(ctx, ViewMessage{Type: "ack", Seq: 2}); code(err) != "EINVAL" {
+			t.Fatalf("stale acknowledgement: %v", err)
+		}
+		if err := view.Send(ctx, ViewMessage{Type: "ack", Seq: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if frame, err := view.Next(ctx); err != nil || frame.Seq != 2 {
+			t.Fatalf("frame after acknowledgement: %+v, %v", frame, err)
+		}
+		for _, message := range []ViewMessage{
+			{Type: "text", Text: "hi"},
+			{Type: "key", Key: "c", Modifiers: 2 | 8},
+			{Type: "key", Key: "Enter"},
+			{Type: "pointer", Event: "down", X: 10, Y: 10, Button: "left"},
+			{Type: "pointer", Event: "move", X: 30, Y: 30},
+			{Type: "pointer", Event: "up", X: 50, Y: 50, Button: "left"},
+			{Type: "pointer", Event: "move", X: 5, Y: 6},
+			{Type: "pointer", Event: "scroll", X: 5, Y: 6, DeltaY: -120},
+			{Type: "pointer", Event: "down", X: 7, Y: 7, Button: "left"},
+			{Type: "pointer", Event: "up", X: 8, Y: 8, Button: "left"},
+		} {
+			if err := view.Send(ctx, message); err != nil {
+				t.Fatalf("send %+v: %v", message, err)
+			}
+		}
+		data, _ := os.ReadFile(log)
+		got := string(data)
+		for _, want := range []string{
+			`type_text {"session":"` + view.id + `","target":{"display_id":"primary","kind":"desktop"},"text":"hi"}`,
+			`hotkey {"keys":["ctrl","shift","c"]`, `press_key {"key":"Enter"`,
+			`drag {"button":"left","from_x":10,"from_y":10,`, `"to_x":50,"to_y":50}`,
+			`move_cursor {"session"`, `scroll {"amount":3,"direction":"up"`,
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("desktop input %q lacks %q", got, want)
+			}
+		}
+		if strings.Count(got, "move_cursor") != 1 {
+			t.Fatalf("pointer move while held moved the cursor: %q", got)
+		}
+		if observed, err := client.Observe(ctx, "desktop"); err != nil || text(t, observed) != "clicks 1" {
+			t.Fatalf("short press did not click: %v", err)
+		}
+		if err := view.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := view.Next(ctx); code(err) != "ENOENT" {
+			t.Fatalf("next after close: %v", err)
+		}
+	})
+}
+
+// testBrowserStream stands in for agent-browser's stream and command API.
+type testBrowserStream struct {
+	*httptest.Server
+	sessionFile string
+	mu          sync.Mutex
+	commands    []string
+	messages    []string
+	wrong       atomic.Bool
+}
+
+func newTestBrowserStream(t *testing.T, dir string) *testBrowserStream {
+	stream := &testBrowserStream{sessionFile: filepath.Join(dir, "browser-session")}
+	stream.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/command" {
+			body, _ := io.ReadAll(r.Body)
+			var command map[string]any
+			_ = json.Unmarshal(body, &command)
+			if command["action"] == "session_info" {
+				session, _ := os.ReadFile(stream.sessionFile)
+				if stream.wrong.Load() {
+					session = []byte("other")
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{"session": string(session)}})
+				return
+			}
+			stream.mu.Lock()
+			stream.commands = append(stream.commands, string(body))
+			stream.mu.Unlock()
+			if command["key"] == "fail" {
+				http.Error(w, "lost", http.StatusBadGateway)
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"data":{}}`))
+			return
+		}
+		if r.URL.Query().Get("pacing") != "ack" {
+			http.Error(w, "no pacing", http.StatusBadRequest)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		ctx := r.Context()
+		frame := func(seq int) error {
+			data, _ := json.Marshal(map[string]any{"type": "frame", "seq": seq, "data": base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("jpeg %d", seq))),
+				"metadata": map[string]any{"deviceWidth": 1280, "deviceHeight": 720, "timestamp": 1.5}})
+			return conn.Write(ctx, websocket.MessageText, data)
+		}
+		_ = conn.Write(ctx, websocket.MessageText, []byte(`{"type":"status"}`))
+		if frame(1) != nil {
+			return
+		}
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			stream.mu.Lock()
+			stream.messages = append(stream.messages, string(data))
+			stream.mu.Unlock()
+			if strings.Contains(string(data), `"ack"`) && frame(2) != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(stream.Close)
+	return stream
+}
+
+func (s *testBrowserStream) port() string { return s.URL[strings.LastIndex(s.URL, ":")+1:] }
+
+func (s *testBrowserStream) log() (commands, messages string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Join(s.commands, "\n"), strings.Join(s.messages, "\n")
+}
+
+func TestComputerBrowserView(t *testing.T) {
+	eachComputer(t, func(t *testing.T, dir string, dial func(map[string]*MCPConfig) *Client) {
+		stream := newTestBrowserStream(t, dir)
+		client := dial(map[string]*MCPConfig{"browser": {Transport: "stdio", Command: executable(t), Args: []string{"browser-driver"},
+			Env: map[string]string{"TEST_BROWSER_CLOSED": filepath.Join(dir, "closed"), "TEST_BROWSER_STREAM_PORT": stream.port(),
+				"TEST_BROWSER_SESSION_FILE": stream.sessionFile}}})
+		ctx := context.Background()
+		stream.wrong.Store(true)
+		if _, err := client.OpenView(ctx, dir, "browser"); err == nil || !strings.Contains(err.Error(), "another browser session") {
+			t.Fatalf("view of another session: %v", err)
+		}
+		stream.wrong.Store(false)
+		view, err := client.OpenView(ctx, dir, "browser")
+		if err != nil {
+			t.Fatal(err)
+		}
+		frame, err := view.Next(ctx)
+		if err != nil || frame.Seq != 1 || string(frame.Data) != "jpeg 1" || frame.MimeType != "image/jpeg" || frame.Width != 1280 || frame.Height != 720 || frame.Timestamp != 1.5 {
+			t.Fatalf("first frame: %+v, %v", frame, err)
+		}
+		if err := view.Send(ctx, ViewMessage{Type: "ack", Seq: 3}); code(err) != "EINVAL" {
+			t.Fatalf("stale acknowledgement: %v", err)
+		}
+		if err := view.Send(ctx, ViewMessage{Type: "ack", Seq: 1, MaxFps: 10}); err != nil {
+			t.Fatal(err)
+		}
+		if frame, err := view.Next(ctx); err != nil || frame.Seq != 2 {
+			t.Fatalf("frame after acknowledgement: %+v, %v", frame, err)
+		}
+		for _, message := range []ViewMessage{
+			{Type: "text", Text: "hi"},
+			{Type: "key", Key: "a", Modifiers: 4},
+			{Type: "key", Key: "k", Modifiers: 2 | 8},
+			{Type: "pointer", Event: "down", X: 1.4, Y: 2.6, Button: "left"},
+			{Type: "pointer", Event: "move", X: 9, Y: 9},
+			{Type: "pointer", Event: "up", X: 10, Y: 11},
+			{Type: "pointer", Event: "scroll", X: 3, Y: 4, DeltaY: 99.6},
+			{Type: "pointer", Event: "down", X: 5, Y: 5, Button: "right"},
+		} {
+			if err := view.Send(ctx, message); err != nil {
+				t.Fatalf("send %+v: %v", message, err)
+			}
+		}
+		if err := view.Close(); err != nil {
+			t.Fatal(err)
+		}
+		commands, messages := stream.log()
+		for _, want := range []string{
+			`{"action":"keyboard","subaction":"insertText","text":"hi"}`,
+			`{"action":"selectall","selector":":focus"}`,
+			`{"action":"press","key":"Control+Shift+k"}`,
+			`{"action":"input_mouse","button":"left","clickCount":1,"modifiers":0,"type":"mousePressed","x":1,"y":3}`,
+			`{"action":"input_mouse","button":"left","clickCount":1,"modifiers":0,"type":"mouseMoved","x":9,"y":9}`,
+			`{"action":"input_mouse","button":"left","clickCount":1,"type":"mouseReleased","x":10,"y":11}`,
+			`{"action":"input_mouse","button":"none","clickCount":1,"deltaX":0,"deltaY":100,"modifiers":0,"type":"mouseWheel","x":3,"y":4}`,
+			`{"action":"input_mouse","button":"right","clickCount":1,"type":"mouseReleased","x":-1,"y":-1}`,
+		} {
+			if !strings.Contains(commands, want) {
+				t.Fatalf("browser commands %s lack %s", commands, want)
+			}
+		}
+		if !strings.Contains(messages, `{"seq":1,"type":"ack"}`) || !strings.Contains(messages, `{"maxFps":10,"type":"config"}`) {
+			t.Fatalf("stream messages: %s", messages)
+		}
+		if _, err := view.Next(ctx); code(err) != "ENOENT" {
+			t.Fatalf("next after close: %v", err)
+		}
+
+		view, err = client.OpenView(ctx, dir, "browser")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := view.Send(ctx, ViewMessage{Type: "key", Key: "fail"}); code(err) != "COMPUTER_UNCERTAIN" {
+			t.Fatalf("unconfirmed input: %v", err)
+		}
+		if err := view.Send(ctx, ViewMessage{Type: "text", Text: "more"}); code(err) != "COMPUTER_UNCERTAIN" {
+			t.Fatalf("input after unconfirmed input: %v", err)
+		}
+		if _, err := act(client, dir, "a", "browser", "agent_browser_click"); code(err) != "COMPUTER_UNCERTAIN" {
+			t.Fatalf("agent action after unconfirmed input: %v", err)
+		}
+		if err := client.RestartBrowser(ctx, dir, 7); err != nil {
+			t.Fatal(err)
 		}
 	})
 }

@@ -30,7 +30,7 @@ import (
 // browser (agent-browser) driver. Dir is the Bot work directory; its .persona
 // folder holds the browser profile and the computer-use journal.
 type ComputerInput struct {
-	Action    string          `json:"action"` // catalog, call, verify, restart, prepare, install, mode, settle
+	Action    string          `json:"action"` // catalog, call, verify, restart, prepare, install, mode, settle, view
 	Service   string          `json:"service"`
 	Dir       string          `json:"dir"`
 	TaskID    int64           `json:"taskId,omitempty"`
@@ -39,6 +39,8 @@ type ComputerInput struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	// Mode is the browser mode a mode action switches to.
 	Mode string `json:"mode,omitempty"`
+	// View is a view action's request.
+	View *ViewInput `json:"view,omitempty"`
 	// Driver replaces the default `cua-driver mcp` or `agent-browser mcp`.
 	Driver *MCPConfig `json:"driver,omitempty"`
 }
@@ -51,6 +53,10 @@ type ComputerResult struct {
 	Replayed bool `json:"replayed,omitempty"`
 	// Status answers prepare, install and mode.
 	Status *ComputerStatus `json:"status,omitempty"`
+	// ViewID names the view an open action connected.
+	ViewID string `json:"viewId,omitempty"`
+	// Frame answers a view's next action.
+	Frame *ViewFrame `json:"frame,omitempty"`
 }
 
 // journalEntry is one line of a task's computer-use journal: intent before
@@ -152,6 +158,8 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 		}
 		defer lane.Unlock()
 		return s.restartBrowser(ctx, input, journal, marker)
+	case "view":
+		return s.view(ctx, input, key, marker)
 	case "prepare", "install", "mode", "settle":
 		return s.computerStatus(ctx, input, key, journal, marker)
 	case "catalog":
@@ -659,6 +667,7 @@ func privateSocketDir(path string) error {
 }
 
 func (s *server) closeComputers() {
+	s.closeViews()
 	s.computersMu.Lock()
 	drivers := s.computers
 	s.computers = map[string]*computerDriver{}

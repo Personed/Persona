@@ -58,6 +58,10 @@ func TestMain(m *testing.M) {
 		case "close":
 			_ = os.WriteFile(os.Getenv("TEST_BROWSER_CLOSED"), []byte(os.Getenv("AGENT_BROWSER_SESSION")), 0o600)
 			os.Exit(0)
+		case "stream":
+			_ = os.WriteFile(os.Getenv("TEST_BROWSER_SESSION_FILE"), []byte(os.Getenv("AGENT_BROWSER_SESSION")), 0o600)
+			fmt.Printf(`{"success":true,"data":{"enabled":true,"port":%s}}`, os.Getenv("TEST_BROWSER_STREAM_PORT"))
+			os.Exit(0)
 		case "set", "install":
 			if log := os.Getenv("TEST_BROWSER_CLI"); log != "" {
 				file, err := os.OpenFile(log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)

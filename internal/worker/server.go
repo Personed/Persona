@@ -52,6 +52,8 @@ type server struct {
 	computersMu   sync.Mutex
 	computers     map[string]*computerDriver
 	computerLanes map[string]*sync.Mutex
+	viewsMu       sync.Mutex
+	views         map[string]openView
 	wg            sync.WaitGroup
 	lastRead      atomic.Int64
 }
