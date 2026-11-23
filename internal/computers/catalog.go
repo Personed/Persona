@@ -10,6 +10,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/Personed/Persona/internal/agent"
+	"github.com/Personed/Persona/internal/hosting"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/store"
 )
@@ -51,6 +52,9 @@ type ServiceConfig struct {
 	Computer Config
 	// Template provisions shared/dedicated isolation targets (preparation).
 	Template *Config
+	// Credentials is the hosting credential store holding Jev keys
+	// (persona-computer:<provider>); nil in a deployment without one.
+	Credentials hosting.Credentials
 	// Legacy marks an upgrade from the TypeScript service: the local computer
 	// binds computer.json and authorized bots.
 	Legacy bool
@@ -62,7 +66,7 @@ func New(cfg ServiceConfig, h *agent.Harness) *Catalog {
 		h: h, store: h.Store(), cfg: cfg,
 		targets: map[string]*Target{}, changing: map[string]bool{},
 		transfers: map[int64]int{}, starting: map[string]*startOp{},
-		pending: map[int64]*pendingOp{}, keyring: NewKeyring(cfg.DataDir),
+		pending: map[int64]*pendingOp{}, keyring: NewKeyring(cfg.Credentials),
 	}
 	c.svcs = newServices(c)
 	c.vw = newViews(c.svcs)
@@ -129,7 +133,7 @@ func (c *Catalog) attach(tx *agent.Tx, botID int64, computerID *string) error {
 	if id != nil {
 		item = requireComputer(doc.Items, *id)
 	}
-	if id != nil && c.changing[*id] {
+	if id != nil && c.isChanging(*id) {
 		return rpc.NewError("CONFLICT", "工作电脑正在操作中。")
 	}
 	if item != nil && !item.Authorized {
@@ -209,7 +213,7 @@ func (c *Catalog) view(ctx context.Context, item Record) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	available := item.Authorized && status.State == "running" && !c.changing[item.ID]
+	available := item.Authorized && status.State == "running" && !c.isChanging(item.ID)
 	name := item.Name
 	if item.Config.Kind == "process" {
 		if c.cfg.Deployment == "container" {
@@ -223,7 +227,7 @@ func (c *Catalog) view(ctx context.Context, item Record) (View, error) {
 		Name:       name,
 		Authorized: item.Authorized,
 		Scope:      item.Scope,
-		Busy:       c.changing[item.ID],
+		Busy:       c.isChanging(item.ID),
 		Capabilities: capabilities{
 			Commands: available, Files: available, Desktop: false,
 		},
@@ -424,7 +428,7 @@ func (c *Catalog) Add(ctx context.Context, input AddInput) (List, error) {
 
 // Authorize grants or revokes a computer (computer.authorize).
 func (c *Catalog) Authorize(ctx context.Context, id string, authorized bool) (List, error) {
-	if c.changing[id] {
+	if c.isChanging(id) {
 		return List{}, rpc.NewError("CONFLICT", "工作电脑正在操作中。")
 	}
 	if err := c.h.Commit(ctx, func(tx *agent.Tx) error {
@@ -682,6 +686,13 @@ func (c *Catalog) target(item Record) *Target {
 		c.targets[item.ID] = t
 	}
 	return t
+}
+
+// isChanging reports whether a manage operation owns the record.
+func (c *Catalog) isChanging(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.changing[id]
 }
 
 // emit wakes catalog watchers (change events of catalog.ts).
