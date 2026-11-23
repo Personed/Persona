@@ -20,6 +20,7 @@ import (
 	"github.com/Personed/Persona/internal/contract"
 	"github.com/Personed/Persona/internal/delivery"
 	"github.com/Personed/Persona/internal/engine/pi"
+	"github.com/Personed/Persona/internal/history"
 	"github.com/Personed/Persona/internal/hosting"
 	"github.com/Personed/Persona/internal/localmodels"
 	"github.com/Personed/Persona/internal/mcp"
@@ -32,6 +33,22 @@ import (
 	"github.com/Personed/Persona/internal/takeover"
 	"github.com/Personed/Persona/internal/tools"
 )
+
+// productTools is the registry each Bot task's MCP gateway serves to Pi.
+func productTools(records store.Store, routineSvc *routines.Service, skillSvc *skills.Service, handoff takeover.Handoff) (tools.Registry, error) {
+	registry := tools.NewRegistry()
+	for _, register := range []func() error{
+		func() error { return takeover.Register(registry, handoff) },
+		func() error { return routines.Register(registry, routineSvc) },
+		func() error { return skills.Register(registry, skillSvc) },
+		func() error { return history.Register(registry, history.NewReader(records)) },
+	} {
+		if err := register(); err != nil {
+			return nil, err
+		}
+	}
+	return registry, nil
+}
 
 // serve runs the local service. Procedures without a Go handler answer NOT_IMPLEMENTED.
 // Without a model registry in Go yet, models.list is empty.
@@ -150,18 +167,18 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	approvals := approval.NewService(records, nil, 0)
 	// Work services shared by the RPC layer and the product tools below.
 	memorySvc := memory.NewService(records, nil)
+	routineSvc := routines.NewService(records, nil)
 	skillSvc := skills.NewService(records, os.DirFS(filepath.Join(filesRoot, "skills")), catalog.Workspace)
 	skillSvc.UsePackageDir(filepath.Join(filesRoot, "skills"))
-	work := server.Work{Memory: memorySvc, Skills: skillSvc,
-		Routines: routines.NewService(records, nil)}
+	work := server.Work{Memory: memorySvc, Routines: routineSvc, Skills: skillSvc}
 	var runtime *agent.Runtime
 	if *piExtension != "" {
 		// An idle Bot has no Pi: each closes with the last session of its task.
 		engine := pi.New(pi.Config{Extensions: []string{*piExtension}, IdleTimeout: -1, LocalModels: true,
 			SessionDir: filepath.Join(*dataDir, "pi", "sessions"), StateDir: filepath.Join(*dataDir, "pi", "state")})
 		defer engine.Close()
-		registry := tools.NewRegistry()
-		if err := takeover.Register(registry, catalog.Handoff(approvals)); err != nil {
+		registry, err := productTools(records, routineSvc, skillSvc, catalog.Handoff(approvals))
+		if err != nil {
 			return err
 		}
 		if err := memory.Register(registry, memorySvc); err != nil {
@@ -174,11 +191,6 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 				return delivery.Workspace{Target: target, Dir: dir}, err
 			},
 		})); err != nil {
-			return err
-		}
-		routineSvc := routines.NewService(records, nil)
-		work.Routines = routineSvc
-		if err := routines.Register(registry, routineSvc); err != nil {
 			return err
 		}
 		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
