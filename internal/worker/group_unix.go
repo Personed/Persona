@@ -26,3 +26,11 @@ func statusCode(state *os.ProcessState) int {
 	}
 	return state.ExitCode()
 }
+
+// processAlive reports whether pid still runs, as signal 0 delivery shows.
+func processAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
+
+func killProcess(pid int) { _ = syscall.Kill(pid, syscall.SIGKILL) }

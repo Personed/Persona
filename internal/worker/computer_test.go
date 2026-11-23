@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -270,6 +271,27 @@ func TestComputerBrowserRestart(t *testing.T) {
 		}
 		if _, err := act(client, dir, "b", "browser", "agent_browser_click"); err != nil {
 			t.Fatalf("action after restart: %v", err)
+		}
+
+		closed, _ := os.ReadFile(filepath.Join(dir, "closed"))
+		socket, session, _ := strings.Cut(string(closed), "\n")
+		daemon := exec.Command(executable(t), "linger")
+		if err := daemon.Start(); err != nil {
+			t.Fatal(err)
+		}
+		exited := make(chan struct{})
+		go func() { _ = daemon.Wait(); close(exited) }()
+		t.Cleanup(func() { _ = daemon.Process.Kill() })
+		if err := os.WriteFile(filepath.Join(socket, session+".pid"), []byte(strconv.Itoa(daemon.Process.Pid)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.RestartBrowser(ctx, dir, 7); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			t.Fatal("restart reconnected while the old browser daemon ran")
 		}
 	})
 }
@@ -596,6 +618,12 @@ func TestComputerStatus(t *testing.T) {
 		}
 		if status, err := broken.PrepareComputer(ctx, dir, "desktop"); err != nil || status.Available || status.Error == "" {
 			t.Fatalf("missing desktop driver prepare: %+v, %v", status, err)
+		}
+		if status, err := broken.SetBrowserMode(ctx, dir, "headless"); err != nil || status.Available {
+			t.Fatalf("mode change whose browser does not prepare: %+v, %v", status, err)
+		}
+		if err := broken.SettleComputer(ctx, dir, "browser"); code(err) != "COMPUTER_UNCERTAIN" {
+			t.Fatalf("settle after an incomplete restart: %v", err)
 		}
 	})
 }

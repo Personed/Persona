@@ -25,3 +25,21 @@ func (g *group) kill() {
 }
 
 func statusCode(state *os.ProcessState) int { return state.ExitCode() }
+
+// processAlive reports whether pid still runs: it has no exit code yet.
+func processAlive(pid int) bool {
+	handle, err := syscall.OpenProcess(syscall.PROCESS_QUERY_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = syscall.CloseHandle(handle) }()
+	var code uint32
+	const stillActive = 259
+	return syscall.GetExitCodeProcess(handle, &code) == nil && code == stillActive
+}
+
+func killProcess(pid int) {
+	if process, err := os.FindProcess(pid); err == nil {
+		_ = process.Kill()
+	}
+}
