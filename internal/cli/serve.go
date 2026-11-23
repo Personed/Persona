@@ -135,7 +135,14 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		<-run.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		stopped <- httpServer.Shutdown(shutdown)
+		// Shutdown also waits on connections that never sent a request
+		// (StateNew): an unused keep-alive a client dialed must not keep the
+		// process alive past the grace window.
+		if err := httpServer.Shutdown(shutdown); err != nil {
+			stopped <- httpServer.Close()
+			return
+		}
+		stopped <- nil
 	}()
 	fmt.Fprintf(stdout, "persona: listening on http://%s\n", listener.Addr())
 	if *headless {
