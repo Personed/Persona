@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -60,20 +61,33 @@ func processIdentity(ctx context.Context, pid int) (executable string, owned, fo
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		return executable, ok && int(stat.Uid) == os.Getuid(), true, nil
 	}
-	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "uid=", "-o", "comm=").Output()
-	line := strings.TrimSpace(string(output))
-	if line == "" {
+	if runtime.GOOS != "darwin" {
+		return "", false, false, errors.New("process identity is not available on " + runtime.GOOS)
+	}
+	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "uid=").Output()
+	uid := strings.TrimSpace(string(output))
+	if uid == "" {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && exit.ExitCode() == 1 {
 			return "", false, false, nil
 		}
 		if err == nil {
-			err = errors.New("ps reported no process identity")
+			err = errors.New("ps reported no process owner")
 		}
 		return "", false, false, err
 	}
-	uid, comm, _ := strings.Cut(line, " ")
-	return strings.TrimSpace(comm), uid == strconv.Itoa(os.Getuid()), true, nil
+	// ps reports how the process was invoked; lsof reports the executable
+	// it runs, as the first text mapping.
+	output, err = exec.CommandContext(ctx, "lsof", "-a", "-p", strconv.Itoa(pid), "-d", "txt", "-Fn").Output()
+	for _, line := range strings.Split(string(output), "\n") {
+		if name, ok := strings.CutPrefix(line, "n"); ok && filepath.IsAbs(name) {
+			return name, uid == strconv.Itoa(os.Getuid()), true, nil
+		}
+	}
+	if err == nil {
+		err = errors.New("lsof reported no process executable")
+	}
+	return "", false, false, err
 }
 
 // killTree kills pid's process group, which the daemon leads.

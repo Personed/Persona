@@ -632,3 +632,31 @@ func TestComputerStatus(t *testing.T) {
 		}
 	})
 }
+
+func TestBrowserDaemonExecutable(t *testing.T) {
+	platform := map[string]string{"windows": "win32"}[runtime.GOOS]
+	if platform == "" {
+		platform = runtime.GOOS
+	}
+	root := t.TempDir()
+	bin := filepath.Join(root, "node_modules", "agent-browser", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(bin, "agent-browser.js")
+	native := filepath.Join(bin, "agent-browser-"+platform+"-x64")
+	other := filepath.Join(root, "agent-browser-"+platform+"-x64")
+	for _, path := range []string{launcher, native, other} {
+		if err := os.WriteFile(path, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, check := range []struct {
+		executable string
+		want       bool
+	}{{launcher, true}, {native, true}, {other, false}, {filepath.Join(bin, "node"), false}} {
+		if got := browserDaemonExecutable(check.executable, launcher); got != check.want {
+			t.Errorf("browserDaemonExecutable(%s) = %v", check.executable, got)
+		}
+	}
+}
