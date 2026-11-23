@@ -405,26 +405,39 @@ func stopBrowserDaemon(ctx context.Context, config *MCPConfig, pid int) error {
 }
 
 // browserDaemonExecutable reports whether executable runs the browser
-// daemon that launcher starts: the launcher itself, or the native binary next
-// to the npm package's script launcher (bin/agent-browser-<os>-<arch>).
+// daemon that launcher starts: the launcher itself, or the native binary the
+// npm package's script launcher runs from its own bin directory.
 func browserDaemonExecutable(executable, launcher string) bool {
 	if samePath(executable, launcher) {
 		return true
 	}
-	executable, errExecutable := filepath.EvalSymlinks(executable)
-	launcher, errLauncher := filepath.EvalSymlinks(launcher)
-	if errExecutable != nil || errLauncher != nil || !samePath(filepath.Dir(executable), filepath.Dir(launcher)) {
+	launcher, err := filepath.EvalSymlinks(launcher)
+	if err != nil {
 		return false
 	}
-	platform := map[string]string{"windows": "win32"}[runtime.GOOS]
-	if platform == "" {
-		platform = runtime.GOOS
+	for _, name := range browserNativeNames() {
+		if samePath(executable, filepath.Join(filepath.Dir(launcher), name)) {
+			return true
+		}
 	}
-	name := filepath.Base(executable)
-	if runtime.GOOS == "windows" {
-		name = strings.ToLower(name)
+	return false
+}
+
+// browserNativeNames are agent-browser's native binary names for this
+// platform, as its npm launcher selects them.
+func browserNativeNames() []string {
+	arch := map[string]string{"amd64": "x64", "arm64": "arm64"}[runtime.GOARCH]
+	if arch == "" {
+		return nil
 	}
-	return strings.HasPrefix(name, "agent-browser-"+platform+"-")
+	switch runtime.GOOS {
+	case "windows":
+		return []string{"agent-browser-win32-" + arch + ".exe", "agent-browser-win32-x64.exe"}
+	case "linux":
+		return []string{"agent-browser-linux-" + arch, "agent-browser-linux-musl-" + arch}
+	default:
+		return []string{"agent-browser-" + runtime.GOOS + "-" + arch}
+	}
 }
 
 func samePath(a, b string) bool {
