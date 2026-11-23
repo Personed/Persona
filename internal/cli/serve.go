@@ -176,20 +176,23 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		})); err != nil {
 			return err
 		}
+		routineSvc := routines.NewService(records, nil)
+		work.Routines = routineSvc
+		if err := routines.Register(registry, routineSvc); err != nil {
+			return err
+		}
 		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
 			Tools: registry, Approvals: approvals, Memory: memorySvc})
 		if err := runtime.Recover(ctx); err != nil {
 			return err
 		}
-		routineSvc := routines.NewService(records, nil)
-		work.Routines = routineSvc
 		runner := routines.NewRunner(routineSvc,
 			func(ctx context.Context, in routines.RunSubmit) (store.SubmissionID, error) {
 				return runtime.Submit(ctx, agent.SendInput{BotID: in.BotID, Text: in.Text,
 					RequestID: in.RequestID, WhenBusy: "followUp", DisplayText: in.DisplayText,
 					Source: "routine", RoutineRunID: in.RoutineRunID})
 			},
-			runtime.Stop)
+			runtime.Stop, approvals)
 		routineSvc.OnChange = runner.Kick
 		go runner.Start(ctx)
 	}

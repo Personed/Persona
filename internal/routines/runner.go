@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/store"
 )
 
@@ -55,7 +56,10 @@ type Runner struct {
 	// stop revokes a Bot's running turn when a run's execution deadline
 	// expires, the shared Stop path; nil lets an expired run keep waiting.
 	stop func(ctx context.Context, botID int64) error
-	wake chan struct{}
+	// approvals tells a running turn waiting on a user answer or approval
+	// apart from execution, pausing its deadline; nil never waits.
+	approvals *approval.Service
+	wake      chan struct{}
 	// ctx is the runner's own lifetime, set by Start: RunNow's request context
 	// ends when the call returns, so executes must outlive it.
 	ctx  context.Context
@@ -64,8 +68,8 @@ type Runner struct {
 
 // NewRunner attaches to the service: it sets RunNow and returns the runner
 // Start must be called to schedule and recover tasks.
-func NewRunner(s *Service, submit func(ctx context.Context, in RunSubmit) (store.SubmissionID, error), stop func(ctx context.Context, botID int64) error) *Runner {
-	r := &Runner{s: s, submit: submit, stop: stop, wake: make(chan struct{}, 1)}
+func NewRunner(s *Service, submit func(ctx context.Context, in RunSubmit) (store.SubmissionID, error), stop func(ctx context.Context, botID int64) error, approvals *approval.Service) *Runner {
+	r := &Runner{s: s, submit: submit, stop: stop, approvals: approvals, wake: make(chan struct{}, 1)}
 	s.RunNow = r.RunNow
 	return r
 }
@@ -141,7 +145,7 @@ func (r *Runner) due(ctx context.Context) (*time.Time, error) {
 	var nearest *time.Time
 	for i := range doc.Items {
 		item := &doc.Items[i]
-		if !item.Enabled || item.NextAt == nil {
+		if !item.Enabled || item.NextAt == nil || item.TaskID != nil {
 			continue
 		}
 		at := time.UnixMilli(*item.NextAt)
@@ -363,13 +367,9 @@ func (r *Runner) execute(ctx context.Context, taskID store.TaskID) {
 	runID := fmt.Sprintf("%d:%d", taskID, in.At)
 	var pending []store.Write
 	if in.Mode == modeScheduled {
-		if skip, err := r.editRun(ctx, runID, func(run map[string]any, doc *document) (bool, error) {
+		if skip, err := r.editRun(ctx, runID, func(_ map[string]any, doc *document) (bool, error) {
 			routine := findRoutine(doc.Items, in.BotID, in.ID)
-			if routine == nil || !routine.Enabled || routine.Revision != in.Revision {
-				return true, nil
-			}
-			transition(run, "running", r.s.now().UnixMilli())
-			return false, nil
+			return routine == nil || !routine.Enabled || routine.Revision != in.Revision, nil
 		}); err != nil {
 			log.Printf("persona routines: run %s: %v", runID, err)
 			return
@@ -377,12 +377,6 @@ func (r *Runner) execute(ctx context.Context, taskID store.TaskID) {
 			r.terminal(ctx, taskID)
 			return
 		}
-	} else if _, err := r.editRun(ctx, runID, func(run map[string]any, _ *document) (bool, error) {
-		transition(run, "running", r.s.now().UnixMilli())
-		return false, nil
-	}); err != nil {
-		log.Printf("persona routines: run %s: %v", runID, err)
-		return
 	}
 	status, runErr := r.roundtrip(ctx, in, runID)
 	if err := r.finish(ctx, in, runID, status, runErr, &pending); err != nil {
@@ -402,7 +396,6 @@ func (r *Runner) roundtrip(ctx context.Context, in taskInput, runID string) (str
 	if message, _ := run["error"].(string); message != "" {
 		return "failed", message
 	}
-	delivery, _ := run["delivery"].(string)
 	title, _ := run["title"].(string)
 	content, _ := run["content"].(string)
 	requestID, _ := run["requestId"].(string)
@@ -426,8 +419,14 @@ func (r *Runner) roundtrip(ctx context.Context, in taskInput, runID string) (str
 	if executionMs <= 0 {
 		executionMs = DefaultExecutionMs
 	}
-	deadline := time.NewTimer(time.Duration(executionMs) * time.Millisecond)
-	defer deadline.Stop()
+	// The deadline charges only active execution, routine-task.ts's
+	// activeMs/waitingMs: a run queued behind chat or waiting on a user answer
+	// or approval does not burn execution time, so expiry can only revoke the
+	// run's own turn, never an unrelated one.
+	var charged int64
+	var engineTask store.TaskID
+	tracked := "queued"
+	lastTick := r.s.now()
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -446,18 +445,92 @@ func (r *Runner) roundtrip(ctx context.Context, in taskInput, runID string) (str
 				return "failed", "已停止。"
 			}
 		}
-		select {
-		case <-ctx.Done():
-			return "stopped", ""
-		case <-deadline.C:
+		now := r.s.now()
+		state := "queued"
+		if engineTask == 0 {
+			engineTask = r.engineTask(ctx, in.BotID, subID)
+		}
+		if engineTask != 0 {
+			if active, err := r.taskActive(ctx, in.BotID, engineTask); err == nil && active {
+				state = "running"
+			}
+			if state == "running" && r.approvals != nil {
+				if pending, err := r.approvals.Pending(ctx, in.BotID); err == nil && len(pending) > 0 {
+					state = "waiting_approval"
+				}
+			}
+		}
+		if state == "running" {
+			charged += now.Sub(lastTick).Milliseconds()
+		}
+		lastTick = now
+		if state != tracked {
+			next := state
+			if _, err := r.editRun(ctx, runID, func(run map[string]any, _ *document) (bool, error) {
+				transition(run, next, now.UnixMilli())
+				return false, nil
+			}); err == nil {
+				tracked = state
+			}
+		}
+		if charged >= int64(executionMs) {
 			if r.stop != nil {
 				_ = r.stop(ctx, in.BotID)
 			}
 			return "stopped", ""
+		}
+		select {
+		case <-ctx.Done():
+			return "stopped", ""
 		case <-tick.C:
 		}
-		_ = delivery
 	}
+}
+
+// engineTask resolves the run's engine turn task once its submission is
+// admitted; its kind is agent.EngineTurn, which routines cannot import.
+func (r *Runner) engineTask(ctx context.Context, botID int64, subID store.SubmissionID) store.TaskID {
+	tasks, err := r.s.store.Tasks(ctx, store.TaskQuery{
+		ConversationID: store.ConversationID(botID), Kind: "persona.engine-turn"}, store.Scan{Limit: 200})
+	if err != nil {
+		return 0
+	}
+	for _, task := range tasks.Items {
+		if task.State.Status == store.TaskTerminal {
+			continue
+		}
+		var input struct {
+			SubmissionID store.SubmissionID `json:"submissionId"`
+		}
+		if json.Unmarshal(task.Input, &input) == nil && input.SubmissionID == subID {
+			return task.ID
+		}
+	}
+	return 0
+}
+
+// taskActive reports whether the run's engine turn is the Bot's active task,
+// reading the conversation's persona.engine document.
+func (r *Runner) taskActive(ctx context.Context, botID int64, taskID store.TaskID) (bool, error) {
+	meta, err := r.s.store.FindDocument(ctx, "persona.engine",
+		store.Scope{Kind: "conversation", ConversationID: store.ConversationID(botID)}, "", store.Current)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	value, err := r.s.store.Document(ctx, meta.ID, store.Current)
+	if err != nil {
+		return false, err
+	}
+	var doc struct {
+		ActiveID *int64 `json:"activeId"`
+	}
+	if err := json.Unmarshal(value.Value, &doc); err != nil {
+		return false, err
+	}
+	return doc.ActiveID != nil && *doc.ActiveID == int64(taskID), nil
 }
 
 // finish settles the run receipt and reschedules or disables the routine,
@@ -557,6 +630,11 @@ func (r *Runner) finish(ctx context.Context, in taskInput, runID, status, runErr
 	}
 	batch := append(store.Batch{write}, extra...)
 	_, _, err = r.s.store.Commit(ctx, []store.Batch{batch})
+	if err == nil && in.Mode == modeScheduled {
+		// The scheduler may be sleeping until the old nextAt; wake it for the
+		// new one so a recurring routine does not skip its next fire.
+		r.Kick()
+	}
 	return err
 }
 
