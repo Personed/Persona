@@ -42,9 +42,6 @@ export const goGaps: Record<string, string[]> = {
     "Work follows a native turn, opens its record and preserves it after stop and reload",
     "monitoring stays quiet, delivers one result and opens the native Work record",
   ],
-  "native Harness controls: unhosted persona serve offers no device pairing": [
-    "native Harness controls persist and client accounts retain model access",
-  ],
 };
 
 export const goGapPatterns = Object.values(goGaps)
