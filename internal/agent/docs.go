@@ -1,6 +1,10 @@
 package agent
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/Personed/Persona/internal/memory"
+)
 
 // ModelRef selects a model of a provider.
 type ModelRef struct {
@@ -175,6 +179,11 @@ type MemoryReview struct {
 	Through   *int64 `json:"through"`
 }
 
+// MemoryItems is the persona.memory document that internal/memory owns.
+type MemoryItems struct {
+	Items []memory.Entry `json:"items"`
+}
+
 // MemorySnapshot is the profile text an engine task was started with.
 type MemorySnapshot struct {
 	Text       string `json:"text"`
@@ -199,7 +208,8 @@ var (
 		Initial: func() EngineInput { return EngineInput{Status: "queued"} }}
 	MemoryReviewDoc = Doc[MemoryReview]{Kind: "persona.memory-review", Scope: "conversation", History: "latest", Fork: "initial",
 		Initial: func() MemoryReview { return MemoryReview{Enabled: true} }}
-	MemorySnapshotDoc = Doc[MemorySnapshot]{Kind: "persona.memory-snapshot", Scope: "task"}
+	MemoryDoc         = Doc[MemoryItems]{Kind: memory.DocKind, Scope: "session"}
+	MemorySnapshotDoc = Doc[MemorySnapshot]{Kind: memory.SnapshotDocKind, Scope: "task"}
 	UsageTaskDoc      = Doc[TaskItems]{Kind: "persona.engine-usage", Scope: "task", Initial: emptyItems}
 	CompactionTaskDoc = Doc[TaskItems]{Kind: "persona.engine-compaction", Scope: "task", Initial: emptyItems}
 )
