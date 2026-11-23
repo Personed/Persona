@@ -110,6 +110,10 @@ func TestSessionStorePreservesTypescriptDevices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A real TypeScript profile carries its credential key beside the database.
+	if err := os.WriteFile(filepath.Join(dir, "credentials.key"), make([]byte, 32), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UnixMilli()
 	oldToken := "typescript-session-token"
 	if _, err := db.Exec(`

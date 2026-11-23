@@ -18,6 +18,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite" // sqlite driver for database/sql
+
+	"github.com/Personed/Persona/internal/hosting"
 )
 
 // Session policy mirrors packages/hosting/src/sessions.ts.
@@ -41,6 +43,7 @@ type SessionStore struct {
 	attempts int
 	window   int64
 	tracked  map[string]*sessionTracker
+	revoked  map[string]bool
 	now      func() time.Time
 }
 
@@ -57,6 +60,12 @@ type sessionTracker struct {
 // sessions.json build wrote move into the shared tables once.
 func NewSessionStore(dir string) (*SessionStore, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	// The credential key must exist before hosting.sqlite does: creating the
+	// database without it would strand the profile for OpenCredentials and
+	// for the TypeScript backup's credential-key check.
+	if err := hosting.EnsureCredentialKey(dir); err != nil {
 		return nil, err
 	}
 	db, err := openSessionDB(filepath.Join(dir, "hosting.sqlite"))
@@ -80,7 +89,11 @@ func NewSessionStore(dir string) (*SessionStore, error) {
 	if err := importLegacySessions(dir, db); err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
-	return &SessionStore{dir: dir, db: db, tracked: map[string]*sessionTracker{}, now: time.Now}, nil
+	return &SessionStore{
+		dir: dir, db: db,
+		tracked: map[string]*sessionTracker{}, revoked: map[string]bool{},
+		now: time.Now,
+	}, nil
 }
 
 func openSessionDB(filename string) (*sql.DB, error) {
@@ -122,15 +135,20 @@ type sessionFile struct {
 }
 
 // importLegacySessions moves rows the earlier sessions.json store wrote into
-// the shared SQLite tables, then retires the file. Revoked devices never
-// landed there, and queries still filter expired rows out.
+// the shared SQLite tables. The file is retired before the rows are copied:
+// an interruption then loses legacy devices rather than re-importing — and
+// possibly resurrecting — sessions the TypeScript service revoked meanwhile.
 func importLegacySessions(dir string, db *sql.DB) error {
 	filename := filepath.Join(dir, "sessions.json")
-	data, err := os.ReadFile(filename)
-	if err != nil {
+	migrated := filename + ".migrated"
+	if err := os.Rename(filename, migrated); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
+		return err
+	}
+	data, err := os.ReadFile(migrated)
+	if err != nil {
 		return err
 	}
 	var file sessionFile
@@ -158,10 +176,7 @@ func importLegacySessions(dir string, db *sql.DB) error {
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return os.Rename(filename, filename+".migrated")
+	return tx.Commit()
 }
 
 func (s *SessionStore) ownerCode() string { return filepath.Join(s.dir, "owner-code") }
@@ -286,11 +301,21 @@ func (s *SessionStore) Authenticate(token string) (Device, bool) {
 	if err != nil {
 		return Device{}, false
 	}
+	s.mu.Lock()
+	revoked := s.revoked[d.ID]
+	s.mu.Unlock()
+	if revoked {
+		return Device{}, false
+	}
 	return d, true
 }
 
-// Revoke removes a device, refusing the last admin device.
+// Revoke removes a device, refusing the last admin device. The count and the
+// delete stay under one mutex so two concurrent revokes cannot both pass the
+// check before either removes an admin.
 func (s *SessionStore) Revoke(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var scope string
 	err := s.db.QueryRow("SELECT scope FROM devices WHERE id=?", id).Scan(&scope)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -308,22 +333,28 @@ func (s *SessionStore) Revoke(id string) error {
 			return errors.New("server: keep at least one admin device")
 		}
 	}
-	return s.logout(id)
+	return s.logoutLocked(id)
 }
 
 // Logout removes a device and ends its tracked contexts.
-func (s *SessionStore) Logout(id string) { _ = s.logout(id) }
+func (s *SessionStore) Logout(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = s.logoutLocked(id)
+}
 
-func (s *SessionStore) logout(id string) error {
+// logoutLocked deletes the device row. When the delete fails but reads still
+// work, the device is remembered as revoked for this process's lifetime: a
+// logout reported to the client must not leave the token authenticating.
+func (s *SessionStore) logoutLocked(id string) error {
 	if _, err := s.db.Exec("DELETE FROM devices WHERE id=?", id); err != nil {
+		s.revoked[id] = true
 		return err
 	}
-	s.mu.Lock()
 	if t := s.tracked[id]; t != nil {
 		t.cancel()
 		delete(s.tracked, id)
 	}
-	s.mu.Unlock()
 	return nil
 }
 
