@@ -381,6 +381,11 @@ func (s *Service) apply(ctx context.Context, botID int64, change Change, request
 		if stored.Revision != item.Revision {
 			return nil, nil, &Error{Conflict, "内容已更新，请刷新后重试。"}
 		}
+		// Runner.finish commits a newer baseline without bumping the revision;
+		// keep it unless this change itself reset the monitoring state.
+		if previous != nil && item.Baseline == previous.Baseline && item.NotifiedKey == previous.NotifiedKey {
+			item.Baseline, item.NotifiedKey = stored.Baseline, stored.NotifiedKey
+		}
 	}
 	switch change.Action {
 	case "run_now":

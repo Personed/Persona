@@ -171,6 +171,40 @@ func TestEnableSkipsConfirmation(t *testing.T) {
 	}
 }
 
+// A conditional run that finishes while the user reviews the card commits its
+// baseline without bumping the revision; the approved change must keep it.
+func TestApplyKeepsBaselineCommittedDuringConfirm(t *testing.T) {
+	ctx := context.Background()
+	service, records := newService(t)
+	created := create(t, service, 1, "r1")
+	service.Confirm = func(context.Context, int64, approval.Request) (bool, error) {
+		listing, err := service.List(ctx, 1)
+		if err != nil {
+			return false, err
+		}
+		listing.Items[0].Baseline = "new baseline"
+		listing.Items[0].NotifiedKey = "new key"
+		payload, err := json.Marshal(map[string]any{"items": listing.Items, "runs": listing.Runs})
+		if err != nil {
+			return false, err
+		}
+		writeDocument(t, records, routines.DocKind, string(payload))
+		return true, nil
+	}
+	change := routines.Change{Action: "update", ID: created.ID, Revision: pointer(created.Revision), Title: pointer("Renamed")}
+	if _, err := service.Manage(ctx, 1, change, "r2", "user"); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := service.List(ctx, 1)
+	if err != nil || len(listing.Items) != 1 {
+		t.Fatalf("List = %+v, %v", listing, err)
+	}
+	got := listing.Items[0]
+	if got.Baseline != "new baseline" || got.NotifiedKey != "new key" || got.Title != "Renamed" || got.Revision != 2 {
+		t.Fatalf("committed routine = %+v", got)
+	}
+}
+
 func TestValidation(t *testing.T) {
 	ctx := context.Background()
 	service, records := newService(t)
