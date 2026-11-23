@@ -53,6 +53,9 @@ type Config struct {
 type Engine struct {
 	config Config
 	pool   *Pool[*conn]
+
+	loginsMu sync.Mutex
+	logins   map[*Login]struct{}
 }
 
 var _ engine.Engine = (*Engine)(nil)
@@ -86,8 +89,19 @@ func New(config Config) *Engine {
 // Live returns how many Bots currently have a Pi process.
 func (e *Engine) Live() int { return e.pool.Live() }
 
-// Close stops every Pi process and waits for them to exit.
-func (e *Engine) Close() { e.pool.Close() }
+// Close stops every Pi process, including pending logins, and waits for them to exit.
+func (e *Engine) Close() {
+	e.loginsMu.Lock()
+	logins := make([]*Login, 0, len(e.logins))
+	for l := range e.logins {
+		logins = append(logins, l)
+	}
+	e.loginsMu.Unlock()
+	for _, l := range logins {
+		l.Cancel()
+	}
+	e.pool.Close()
+}
 
 // Info reports the installed Pi version.
 func (e *Engine) Info(ctx context.Context) (engine.Info, error) {

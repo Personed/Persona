@@ -61,6 +61,10 @@ func runFakePi(mode string) {
 
 // answer emulates the parts of Pi's RPC mode the tests use.
 func answer() {
+	if os.Getenv("PERSONA_PI_LOGIN") == "1" {
+		fakeLogin()
+		return
+	}
 	out := json.NewEncoder(os.Stdout)
 	emit := func(record map[string]any) { _ = out.Encode(record) }
 	file := fmt.Sprintf("/sessions/%d-0.jsonl", os.Getpid())
@@ -132,5 +136,51 @@ func answer() {
 			continue
 		}
 		reply()
+	}
+}
+
+// fakeLogin emulates pi-auth.mjs: pick a provider, open a link, paste a code.
+func fakeLogin() {
+	out := json.NewEncoder(os.Stdout)
+	emit := func(record map[string]any) { _ = out.Encode(record) }
+	notify := func(value map[string]any) {
+		encoded, _ := json.Marshal(value)
+		emit(map[string]any{"type": "extension_ui_request", "id": "n", "method": "notify", "message": "persona-auth:" + string(encoded)})
+	}
+	extension := slices.Contains(os.Args[1:], "--extension") && os.Getenv("PERSONA_TEST_NO_AUTH") == ""
+	scanner := bufio.NewScanner(os.Stdin)
+	prompt := ""
+	for scanner.Scan() {
+		var command map[string]any
+		if json.Unmarshal(scanner.Bytes(), &command) != nil {
+			continue
+		}
+		id, _ := command["id"].(string)
+		switch command["type"] {
+		case "get_commands":
+			commands := []map[string]string{{"name": "skill:x"}}
+			if extension {
+				commands = append(commands, map[string]string{"name": "persona-auth"})
+			}
+			emit(map[string]any{"id": id, "type": "response", "command": "get_commands", "success": true, "data": map[string]any{"commands": commands}})
+		case "prompt":
+			prompt = id
+			emit(map[string]any{"type": "extension_ui_request", "id": "p1", "method": "select", "title": "模型提供方", "options": []string{"anthropic"}})
+		case "extension_ui_response":
+			switch command["id"] {
+			case "p1":
+				notify(map[string]any{"type": "auth_url", "url": "https://auth.example/login?x=1", "instructions": "Open the link"})
+				notify(map[string]any{"type": "auth_url", "url": "http://evil.example/"})
+				notify(map[string]any{"secret": true})
+				emit(map[string]any{"type": "extension_ui_request", "id": "p2", "method": "input", "title": "Code"})
+			case "p2":
+				state := "failed"
+				if command["value"] == "good" {
+					state = "done"
+				}
+				notify(map[string]any{"state": state})
+				emit(map[string]any{"id": prompt, "type": "response", "command": "prompt", "success": true})
+			}
+		}
 	}
 }
