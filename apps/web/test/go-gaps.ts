@@ -19,10 +19,6 @@ export const goGaps: Record<string, string[]> = {
       "takeover controls the Agent browser and preserves its layout through fullscreen",
       "working contacts retain green status across switches, concurrent work, reload, and stop",
     ],
-  "routine runner: persona.routine tasks and work.routines.test are unported (Go only runs engine/chat turns)":
-    [
-      "Bot details manage identity, memory, shared skills, routines and actual prompts",
-    ],
   "engine controls: Go lists Pi's local model IDs without display names, efforts or native controls":
     [
       "Bot model selection saves choices and fits both themes",
