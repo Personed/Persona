@@ -404,14 +404,34 @@ func (s *SessionStore) Track(device Device) (context.Context, func()) {
 }
 
 // Bootstrap writes a new owner pairing code when no admin device is left.
+// A device whose delete failed still sits in the table but is revoked for
+// this process, so it must not count as a surviving admin.
 func (s *SessionStore) Bootstrap() error {
 	now := millis(s.now())
-	var admins int
-	if err := s.db.QueryRow(
-		"SELECT COUNT(*) FROM devices WHERE scope='admin' AND expires>?", now,
-	).Scan(&admins); err != nil {
+	rows, err := s.db.Query(
+		"SELECT id FROM devices WHERE scope='admin' AND expires>?", now,
+	)
+	if err != nil {
 		return err
 	}
+	admins := 0
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		s.mu.Lock()
+		if !s.revoked[id] {
+			admins++
+		}
+		s.mu.Unlock()
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
 	if admins > 0 {
 		return nil
 	}

@@ -132,7 +132,20 @@ func openCredentialKey(directory string) ([]byte, error) {
 		if errors.Is(err, fs.ErrExist) {
 			return readCredentialKey(filename)
 		}
-		return nil, err
+		// Filesystems without hard links (exFAT) get an atomic no-clobber
+		// publish through O_EXCL instead.
+		file, openErr := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if openErr != nil {
+			if errors.Is(openErr, fs.ErrExist) {
+				return readCredentialKey(filename)
+			}
+			return nil, errors.Join(err, openErr)
+		}
+		_, writeErr := file.Write(key)
+		if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
+			_ = os.Remove(filename)
+			return nil, err
+		}
 	}
 	return key, nil
 }
