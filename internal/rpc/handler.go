@@ -75,6 +75,12 @@ func (s *Server) HandleStream(path string, h Stream) {
 	s.lookup(path, "stream").stream = h
 }
 
+// Registered reports whether the contract procedure at path has a handler.
+func (s *Server) Registered(path string) bool {
+	p, ok := s.procedures[contract.Procedure{Path: path}.HTTPPath(s.prefix)]
+	return ok && (p.unary != nil || p.stream != nil)
+}
+
 func (s *Server) lookup(path, kind string) *procedure {
 	p, ok := s.procedures[contract.Procedure{Path: path}.HTTPPath(s.prefix)]
 	if !ok || p.Kind != kind {

@@ -42,12 +42,13 @@ func TestRun(t *testing.T) {
 // startServe runs serve with args and returns its URL; the server stops when the test ends.
 func startServe(t *testing.T, args ...string) string {
 	t.Helper()
+	data := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	reader, writer := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
 		defer writer.Close()
-		done <- serve(ctx, append([]string{"--port", "0", "--contract", filepath.Join("..", "..", "contracts", "api")}, args...), writer)
+		done <- serve(ctx, append([]string{"--port", "0", "--data", data, "--contract", filepath.Join("..", "..", "contracts", "api")}, args...), writer)
 	}()
 	lines := make(chan string, 1)
 	go func() {
