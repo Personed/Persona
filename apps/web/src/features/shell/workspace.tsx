@@ -71,10 +71,12 @@ export function Workspace({
     window.addEventListener("pointerdown", interrupt, true);
     window.addEventListener("keydown", interrupt, true);
     window.addEventListener("beforeinput", interrupt, true);
+    window.addEventListener("input", interrupt, true);
     return () => {
       window.removeEventListener("pointerdown", interrupt, true);
       window.removeEventListener("keydown", interrupt, true);
       window.removeEventListener("beforeinput", interrupt, true);
+      window.removeEventListener("input", interrupt, true);
     };
   }, [sizing.root]);
   const dragChange = useCallback(
