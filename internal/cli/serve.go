@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -224,9 +225,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	// The takeover card lifecycle is the computers slice's part of engines.*.
 	server.RegisterComputerTakeover(procedures, catalog, approvals)
 	server.RegisterWork(procedures, bots, runtime, work)
-	// Until the computer runtime is composed, managed MCP connections have no
-	// Runner or native catalog, and no OAuth callback route is served.
-	server.RegisterMCP(procedures, bots, mcp.NewService(records, credentials, nil), "")
+	connections := mcp.NewService(records, credentials, nil)
+	connections.Runner = catalog.MCPRunner()
+	service.MCP = connections
 	service.Files = server.AgentFiles(bots.Files)
 	if !*headless {
 		if service.Static, err = webFS(*static); err != nil {
@@ -240,6 +241,16 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	if service.Hosting == nil {
 		service.PublicURL = "http://" + listener.Addr().String()
 	}
+	public := service.PublicURL
+	if service.Hosting != nil {
+		public = service.Hosting.PublicURL
+	}
+	base, err := url.Parse(public)
+	if err != nil {
+		_ = listener.Close()
+		return err
+	}
+	server.RegisterMCP(procedures, bots, connections, base.ResolveReference(&url.URL{Path: "/mcp/oauth/callback"}).String())
 	handler, err := server.New(service)
 	if err != nil {
 		_ = listener.Close()

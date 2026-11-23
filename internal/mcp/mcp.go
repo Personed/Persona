@@ -548,6 +548,46 @@ func (s *Service) Logout(ctx context.Context, id string, cancel bool) error {
 	return err
 }
 
+// Complete finishes the browser sign-in that state names with the
+// authorization code from the OAuth callback, then checks the connection.
+func (s *Service) Complete(ctx context.Context, state, code string) error {
+	id, _, _ := strings.Cut(state, ".")
+	item, secret, err := s.secret(ctx, id)
+	if err != nil {
+		return err
+	}
+	if secret.Pending == "" || secret.Pending != state || s.Runner == nil {
+		return &Error{BadRequest, "授权请求已失效。"}
+	}
+	result, err := s.Runner.Run(ctx, item.ComputerID, Operation{Action: "complete",
+		Secret: secret, State: state, AuthorizationCode: code})
+	if err != nil {
+		return err
+	}
+	current, currentSecret, err := s.secret(ctx, id)
+	if err != nil {
+		return err
+	}
+	if currentSecret.Pending != state || current.Revision != item.Revision {
+		return &Error{Conflict, "授权已取消或连接已更改。"}
+	}
+	if err := s.replace(ctx, item, Secret{Config: secret.Config, OAuth: result.OAuth, RedirectURL: secret.RedirectURL}); err != nil {
+		return err
+	}
+	if err := s.commit(ctx, func(doc *document) (bool, error) {
+		live := find(doc, id)
+		if live == nil || live.Revision != item.Revision {
+			return false, nil
+		}
+		live.AuthorizationPending = nil
+		return true, nil
+	}); err != nil {
+		return err
+	}
+	_, err = s.Check(ctx, id)
+	return err
+}
+
 func ref(credential string) hosting.Ref { return hosting.Ref{Scope: "mcp", Name: credential} }
 
 // apiKey is the pi-ai credential JSON the TypeScript service stores a secret in.

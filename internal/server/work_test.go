@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,11 +43,18 @@ func (m memoryCredentials) List(context.Context, string, string) ([]hosting.Cred
 	return nil, nil
 }
 
-// fakeRunner answers every inspection with one tool.
+// fakeRunner answers every inspection with one tool and every sign-in with
+// an authorization URL.
 type fakeRunner struct{ ops []mcp.Operation }
 
 func (r *fakeRunner) Run(_ context.Context, _ string, op mcp.Operation) (mcp.Outcome, error) {
 	r.ops = append(r.ops, op)
+	switch op.Action {
+	case "authorize":
+		return mcp.Outcome{OAuth: json.RawMessage(`{"verifier":"v"}`), AuthorizationURL: "https://auth.example/authorize"}, nil
+	case "complete":
+		return mcp.Outcome{OAuth: json.RawMessage(`{"tokens":{"access_token":"t"}}`)}, nil
+	}
 	return mcp.Outcome{Tools: json.RawMessage(`[{"name":"search"}]`), Capabilities: json.RawMessage(`{}`)}, nil
 }
 
@@ -56,7 +65,9 @@ type workFixture struct {
 	runner      *fakeRunner
 }
 
-func workService(t *testing.T) workFixture {
+func workService(t *testing.T) workFixture { return workServiceWith(t, "") }
+
+func workServiceWith(t *testing.T, callback string) workFixture {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -78,8 +89,8 @@ func workService(t *testing.T) workFixture {
 		Skills: packages})
 	connections := mcp.NewService(records, f.credentials, nil)
 	connections.Runner = f.runner
-	RegisterMCP(procedures, a, connections, "")
-	if f.h, err = New(Config{RPC: procedures}); err != nil {
+	RegisterMCP(procedures, a, connections, callback)
+	if f.h, err = New(Config{RPC: procedures, MCP: connections}); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -190,5 +201,36 @@ func TestMCPProcedures(t *testing.T) {
 	}
 	if len(f.runner.ops) != 1 || f.runner.ops[0].Action != "inspect" || !strings.Contains(string(f.runner.ops[0].Config), "example.com") {
 		t.Errorf("runner operations = %+v", f.runner.ops)
+	}
+}
+
+func TestMCPOAuthCompletion(t *testing.T) {
+	f := workServiceWith(t, "https://persona.example/mcp/oauth/callback")
+	const id = `"22222222-2222-4222-8222-222222222222"`
+	f.run(t, []exchange{
+		{"mcp.save", `{"id":` + id + `,"revision":0,"name":"Docs","computerId":"local","enabled":true,"config":{"transport":"http","url":"https://example.com/mcp"}}`, 200, `"status":"configured"`},
+		{"mcp.login", `{"id":` + id + `}`, 200, `"https://auth.example/authorize"`},
+		{"mcp.list", `{}`, 200, `"authorizationPending":true`},
+	})
+	authorize := f.runner.ops[len(f.runner.ops)-1]
+	if authorize.Action != "authorize" || authorize.RedirectURL != "https://persona.example/mcp/oauth/callback" {
+		t.Fatalf("authorize = %+v", authorize)
+	}
+	callback := func() *httptest.ResponseRecorder {
+		return do(f.h, req{method: "GET", path: "/mcp/oauth/callback?state=" + url.QueryEscape(authorize.State) + "&code=c"})
+	}
+	if w := callback(); w.Code != 200 || !strings.Contains(w.Body.String(), "授权已完成") {
+		t.Fatalf("callback = %d %s", w.Code, w.Body)
+	}
+	ops := f.runner.ops[len(f.runner.ops)-2:]
+	if ops[0].Action != "complete" || ops[0].AuthorizationCode != "c" || ops[0].State != authorize.State ||
+		string(ops[0].OAuth) != `{"verifier":"v"}` || ops[1].Action != "inspect" || string(ops[1].OAuth) != `{"tokens":{"access_token":"t"}}` {
+		t.Fatalf("operations after callback = %+v", ops)
+	}
+	if _, body := call(t, f.h, "mcp.list", `{}`); !strings.Contains(body, `"status":"ready"`) || strings.Contains(body, "authorizationPending") {
+		t.Errorf("mcp.list after callback = %s", body)
+	}
+	if w := callback(); w.Code != 400 {
+		t.Errorf("repeated callback = %d %s", w.Code, w.Body)
 	}
 }
