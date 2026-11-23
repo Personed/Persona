@@ -208,9 +208,9 @@ func (t *Target) close(context.Context) error {
 // workDir is the Bot workspace on the computer (SandboxWorkspace in index.ts).
 func (t *Target) workDir(botID int64) string {
 	if t.drv == nil {
-		return filepath.Join(t.cfg.DataDir, "agent.sqlite.files", "bots", strconv.FormatInt(botID, 10), "workspace")
+		return filepath.Join(t.cfg.DataDir, "agent.sqlite.files", strconv.FormatInt(botID, 10), "workspace")
 	}
-	return t.drv.directory() + "/bots/" + strconv.FormatInt(botID, 10) + "/workspace"
+	return t.drv.directory() + "/bots/" + strconv.FormatInt(botID, 10)
 }
 
 // transport returns the worker.Transport reaching this computer's worker and

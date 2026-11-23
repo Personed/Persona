@@ -110,7 +110,12 @@ func (s *services) workerFor(ctx context.Context, botID int64, service string) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if w := s.workers[key]; w != nil {
-		return *w, target.workDir(botID), nil
+		if s.records[key] == record.ID {
+			return *w, target.workDir(botID), nil
+		}
+		_ = (*w).Close()
+		delete(s.workers, key)
+		delete(s.records, key)
 	}
 	transport, workDir, err := target.transport(botID)
 	if err != nil {
@@ -229,7 +234,11 @@ func (c *Catalog) Workspace(ctx context.Context, botID int64) (computer.Target, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if w := s.workers[key]; w != nil {
-		if client, ok := (*w).(*worker.Client); ok {
+		if s.records[key] != record.ID {
+			_ = (*w).Close()
+			delete(s.workers, key)
+			delete(s.records, key)
+		} else if client, ok := (*w).(*worker.Client); ok {
 			return client, target.workDir(botID), nil
 		}
 	}
