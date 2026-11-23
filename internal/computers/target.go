@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"sync"
@@ -85,8 +86,8 @@ func (t *Target) bind() error {
 	previous, err := os.ReadFile(filename)
 	switch {
 	case err == nil:
-		var a, b json.RawMessage
-		if json.Unmarshal(previous, &a) != nil || json.Unmarshal(binding, &b) != nil || string(a) != string(b) {
+		var a, b any
+		if json.Unmarshal(previous, &a) != nil || json.Unmarshal(binding, &b) != nil || !reflect.DeepEqual(a, b) {
 			return errors.New("执行目标已改变。请停止 Persona，备份工作文件并确认迁移，再移除 computer.json 后启动。")
 		}
 	case errors.Is(err, os.ErrNotExist):

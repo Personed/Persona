@@ -34,6 +34,8 @@ type SSH struct {
 	User           string `json:"user,omitempty"`
 	IdentityFile   string `json:"identityFile,omitempty"`
 	KnownHostsFile string `json:"knownHostsFile,omitempty"`
+	HostKeyAlias   string `json:"hostKeyAlias,omitempty"`
+	ConfigFile     string `json:"configFile,omitempty"`
 }
 
 // Scope restricts a computer to shared use or one Bot.

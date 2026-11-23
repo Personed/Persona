@@ -83,6 +83,19 @@ func (s *services) binding(ctx context.Context, botID int64, service string) (*R
 	if err != nil {
 		return nil, nil, err
 	}
+	// The same gates as catalog.ts workspace: a revoked or mid-operation
+	// computer must not serve its retained binding.
+	if !record.Authorized {
+		return nil, nil, errUnavailable("这台电脑的授权已撤销。")
+	}
+	if s.c.isChanging(record.ID) {
+		return nil, nil, rpc.NewError("CONFLICT", "工作电脑正在操作中。")
+	}
+	if record.Scope != nil {
+		if err := s.c.ensureReady(ctx, record.ID); err != nil {
+			return nil, nil, err
+		}
+	}
 	return record, s.c.target(*record), nil
 }
 
