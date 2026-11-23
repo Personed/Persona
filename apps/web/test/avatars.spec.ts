@@ -197,6 +197,6 @@ test("plush identities load, animate and survive profile changes", async ({
     expect(errors).toEqual([]);
   } finally {
     await stopWorker(worker);
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 10 });
   }
 });

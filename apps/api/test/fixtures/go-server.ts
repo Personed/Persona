@@ -3,12 +3,18 @@
 // model calls the way web-server.ts's faux provider does. Commands that need
 // the TypeScript runtime (tool calls, seeded records, approvals, the work
 // browser) answer { type: "unsupported" }.
-import { execFileSync, spawn } from "node:child_process";
+import {
+  type ChildProcessWithoutNullStreams,
+  execFileSync,
+  spawn,
+} from "node:child_process";
+import { once } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const database = process.argv[2];
@@ -125,6 +131,7 @@ await new Promise<void>((resolve) => ollama.listen(0, "127.0.0.1", resolve));
 const ollamaAddress = ollama.address();
 if (!ollamaAddress || typeof ollamaAddress === "string")
   throw new Error("Port required");
+const ollamaPort = ollamaAddress.port;
 
 let binary = process.env.PERSONA_GO_BIN;
 if (!binary) {
@@ -138,6 +145,7 @@ if (!binary) {
     stdio: "inherit",
   });
 }
+const command = binary;
 const agentDir = join(directory, "pi-agent");
 await mkdir(agentDir, { recursive: true });
 await writeFile(
@@ -145,46 +153,69 @@ await writeFile(
   JSON.stringify({ defaultProvider: "ollama", defaultModel: "faux-1" }),
 );
 const bin = join(root, "packages", "agent", "node_modules", ".bin");
-const service = spawn(
-  binary,
-  [
-    "serve",
-    "-host",
-    "127.0.0.1",
-    "-port",
-    process.argv[3] ?? "0",
-    "-data",
-    join(directory, "go-data"),
-    "-static",
-    process.env.PERSONA_TEST_STATIC_DIR ?? join(root, "apps", "web", "dist"),
-    "-contract",
-    join(root, "contracts", "api"),
-    "-pi-extension",
-    join(root, "packages", "agent", "src", "harness", "pi-tools.mjs"),
-  ],
-  {
-    // Outside the repository so persona.config.json does not select hosted mode.
-    cwd: directory,
-    env: {
-      ...process.env,
-      OLLAMA_HOST: `http://127.0.0.1:${ollamaAddress.port}`,
-      PI_CODING_AGENT_DIR: agentDir,
-      PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
-    },
-    stdio: ["pipe", "pipe", "inherit"],
-  },
-);
-service.on("exit", () => process.exit(1));
-if (!service.stdout) throw new Error("Service output required");
-for await (const line of createInterface({ input: service.stdout })) {
-  const address = /listening on http:\/\/[^:]+:(\d+)/.exec(line);
-  if (address) {
-    const port = Number(address[1]);
-    await configure(`http://127.0.0.1:${port}`);
-    process.send?.({ type: "ready", port, toolName: "" });
-    break;
+// A killed fixture leaves its serve process to stop after stdin closes, so a
+// restart on the same data directory waits for that process to release it.
+async function startService(): Promise<{
+  child: ChildProcessWithoutNullStreams;
+  port: number;
+}> {
+  for (let attempt = 0; ; attempt++) {
+    const child = spawn(
+      command,
+      [
+        "serve",
+        "-host",
+        "127.0.0.1",
+        "-port",
+        process.argv[3] ?? "0",
+        "-data",
+        join(directory, "go-data"),
+        "-static",
+        process.env.PERSONA_TEST_STATIC_DIR ??
+          join(root, "apps", "web", "dist"),
+        "-contract",
+        join(root, "contracts", "api"),
+        "-pi-extension",
+        join(root, "packages", "agent", "src", "harness", "pi-tools.mjs"),
+      ],
+      {
+        // Outside the repository so persona.config.json does not select hosted mode.
+        cwd: directory,
+        env: {
+          ...process.env,
+          OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+          PI_CODING_AGENT_DIR: agentDir,
+          PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    let errors = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      errors += chunk;
+      process.stderr.write(chunk);
+    });
+    const exited = once(child, "exit").then(() => null);
+    const listening = (async () => {
+      for await (const line of createInterface({ input: child.stdout })) {
+        const address = /listening on http:\/\/[^:]+:(\d+)/.exec(line);
+        if (address) return Number(address[1]);
+      }
+      return null;
+    })();
+    const port = await Promise.race([listening, exited]);
+    if (port !== null) return { child, port };
+    await exited;
+    if (!errors.includes("data directory is in use") || attempt >= 100)
+      process.exit(1);
+    await delay(100);
   }
 }
+
+const { child: service, port } = await startService();
+service.on("exit", () => process.exit(1));
+await configure(`http://127.0.0.1:${port}`);
+process.send?.({ type: "ready", port, toolName: "" });
 service.stdout.resume();
 
 // web-server.ts opens every Bot with the faux model and prepares its engine;

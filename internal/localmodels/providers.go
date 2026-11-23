@@ -82,8 +82,10 @@ func (s Server) ProviderConfig() ProviderConfig {
 }
 
 // SyncProviders merges the detected servers into the models.json at path.
-// Providers of other kinds are kept, and a re-detected provider keeps its
-// stored apiKey. It reports whether the file changed.
+// Providers of other kinds are kept. A provider that is already present keeps
+// every field and model it has, so user settings survive, and only gains the
+// fields and models it lacks; models no longer served stay until the user
+// removes them. It reports whether the file changed.
 func SyncProviders(path string, servers []Server) (bool, error) {
 	raw := map[string]json.RawMessage{}
 	if content, err := os.ReadFile(path); err == nil {
@@ -102,18 +104,9 @@ func SyncProviders(path string, servers []Server) (bool, error) {
 	}
 	for _, server := range servers {
 		id := string(server.Kind)
-		config := server.ProviderConfig()
-		if existing, ok := providers[id]; ok {
-			var prior struct {
-				APIKey string `json:"apiKey"`
-			}
-			if json.Unmarshal(existing, &prior) == nil && prior.APIKey != "" {
-				config.APIKey = prior.APIKey
-			}
-		}
-		encoded, err := json.Marshal(config)
+		encoded, err := mergeProvider(providers[id], server.ProviderConfig())
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("parse provider %s in %s: %w", id, path, err)
 		}
 		providers[id] = encoded
 	}
@@ -190,3 +183,63 @@ func stripJSONComments(content []byte) []byte {
 
 // Name is the provider display name Pi shows for the server kind.
 func (k Kind) Name() string { return names[k] }
+
+// mergeProvider adds the detected config's missing fields and models to an
+// existing models.json provider entry without changing what it already holds.
+func mergeProvider(existing json.RawMessage, detected ProviderConfig) (json.RawMessage, error) {
+	if existing == nil {
+		// Through the map below, so the second sync writes the same bytes.
+		existing = json.RawMessage("{}")
+	}
+	entry := map[string]json.RawMessage{}
+	if err := json.Unmarshal(existing, &entry); err != nil {
+		return nil, err
+	}
+	var models []map[string]json.RawMessage
+	if prior, ok := entry["models"]; ok {
+		if err := json.Unmarshal(prior, &models); err != nil {
+			return nil, err
+		}
+	}
+	known := map[string]bool{}
+	for _, model := range models {
+		var id string
+		if json.Unmarshal(model["id"], &id) == nil {
+			known[id] = true
+		}
+	}
+	for _, model := range detected.Models {
+		if known[model.ID] {
+			continue
+		}
+		encoded, err := json.Marshal(model)
+		if err != nil {
+			return nil, err
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			return nil, err
+		}
+		models = append(models, fields)
+	}
+	detected.Models = nil
+	encoded, err := json.Marshal(detected)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return nil, err
+	}
+	for key, value := range fields {
+		if _, ok := entry[key]; !ok {
+			entry[key] = value
+		}
+	}
+	if len(models) > 0 {
+		if entry["models"], err = json.Marshal(models); err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(entry)
+}
