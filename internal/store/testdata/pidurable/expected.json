@@ -1,0 +1,181 @@
+{
+  "lastSeq": 6,
+  "documents": {
+    "4": {
+      "current": {
+        "version": 2,
+        "value": {
+          "bots": []
+        }
+      },
+      "at": {
+        "1": "unavailable",
+        "2": "unavailable",
+        "3": "unavailable",
+        "4": "unavailable",
+        "5": "unavailable",
+        "6": "unavailable"
+      }
+    },
+    "5": {
+      "current": null,
+      "at": {
+        "1": {
+          "version": 2,
+          "value": {
+            "items": [
+              1,
+              2
+            ],
+            "text": "a",
+            "remove": true
+          }
+        },
+        "2": {
+          "version": 2,
+          "value": {
+            "items": [
+              1,
+              3,
+              2
+            ],
+            "text": "ab🙂",
+            "done": false
+          }
+        },
+        "3": {
+          "version": 3,
+          "value": {
+            "items": [
+              9
+            ]
+          }
+        },
+        "4": {
+          "version": 3,
+          "value": {
+            "items": [
+              9
+            ]
+          }
+        },
+        "5": {
+          "version": 3,
+          "value": {
+            "items": [
+              9
+            ]
+          }
+        },
+        "6": null
+      }
+    },
+    "9": {
+      "current": null,
+      "at": {
+        "1": "unavailable",
+        "2": "unavailable",
+        "3": "unavailable",
+        "4": "unavailable",
+        "5": "unavailable",
+        "6": "unavailable"
+      }
+    },
+    "11": {
+      "current": {
+        "version": 2,
+        "value": {
+          "items": [
+            1,
+            3,
+            2
+          ],
+          "text": "ab🙂",
+          "done": false
+        }
+      },
+      "at": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": {
+          "version": 2,
+          "value": {
+            "items": [
+              1,
+              3,
+              2
+            ],
+            "text": "ab🙂",
+            "done": false
+          }
+        },
+        "5": {
+          "version": 2,
+          "value": {
+            "items": [
+              1,
+              3,
+              2
+            ],
+            "text": "ab🙂",
+            "done": false
+          }
+        },
+        "6": {
+          "version": 2,
+          "value": {
+            "items": [
+              1,
+              3,
+              2
+            ],
+            "text": "ab🙂",
+            "done": false
+          }
+        }
+      }
+    },
+    "14": {
+      "current": {
+        "version": 1,
+        "value": {
+          "config": {
+            "provider": "pi",
+            "model": null
+          },
+          "revision": 1
+        }
+      },
+      "at": {
+        "1": "unavailable",
+        "2": "unavailable",
+        "3": "unavailable",
+        "4": "unavailable",
+        "5": "unavailable",
+        "6": "unavailable"
+      }
+    },
+    "15": {
+      "current": {
+        "version": 3,
+        "value": {
+          "items": []
+        }
+      },
+      "at": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "6": {
+          "version": 3,
+          "value": {
+            "items": []
+          }
+        }
+      }
+    }
+  }
+}
