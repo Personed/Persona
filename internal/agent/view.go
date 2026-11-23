@@ -48,7 +48,7 @@ func (r *Runtime) View(ctx context.Context, bot int64, before string) (any, erro
 	applyRoutineDelivery(&chat, runs)
 	processing, _ := doc.Runtime["processing"].(bool)
 	chat.Busy = chat.Busy || len(doc.Tasks) > 0
-	chat.Processing = chat.Processing || len(chat.Approvals) > 0 || (doc.ActiveID != nil && processing)
+	chat.Processing = len(chat.Approvals) == 0 && (chat.Processing || (doc.ActiveID != nil && processing))
 	if doc.ActiveTurn != nil {
 		chat.ActiveTurnID = doc.ActiveTurn
 	}
