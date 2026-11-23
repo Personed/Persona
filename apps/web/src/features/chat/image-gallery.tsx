@@ -47,6 +47,30 @@ export function ImageGallery({
       inline: "center",
     });
   }, [selected]);
+  useEffect(() => {
+    if (!file || files.length < 2) return;
+    const navigate = (event: KeyboardEvent) => {
+      if (
+        (event.key !== "ArrowLeft" && event.key !== "ArrowRight") ||
+        !(event.target instanceof Element) ||
+        event.target.closest(".image-viewer") === null
+      )
+        return;
+      event.preventDefault();
+      setSelected(
+        (current) =>
+          ((current ?? 0) +
+            (event.key === "ArrowRight" ? 1 : -1) +
+            files.length) %
+          files.length,
+      );
+      setRotation(0);
+      setZoomed(false);
+    };
+    // React can drop synthetic key events while a View Transition commits.
+    window.addEventListener("keydown", navigate, true);
+    return () => window.removeEventListener("keydown", navigate, true);
+  }, [file, files.length]);
   const alert = error && (
     <p role="alert" className="alert">
       {error}
@@ -98,13 +122,6 @@ export function ImageGallery({
           <PanelDialog.Popup
             className="image-viewer"
             finalFocus={() => trigger.current}
-            onKeyDown={(event) => {
-              if (files.length < 2) return;
-              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-                event.preventDefault();
-                move(event.key === "ArrowRight" ? 1 : -1);
-              }
-            }}
           >
             {file && (
               <>

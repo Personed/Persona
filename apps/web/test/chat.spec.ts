@@ -259,7 +259,12 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => {
   if (worker.exitCode === null) await stop();
-  await rm(directory, { recursive: true, force: true, maxRetries: 10 });
+  await rm(directory, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
 });
 
 test("model selection updates immediately and restores a failed save", async ({
@@ -3087,14 +3092,14 @@ test("typing follows the Bot and failures retain their error message", async ({
   await expect(failure).toContainText(/〔\d+:\d+〕/);
   await expect(failure.getByRole("alert")).toBeVisible();
   await expect(failure.locator('svg[aria-hidden="true"]')).toHaveCount(1);
-  const errorText = await failure.innerText();
+  const errorText = await failure.textContent();
   const port = Number(new URL(url).port);
   await stop();
   await start(port);
   await page.reload();
   await expect(send).toBeVisible();
   await expect(failure).toHaveCount(1);
-  await expect(failure).toHaveText(errorText);
+  await expect(failure).toHaveText(errorText ?? "");
   await page
     .locator("#bot-details")
     .getByRole("button", { name: "关闭", exact: true })
