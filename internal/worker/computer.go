@@ -484,6 +484,9 @@ func browserSocketDir(dir string) string {
 // path is predictable in a shared temp directory, so another local user can
 // create it first.
 func privateSocketDir(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
 	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
 	}

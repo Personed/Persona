@@ -448,7 +448,8 @@ func TestBrowserSocketDir(t *testing.T) {
 		t.Skip("the Windows temp directory is per user")
 	}
 	base := t.TempDir()
-	fresh := filepath.Join(base, "fresh")
+	// A temp directory that does not exist yet is created, as before.
+	fresh := filepath.Join(base, "missing-tmp", "fresh")
 	if err := privateSocketDir(fresh); err != nil {
 		t.Fatal(err)
 	}
