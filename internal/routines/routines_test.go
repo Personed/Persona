@@ -203,6 +203,22 @@ func TestApplyKeepsBaselineCommittedDuringConfirm(t *testing.T) {
 	if got.Baseline != "new baseline" || got.NotifiedKey != "new key" || got.Title != "Renamed" || got.Revision != 2 {
 		t.Fatalf("committed routine = %+v", got)
 	}
+
+	// A condition change resets monitoring state; a baseline that landed
+	// during the wait belongs to the old condition and must not carry over.
+	change = routines.Change{Action: "update", ID: created.ID, Revision: pointer(2),
+		Delivery: routines.Conditional, Condition: pointer("A new invoice arrived.")}
+	if _, err := service.Manage(ctx, 1, change, "r3", "user"); err != nil {
+		t.Fatal(err)
+	}
+	listing, err = service.List(ctx, 1)
+	if err != nil || len(listing.Items) != 1 {
+		t.Fatalf("List = %+v, %v", listing, err)
+	}
+	got = listing.Items[0]
+	if got.Baseline != "" || got.NotifiedKey != "" || got.Condition != "A new invoice arrived." {
+		t.Fatalf("condition change kept stale monitoring state: %+v", got)
+	}
 }
 
 func TestValidation(t *testing.T) {

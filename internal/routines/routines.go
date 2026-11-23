@@ -382,8 +382,11 @@ func (s *Service) apply(ctx context.Context, botID int64, change Change, request
 			return nil, nil, &Error{Conflict, "内容已更新，请刷新后重试。"}
 		}
 		// Runner.finish commits a newer baseline without bumping the revision;
-		// keep it unless this change itself reset the monitoring state.
-		if previous != nil && item.Baseline == previous.Baseline && item.NotifiedKey == previous.NotifiedKey {
+		// keep it only when this change left the monitoring inputs alone —
+		// a delivery or condition change resets them even if both were empty.
+		monitoringReset := previous != nil && (item.Delivery != previous.Delivery ||
+			item.Condition != previous.Condition)
+		if previous != nil && !monitoringReset {
 			item.Baseline, item.NotifiedKey = stored.Baseline, stored.NotifiedKey
 		}
 	}
