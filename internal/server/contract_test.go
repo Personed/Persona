@@ -2,29 +2,25 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Personed/Persona/internal/agent"
 	"github.com/Personed/Persona/internal/apitest"
+	"github.com/Personed/Persona/internal/engine"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/store"
 )
 
 // fixtureSkips are recorded exchanges a registered procedure cannot reproduce
 // yet, by "file#index", with the reason.
-var fixtureSkips = map[string]string{
-	// Recorded after send ran a faux turn; send is not served yet, so the chat is still empty.
-	"bots-conversation#3": "needs send",
-	// The recorded ID 15 follows the IDs send minted for its turn (10 to 14).
-	"bots-conversation#5": "needs send",
-	// Recorded with the native engine runtime, whose view adds engine, runtime and error.
-	"native-conversation#0": "needs the engine runtime",
-	"native-conversation#2": "needs the engine runtime",
-}
+var fixtureSkips = map[string]string{}
 
 // fauxModels is the faux provider of apps/api/test/contract.test.ts.
 type fauxModels struct{}
@@ -72,13 +68,87 @@ func fixtureService(t *testing.T, file string) (http.Handler, *rpc.Server) {
 			t.Fatal(err)
 		}
 	}
+	answer := fakeEngine{text: "Hello from Persona.", provider: "faux", model: "faux-1"}
+	if file == "native-conversation" {
+		answer = fakeEngine{text: "Hello from Pi.", provider: "pi", model: "test-model", native: true}
+	}
+	rt := agent.NewRuntime(a, agent.RuntimeOptions{Engine: answer, Native: answer.native})
 	procedures := newRPC(t)
-	RegisterAgent(procedures, a)
+	RegisterAgent(procedures, a, rt)
 	h, err := New(Config{RPC: procedures, Files: AgentFiles(a.Files)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return h, procedures
+	// contract.test.ts waits for the turn send starts before the next request.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r)
+		if r.URL.Path == "/rpc/send" {
+			if err := rt.Idle(r.Context()); err != nil {
+				t.Error(err)
+			}
+		}
+	}), procedures
+}
+
+// fakeEngine answers every prompt with one recorded Pi turn.
+type fakeEngine struct {
+	text, provider, model string
+	native                bool
+}
+
+func (fakeEngine) Info(context.Context) (engine.Info, error)      { return engine.Info{}, nil }
+func (fakeEngine) Models(context.Context) ([]engine.Model, error) { return nil, nil }
+
+func (e fakeEngine) Start(context.Context, engine.SessionOptions) (engine.Session, error) {
+	return &fakeSession{e: e, events: make(chan engine.Event, 16)}, nil
+}
+
+type fakeSession struct {
+	e      fakeEngine
+	events chan engine.Event
+	close  sync.Once
+}
+
+func (s *fakeSession) frame(v map[string]any) {
+	data, _ := json.Marshal(v)
+	s.events <- engine.Event{Type: "frame", Data: data}
+}
+
+func (s *fakeSession) ID() string { return "/native/session" }
+
+func (s *fakeSession) Prompt(context.Context, engine.Prompt) error {
+	message := map[string]any{"role": "assistant", "content": []map[string]any{{"type": "text", "text": s.e.text}},
+		"provider": s.e.provider, "model": s.e.model, "stopReason": "stop", "timestamp": 100,
+		"usage": map[string]any{"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0, "cost": map[string]any{"total": 0}}}
+	if !s.e.native {
+		message["timestamp"] = time.Now().UnixMilli()
+	}
+	s.frame(map[string]any{"type": "message_start", "message": message})
+	s.frame(map[string]any{"type": "message_end", "message": message})
+	s.frame(map[string]any{"type": "agent_settled"})
+	return nil
+}
+
+func (s *fakeSession) Checkpoint(context.Context) (string, error) { return "previous", nil }
+func (s *fakeSession) SessionStats(context.Context) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
+}
+func (s *fakeSession) Steer(context.Context, engine.Prompt) error { return nil }
+func (s *fakeSession) Abort(context.Context) error                { return nil }
+func (s *fakeSession) Answer(context.Context, string, json.RawMessage) error {
+	return nil
+}
+func (s *fakeSession) SetModel(context.Context, engine.Model, string) error { return nil }
+func (s *fakeSession) Compact(context.Context, string) error                { return nil }
+func (s *fakeSession) State(context.Context) (engine.State, error)          { return engine.State{}, nil }
+func (s *fakeSession) Usage(context.Context) (engine.Usage, error)          { return engine.Usage{}, nil }
+func (s *fakeSession) Messages(context.Context, int, int) ([]json.RawMessage, error) {
+	return nil, nil
+}
+func (s *fakeSession) Events() <-chan engine.Event { return s.events }
+func (s *fakeSession) Close() error {
+	s.close.Do(func() { close(s.events) })
+	return nil
 }
 
 // TestContractFixtures replays contracts/api against the Go service. Every

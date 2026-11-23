@@ -14,12 +14,18 @@ type botTarget struct {
 	BotID int64 `json:"botId"`
 }
 
-// RegisterAgent registers the procedures the Bot domain serves without a
-// native engine runtime, as apps/api/src/router.ts does when engines and
-// computers are absent. Chat input (send, stop, changes, subscribe) and engine
-// selection stay unregistered until the runtime is composed.
-func RegisterAgent(s *rpc.Server, a *agent.Agent) {
-	r := agentRoutes{a: a}
+// RegisterAgent registers the procedures the Bot domain serves, as
+// apps/api/src/router.ts does. With a runtime it also serves chat input (send,
+// stop, changes, subscribe) and full message reads; engine selection stays
+// unregistered until engine controls are composed.
+func RegisterAgent(s *rpc.Server, a *agent.Agent, rt *agent.Runtime) {
+	r := agentRoutes{a: a, rt: rt}
+	if rt != nil {
+		s.Handle("send", r.send)
+		s.Handle("stop", r.stop)
+		s.HandleStream("subscribe", r.subscribe)
+		s.HandleStream("changes", r.changes)
+	}
 	s.Handle("bots.list", func(ctx context.Context, _ json.RawMessage) (any, error) { return wrap(a.Bots.List(ctx)) })
 	s.Handle("bots.create", r.createBot)
 	s.Handle("bots.completeWelcome", r.completeWelcome)
@@ -51,7 +57,10 @@ func RegisterAgent(s *rpc.Server, a *agent.Agent) {
 	})
 }
 
-type agentRoutes struct{ a *agent.Agent }
+type agentRoutes struct {
+	a  *agent.Agent
+	rt *agent.Runtime
+}
 
 // wrap converts a WorkError into its oRPC error, as the TypeScript routers do.
 func wrap[T any](value T, err error) (any, error) {
@@ -138,7 +147,14 @@ func (r agentRoutes) get(ctx context.Context, input json.RawMessage) (any, error
 	if err := json.Unmarshal(input, &page); err != nil {
 		return nil, err
 	}
-	return r.a.Harness.ReadChat(ctx, id, page.Before)
+	if r.rt == nil {
+		return r.a.Harness.ReadChat(ctx, id, page.Before)
+	}
+	view, err := r.rt.View(ctx, id, page.Before)
+	if err != nil || !r.rt.Native() {
+		return wrap(view, err)
+	}
+	return agent.Slim(view)
 }
 
 // withoutEngine answers procedures that need the native engine runtime.
@@ -150,7 +166,67 @@ func (r agentRoutes) withoutEngine(ctx context.Context, input json.RawMessage) (
 }
 
 func (r agentRoutes) message(ctx context.Context, input json.RawMessage) (any, error) {
-	return r.withoutEngine(ctx, input)
+	if r.rt == nil {
+		return r.withoutEngine(ctx, input)
+	}
+	id, err := r.bot(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	var target struct {
+		ID     string `json:"id"`
+		Cursor string `json:"cursor"`
+	}
+	if err := json.Unmarshal(input, &target); err != nil {
+		return nil, err
+	}
+	return wrap(r.rt.Message(ctx, id, target.ID, target.Cursor))
+}
+
+func (r agentRoutes) send(ctx context.Context, input json.RawMessage) (any, error) {
+	if _, err := r.bot(ctx, input); err != nil {
+		return nil, err
+	}
+	var in agent.SendInput
+	if err := json.Unmarshal(input, &in); err != nil {
+		return nil, err
+	}
+	id, err := r.rt.Submit(ctx, in)
+	if err != nil {
+		return nil, rpcError(err)
+	}
+	return map[string]any{"id": id}, nil
+}
+
+func (r agentRoutes) stop(ctx context.Context, input json.RawMessage) (any, error) {
+	id, err := r.bot(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.rt.Stop(ctx, id); err != nil {
+		return nil, rpcError(err)
+	}
+	return map[string]bool{"ok": true}, nil
+}
+
+func (r agentRoutes) subscribe(ctx context.Context, input json.RawMessage, send func(any) error) (any, error) {
+	id, err := r.bot(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	commits, err := r.a.Harness.Watch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return rpc.WatchValues(ctx, commits, func(ctx context.Context) (any, error) { return wrap(r.rt.View(ctx, id, "")) }, send)
+}
+
+func (r agentRoutes) changes(ctx context.Context, input json.RawMessage, send func(any) error) (any, error) {
+	id, err := r.bot(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	return nil, rpcError(r.rt.Updates(ctx, id, send))
 }
 
 func (r agentRoutes) upload(ctx context.Context, input json.RawMessage) (any, error) {
