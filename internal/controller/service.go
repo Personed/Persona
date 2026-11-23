@@ -83,8 +83,11 @@ func Run(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 2 && args[0] == "health" {
 		return Health(ctx, args[1])
 	}
+	if len(args) >= 1 && args[0] == "install" {
+		return Install(ctx, args[1:], stdout)
+	}
 	if len(args) != 1 {
-		return errors.New("usage: persona controller <controller.json> | persona controller health <controller.json>")
+		return errors.New("usage: persona controller <controller.json> | persona controller health <controller.json> | persona controller install <dir> [source]")
 	}
 	config, err := LoadConfig(args[0])
 	if err != nil {

@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"github.com/Personed/Persona/internal/agent"
+	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/contract"
+	"github.com/Personed/Persona/internal/engine/pi"
 	"github.com/Personed/Persona/internal/hosting"
+	"github.com/Personed/Persona/internal/localmodels"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/server"
 	"github.com/Personed/Persona/internal/store"
@@ -32,6 +35,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	contractDir := flags.String("contract", "contracts/api", "API contract directory")
 	headless := flags.Bool("headless", false, "serve only the API, without the web UI")
 	dataDir := flags.String("data", "data", "data directory, unless a hosting config sets one")
+	piExtension := flags.String("pi-extension", "", "Pi extension (pi-tools.mjs) that enables chat through pi --mode rpc")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -91,11 +95,27 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	// Go keeps its own files root until the importer copies the TypeScript
 	// history: discarding an upload checks only the Go chats, so it must never
 	// see artifacts that TypeScript chats reference.
-	bots, err := agent.Open(ctx, records, agent.Options{FilesRoot: filepath.Join(*dataDir, "persona-go.sqlite.files")})
+	bots, err := agent.Open(ctx, records, agent.Options{
+		Models:    agent.NewLocalModels(localmodels.DefaultEndpoints()),
+		FilesRoot: filepath.Join(*dataDir, "persona-go.sqlite.files"),
+	})
 	if err != nil {
 		return err
 	}
-	server.RegisterAgent(procedures, bots)
+	var runtime *agent.Runtime
+	if *piExtension != "" {
+		// An idle Bot has no Pi: each closes with the last session of its task.
+		engine := pi.New(pi.Config{Extensions: []string{*piExtension}, IdleTimeout: -1,
+			SessionDir: filepath.Join(*dataDir, "pi", "sessions"), StateDir: filepath.Join(*dataDir, "pi", "state")})
+		defer engine.Close()
+		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
+			Approvals: approval.NewService(records, nil, 0)})
+		if err := runtime.Recover(ctx); err != nil {
+			return err
+		}
+	}
+	server.RegisterAgent(procedures, bots, runtime)
+	server.RegisterEngines(procedures, bots, runtime)
 	service.Files = server.AgentFiles(bots.Files)
 	if !*headless {
 		if service.Static, err = webFS(*static); err != nil {
@@ -135,7 +155,12 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		<-run.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		stopped <- httpServer.Shutdown(shutdown)
+		// Connections that outlive the graceful drain are dropped; the service
+		// still exits cleanly.
+		if err := httpServer.Shutdown(shutdown); err != nil {
+			_ = httpServer.Close()
+		}
+		stopped <- nil
 	}()
 	fmt.Fprintf(stdout, "persona: listening on http://%s\n", listener.Addr())
 	if *headless {

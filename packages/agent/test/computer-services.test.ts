@@ -134,15 +134,27 @@ test("browser profiles persist across a restart and stay separate for each Bot",
     });
     await rm(directory, { recursive: true, force: true, maxRetries: 10 });
   });
+  // A cold headless launch on Windows can abort the first navigation with
+  // net::ERR_ABORTED while the browser is still starting; retrying opens it.
+  const open = async (botId: number, target: string) => {
+    for (let attempt = 0; ; attempt++) {
+      const result = await call(botId, "agent_browser_open", { url: target });
+      if (
+        attempt >= 2 ||
+        !JSON.stringify(result.content).includes("net::ERR_ABORTED")
+      )
+        return result;
+    }
+  };
   expect(await computer.services.prepare(1, "browser", context)).toMatchObject({
     available: true,
     error: null,
   });
-  const opened = await call(1, "agent_browser_open", { url });
+  const opened = await open(1, url);
   expect(opened.isError, JSON.stringify(opened.content)).not.toBe(true);
   const denied = await call(1, "agent_browser_open", { url: `${url}/denied` });
   expect(JSON.stringify(denied.content)).toContain("access_denied");
-  await call(1, "agent_browser_open", { url });
+  await open(1, url);
   const screenshot = await call(1, "agent_browser_screenshot", {});
   expect(screenshot.structuredContent?.source).toMatchObject({
     url: `${url}/`,
@@ -215,7 +227,7 @@ test("browser profiles persist across a restart and stay separate for each Bot",
   expect(
     (await computer.services.prepare(1, "browser", context)).available,
   ).toBe(true);
-  await call(1, "agent_browser_open", { url });
+  await open(1, url);
   const first = await call(1, "agent_browser_eval", {
     script: "localStorage.getItem('marker')",
   });
@@ -223,7 +235,7 @@ test("browser profiles persist across a restart and stay separate for each Bot",
   expect(
     (await computer.services.prepare(2, "browser", context)).available,
   ).toBe(true);
-  await call(2, "agent_browser_open", { url });
+  await open(2, url);
   const second = await call(2, "agent_browser_eval", {
     script: "localStorage.getItem('marker')",
   });
@@ -237,7 +249,7 @@ test("browser profiles persist across a restart and stay separate for each Bot",
     available: true,
     mode,
   });
-  await call(1, "agent_browser_open", { url });
+  await open(1, url);
   const retained = await call(1, "agent_browser_eval", {
     script: "localStorage.getItem('marker')",
   });

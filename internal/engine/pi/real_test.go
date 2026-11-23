@@ -33,7 +33,7 @@ func TestRealPiIdleBotsHaveNoProcess(t *testing.T) {
 	defer cancel()
 	var procs []*Process
 	for botID := int64(1); botID <= 3; botID++ {
-		s, err := e.Start(ctx, engine.SessionOptions{BotID: botID, WorkDir: t.TempDir(), SystemPrompt: "Persona test."})
+		s, err := e.Start(ctx, engine.SessionOptions{Env: gatewayEnv(), BotID: botID, WorkDir: t.TempDir(), SystemPrompt: "Persona test."})
 		if err != nil {
 			t.Fatal(err)
 		}

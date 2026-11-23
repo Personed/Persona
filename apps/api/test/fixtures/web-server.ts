@@ -469,15 +469,22 @@ process.on("message", async (message) => {
     const address = server.address();
     if (!address || typeof address === "string")
       throw new Error("Address required");
-    const result = await target.services.call(
-      bot.id,
-      "browser",
-      "agent_browser_open",
-      { url: `http://127.0.0.1:${address.port}/takeover-fixture` },
-      "fixture",
-      new AbortController().signal,
-      BACKGROUND_CONTEXT,
-    );
+    // A cold headless launch can abort the first navigation (net::ERR_ABORTED)
+    // while the browser is still starting; retrying opens it. Throwing here
+    // leaves the test awaiting a reply that never arrives.
+    const open = () =>
+      target.services.call(
+        bot.id,
+        "browser",
+        "agent_browser_open",
+        { url: `http://127.0.0.1:${address.port}/takeover-fixture` },
+        "fixture",
+        new AbortController().signal,
+        BACKGROUND_CONTEXT,
+      );
+    let result = await open();
+    for (let attempt = 1; result.isError && attempt < 3; attempt++)
+      result = await open();
     if (result.isError) throw new Error(JSON.stringify(result.content));
     process.send?.({ type: "takeover-page-opened" });
   } else if (message === "disconnect-computer") {

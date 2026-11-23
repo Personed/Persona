@@ -3012,7 +3012,10 @@ test("image thumbnails scroll horizontally and keep the selected image in view",
       viewer.evaluate((element) => element.contains(document.activeElement)),
     )
     .toBe(true);
-  await page.keyboard.press("ArrowLeft");
+  // Press on the dialog element itself: arrow-key navigation is the popup's
+  // own handler, and where the focus manager initially lands focus can race
+  // the press on a slow runner.
+  await viewer.press("ArrowLeft");
   const last = viewer.getByRole("button", {
     name: "查看图片 photo-9.png",
     exact: true,
