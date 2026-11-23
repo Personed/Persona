@@ -48,14 +48,17 @@ type server struct {
 	mu       sync.Mutex
 	requests map[uint32]*request
 	// mcpSessions holds connected managed MCP servers by connection id.
-	mcpSessions   map[string]*mcpSession
-	computersMu   sync.Mutex
-	computers     map[string]*computerDriver
-	computerLanes map[string]*sync.Mutex
-	viewsMu       sync.Mutex
-	views         map[string]openView
-	wg            sync.WaitGroup
-	lastRead      atomic.Int64
+	mcpSessions map[string]*mcpSession
+	computersMu sync.Mutex
+	computers   map[string]*computerDriver
+	// browserRestarts counts each work directory's browser restarts, so a view
+	// of an earlier browser stops sending input.
+	browserRestarts map[string]uint64
+	computerLanes   map[string]*sync.Mutex
+	viewsMu         sync.Mutex
+	views           map[string]openView
+	wg              sync.WaitGroup
+	lastRead        atomic.Int64
 }
 
 type request struct {

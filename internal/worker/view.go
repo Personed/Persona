@@ -332,6 +332,7 @@ type browserView struct {
 	key     string
 	marker  string
 	port    int
+	restart uint64
 	conn    *websocket.Conn
 	stop    context.CancelFunc
 	frames  chan struct{}
@@ -397,10 +398,16 @@ func (s *server) openBrowserView(ctx context.Context, input ComputerInput, key, 
 	// Larger messages are skipped, as browser-view.mjs does, not fatal.
 	conn.SetReadLimit(-1)
 	read, stop := context.WithCancel(context.Background())
-	view := &browserView{server: s, key: key, marker: marker, port: port, conn: conn, stop: stop,
+	view := &browserView{server: s, key: key, marker: marker, port: port, restart: s.browserRestart(key), conn: conn, stop: stop,
 		frames: make(chan struct{}, 1), failed: make(chan struct{})}
 	go view.read(read)
 	return view, nil
+}
+
+func (s *server) browserRestart(key string) uint64 {
+	s.computersMu.Lock()
+	defer s.computersMu.Unlock()
+	return s.browserRestarts[key]
 }
 
 func (v *browserView) fail() {
@@ -589,6 +596,12 @@ func (v *browserView) input(ctx context.Context, command map[string]any) error {
 	lane := v.server.computerLane(v.key)
 	lane.Lock()
 	defer lane.Unlock()
+	// A restart ended the browser this view's input reached, so a held
+	// pointer died with it.
+	if v.server.browserRestart(v.key) != v.restart {
+		v.pointer = nil
+		return errViewClosed
+	}
 	if _, err := os.Stat(v.marker); err == nil {
 		return errBrowserUncertain
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -598,6 +611,10 @@ func (v *browserView) input(ctx context.Context, command map[string]any) error {
 		return err
 	}
 	if err := os.WriteFile(v.marker, []byte("view input"), 0o600); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(v.marker)
 		return err
 	}
 	send, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)

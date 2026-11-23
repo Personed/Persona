@@ -885,5 +885,27 @@ func TestComputerBrowserView(t *testing.T) {
 		if err := client.RestartBrowser(ctx, dir, 7); err != nil {
 			t.Fatal(err)
 		}
+
+		// A view of the browser a restart ended sends nothing more, even
+		// to release the pointer it held there.
+		held, err := client.OpenView(ctx, dir, "browser")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := held.Send(ctx, ViewMessage{Type: "pointer", Event: "down", X: 5, Y: 5, Button: "left"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.RestartBrowser(ctx, dir, 7); err != nil {
+			t.Fatal(err)
+		}
+		if err := held.Send(ctx, ViewMessage{Type: "text", Text: "late"}); code(err) != "ENOENT" {
+			t.Fatalf("input to a view of the ended browser: %v", err)
+		}
+		if err := held.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := act(client, dir, "d", "browser", "agent_browser_click"); err != nil {
+			t.Fatalf("agent action after closing a view of the ended browser: %v", err)
+		}
 	})
 }

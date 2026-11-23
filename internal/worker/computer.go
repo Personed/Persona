@@ -313,6 +313,10 @@ func (s *server) restartBrowser(ctx context.Context, input ComputerInput, journa
 	s.computersMu.Lock()
 	old := s.computers[key]
 	delete(s.computers, key)
+	if s.browserRestarts == nil {
+		s.browserRestarts = map[string]uint64{}
+	}
+	s.browserRestarts[key]++
 	s.computersMu.Unlock()
 	if old != nil {
 		old.session.close()
