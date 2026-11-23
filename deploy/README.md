@@ -29,6 +29,8 @@ sh deploy/install.sh
 
 镜像和入口由 `deploy/release.json` 管理。配置保存在 `control-data` 卷。会话、凭据和附件保存在 `app-data` 卷。工作文件使用独立 Docker 卷。
 
+`sh deploy/install.sh go`（或 `docker compose -f deploy/compose.go.yaml`）部署可选的 Go 镜像 `deploy/go.Dockerfile`：静态 `persona` 二进制（web 界面内嵌）、无 Node 的 distroless 镜像，同一二进制运行控制器。在 Go 服务补齐应用 RPC 之前，Node 镜像仍是默认。该镜像不含 ssh 客户端，Docker over SSH 主机不受支持。
+
 直接运行原生服务，不需要 Docker：
 
 ```sh
@@ -151,7 +153,7 @@ Docker 主机先构建工作镜像及代理镜像，再运行：
 PERSONA_CONTAINER_TESTS=1 pnpm exec vitest run packages/agent/test/container.test.ts
 ```
 
-托管服务测试还须先执行 `docker build -f deploy/node.Dockerfile -t persona-app:test .`（TypeScript 服务测试镜像；生产镜像是 `deploy/Dockerfile` 的 Go 静态镜像），再运行：
+托管服务测试还须先执行 `docker build -f deploy/Dockerfile -t persona-app:test .`，再运行：
 
 ```sh
 PERSONA_CONTAINER_TESTS=1 pnpm exec vitest run apps/api/test/stack-container.test.ts

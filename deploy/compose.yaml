@@ -31,7 +31,7 @@ services:
       dockerfile: deploy/Dockerfile
     init: true
     user: "0:0"
-    command: [controller, /control/controller.json]
+    command: [node, apps/controller/src/main.ts, /control/controller.json]
     volumes:
       - control-data:/control
       - /var/run/docker.sock:/var/run/docker.sock
@@ -41,7 +41,7 @@ services:
     stop_grace_period: 30s
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "persona", "controller", "health", "/control/controller.json"]
+      test: ["CMD", "node", "apps/controller/src/health.ts", "/control/controller.json"]
       interval: 2s
       timeout: 5s
       retries: 30
