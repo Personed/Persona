@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import Type from "typebox";
 export default function (pi) {
-  const { url, servers = [], sequentialFileTools } = JSON.parse(
-    readFileSync(process.env.PERSONA_PI_TOOLS, "utf8"),
-  );
+  const {
+    url,
+    servers = [],
+    sequentialFileTools,
+  } = JSON.parse(readFileSync(process.env.PERSONA_PI_TOOLS, "utf8"));
   pi.registerMcpServer("persona", { url, exposure: "direct", timeout: 600 });
   for (const server of servers)
     pi.registerMcpServer(server.name, { url: server.url, exposure: "direct" });
@@ -16,8 +18,9 @@ export default function (pi) {
 }
 
 async function registerSequentialFiles(pi) {
-  const { createEditToolDefinition, createWriteToolDefinition } =
-    await import("@earendil-works/pi-coding-agent");
+  const { createEditToolDefinition, createWriteToolDefinition } = await import(
+    "@earendil-works/pi-coding-agent"
+  );
   // Pi runs the whole batch in order when it contains a sequential tool.
   // This lets attach_file snapshot the result of an earlier workspace edit.
   for (const create of [createWriteToolDefinition, createEditToolDefinition]) {
