@@ -124,6 +124,20 @@ func TestComputerVerifyDuringAction(t *testing.T) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+		// Cancel only once the driver has the action, so its outcome is unknown.
+		for {
+			observed, err := client.Observe(context.Background(), "desktop")
+			if err != nil || time.Now().After(deadline) {
+				t.Fatalf("observe during action: %v", err)
+			}
+			if text(t, observed) == "clicks 1" {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err := client.VerifyComputer(context.Background(), dir, 7, "desktop"); code(err) != "COMPUTER_BUSY" {
+			t.Fatalf("verify during dispatched action: %v", err)
+		}
 		cancel()
 		if err := <-hung; err == nil {
 			t.Fatal("cancelled action succeeded")
