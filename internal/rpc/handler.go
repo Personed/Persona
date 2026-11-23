@@ -100,10 +100,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if p.unary == nil && p.stream == nil {
-		writeError(w, NewError("NOT_IMPLEMENTED", ""))
-		return
-	}
 	raw, err := readInput(r)
 	if err != nil {
 		writeError(w, NewError("BAD_REQUEST", "Cannot parse request body"))
@@ -117,6 +113,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		input = parsed
+	}
+	// Validation comes first: in the TypeScript router every procedure exists.
+	if p.unary == nil && p.stream == nil {
+		writeError(w, NewError("NOT_IMPLEMENTED", ""))
+		return
 	}
 	var inputJSON json.RawMessage
 	if _, missing := input.(undefinedValue); !missing {

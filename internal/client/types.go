@@ -110,17 +110,19 @@ type Approval struct {
 
 // ChatView is the chat state returned by get and streamed by changes.
 type ChatView struct {
-	ID           int        `json:"id"`
-	Model        *ModelRef  `json:"model"`
-	Instructions string     `json:"instructions"`
-	Messages     []Message  `json:"messages"`
-	ActiveTurnID *string    `json:"activeTurnId"`
-	Busy         bool       `json:"busy"`
-	Processing   bool       `json:"processing"`
-	Failed       bool       `json:"failed"`
-	Approvals    []Approval `json:"approvals"`
-	Error        string     `json:"error,omitempty"`
-	Before       string     `json:"before,omitempty"`
+	ID           int       `json:"id"`
+	Model        *ModelRef `json:"model"`
+	Instructions string    `json:"instructions"`
+	Messages     []Message `json:"messages"`
+	ActiveTurnID *string   `json:"activeTurnId"`
+	// Draft is the reply still being generated on the path without a native Harness.
+	Draft      *Message   `json:"draft,omitempty"`
+	Busy       bool       `json:"busy"`
+	Processing bool       `json:"processing"`
+	Failed     bool       `json:"failed"`
+	Approvals  []Approval `json:"approvals"`
+	Error      string     `json:"error,omitempty"`
+	Before     string     `json:"before,omitempty"`
 }
 
 // Change is one event of the changes stream: a full snapshot, then partial updates.

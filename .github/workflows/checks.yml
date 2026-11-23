@@ -142,10 +142,18 @@ jobs:
           node-version-file: .node-version
       - uses: pnpm/action-setup@v6.1.0
       - run: pnpm install --frozen-lockfile
+      - uses: actions/setup-go@v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Build the Go service binary
+        run: go build -o "$env:RUNNER_TEMP/persona.exe" ./cmd/persona
       - name: Install Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
       - name: Verify desktop services and backup compatibility
         timeout-minutes: 10
+        env:
+          PERSONA_SERVICE_BIN: ${{ runner.temp }}/persona.exe
+          PERSONA_CONTRACT_DIR: ${{ github.workspace }}/contracts/api
         run: >-
           node --test --test-concurrency=1
           apps/desktop/src-tauri/layout.test.mjs
@@ -174,6 +182,8 @@ jobs:
         run: pnpm --filter @persona/desktop dist
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PERSONA_SERVICE_BIN: ${{ runner.temp }}/persona.exe
+          PERSONA_CONTRACT_DIR: ${{ github.workspace }}/contracts/api
       - uses: actions/upload-artifact@v6
         with:
           name: persona-windows

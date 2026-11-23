@@ -19,6 +19,7 @@ type FileInfo struct {
 	MtimeNsec int64  `json:"mtimeNsec"`
 	Dev       uint64 `json:"dev,omitempty"`
 	Ino       uint64 `json:"ino,omitempty"`
+	Links     uint64 `json:"links,omitempty"`
 }
 
 func describe(path string, info fs.FileInfo) FileInfo {
@@ -32,10 +33,10 @@ func describe(path string, info fs.FileInfo) FileInfo {
 		kind = "symlink"
 	}
 	mtime := info.ModTime()
-	dev, ino := fileIdentity(info)
+	dev, ino, links := fileIdentity(path, info)
 	return FileInfo{
 		Name: filepath.Base(path), Kind: kind, Size: info.Size(),
-		MtimeSec: mtime.Unix(), MtimeNsec: int64(mtime.Nanosecond()), Dev: dev, Ino: ino,
+		MtimeSec: mtime.Unix(), MtimeNsec: int64(mtime.Nanosecond()), Dev: dev, Ino: ino, Links: links,
 	}
 }
 

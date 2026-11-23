@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Personed/Persona/internal/client"
 	"github.com/Personed/Persona/internal/client/clienttest"
@@ -48,7 +49,7 @@ func key(code rune, text string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: code, Text: text}
 }
 
-func content(m tea.Model) string { return m.View().Content }
+func content(m tea.Model) string { return ansi.Strip(m.View().Content) }
 
 func TestBotsAndChat(t *testing.T) {
 	server := clienttest.New(t, fixtures)
