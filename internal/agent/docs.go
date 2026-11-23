@@ -107,6 +107,8 @@ type EngineRunRecord struct {
 	Status    string  `json:"status"`
 	NativeID  string  `json:"nativeId,omitempty"`
 	EndedAt   *int64  `json:"endedAt,omitempty"`
+	// InputTurns are the turns of additional input the native turn accepted.
+	InputTurns []string `json:"inputTurns,omitempty"`
 }
 
 // Draft is a chat message the engine runtime writes, StoredMessage in

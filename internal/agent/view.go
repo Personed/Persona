@@ -248,7 +248,10 @@ func (r *Runtime) Updates(ctx context.Context, bot int64, send func(any) error) 
 		}
 		for drained := false; !drained; {
 			select {
-			case <-commits:
+			case _, ok := <-commits:
+				if !ok {
+					return nil
+				}
 			default:
 				drained = true
 			}

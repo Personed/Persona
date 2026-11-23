@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Personed/Persona/internal/agent"
+	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/contract"
 	"github.com/Personed/Persona/internal/engine/pi"
 	"github.com/Personed/Persona/internal/hosting"
@@ -99,9 +100,15 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	var runtime *agent.Runtime
 	if *piExtension != "" {
-		engine := pi.New(pi.Config{Extensions: []string{*piExtension},
+		// An idle Bot has no Pi: each closes with the last session of its task.
+		engine := pi.New(pi.Config{Extensions: []string{*piExtension}, IdleTimeout: -1,
 			SessionDir: filepath.Join(*dataDir, "pi", "sessions"), StateDir: filepath.Join(*dataDir, "pi", "state")})
-		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true})
+		defer engine.Close()
+		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
+			Approvals: approval.NewService(records, nil, 0)})
+		if err := runtime.Recover(ctx); err != nil {
+			return err
+		}
 	}
 	server.RegisterAgent(procedures, bots, runtime)
 	service.Files = server.AgentFiles(bots.Files)

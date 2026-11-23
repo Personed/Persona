@@ -32,6 +32,10 @@ func (r *Runtime) runChat(ctx context.Context, bot int64, w *worker, taskID stor
 			uncertain = true
 			return tx.SettleSubmission(in.SubmissionID, store.SubmissionUnanswered, nil, uncertainTurn)
 		}
+		if r.isStopping(bot) || task.State.Status != store.TaskPending || task.AbortRequested {
+			uncertain = true
+			return nil
+		}
 		live.Run, live.Generation = run, nil
 		task.State.Status = store.TaskRunning
 		started := r.ms()

@@ -42,7 +42,8 @@ type Config struct {
 	StateDir string
 	// Env is the base environment; nil means the current process environment.
 	Env []string
-	// IdleTimeout closes a Bot's Pi after its last session closes. Zero means IdleTimeout.
+	// IdleTimeout closes a Bot's Pi after its last session closes. Zero means
+	// IdleTimeout; negative closes it as soon as the last session closes.
 	IdleTimeout time.Duration
 	// RequestTimeout bounds control commands. Zero means RequestTimeout.
 	RequestTimeout time.Duration
@@ -338,13 +339,16 @@ func (e *Engine) open(ctx context.Context, botID int64) (*conn, error) {
 	for k, v := range l.options.Env {
 		env = append(env, k+"="+v)
 	}
-	if len(l.options.Tools) > 0 {
-		path, err := writeTools(e.config.StateDir, botID, l.options)
-		if err != nil {
-			return nil, err
-		}
-		env = append(env, "PERSONA_PI_TOOLS="+path)
+	// pi-tools.mjs registers the approval hook only after it reads this file,
+	// so a session without the gateway would run bash, write and edit unasked.
+	if l.options.Env["PERSONA_PI_MCP_URL"] == "" {
+		return nil, errors.New("pi: a session needs the Persona MCP gateway (PERSONA_PI_MCP_URL) so the approval extension loads")
 	}
+	path, err := writeTools(e.config.StateDir, botID, l.options)
+	if err != nil {
+		return nil, err
+	}
+	env = append(env, "PERSONA_PI_TOOLS="+path)
 	p, err := Start(Command{
 		Path: e.config.Command,
 		Args: append(args, e.config.Args...),

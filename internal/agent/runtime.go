@@ -11,9 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/engine"
 	"github.com/Personed/Persona/internal/engine/pi"
+	"github.com/Personed/Persona/internal/mcpserver"
 	"github.com/Personed/Persona/internal/store"
+	"github.com/Personed/Persona/internal/tools"
 )
 
 // Task kinds the runtime runs.
@@ -33,20 +36,30 @@ type RuntimeOptions struct {
 	// stores chat as persona.engine-message entries, as apps/api does with a
 	// work computer. Otherwise chat is stored as model message entries.
 	Native bool
-	Now    func() time.Time
+	// Tools are the product tools each task's MCP gateway serves; nil serves
+	// only query_result.
+	Tools tools.Registry
+	// Approvals decides mutating product tool calls and Pi's approval
+	// requests. Until answers are served, only requests marked Automatic are
+	// allowed, in a Bot's auto approval mode; nil denies every request.
+	Approvals *approval.Service
+	Now       func() time.Time
 }
 
 // Runtime admits chat input as durable submissions and tasks and runs each
 // task in a native engine session, Runtime in packages/agent/src/runtime.
 type Runtime struct {
-	a      *Agent
-	h      *Harness
-	engine engine.Engine
-	native bool
-	now    func() time.Time
+	a         *Agent
+	h         *Harness
+	engine    engine.Engine
+	native    bool
+	tools     tools.Registry
+	approvals *approval.Service
+	now       func() time.Time
 
-	mu       sync.Mutex
-	stopping map[int64]bool
+	mu sync.Mutex
+	// stopping closes when the Bot's Stop has settled its queue.
+	stopping map[int64]chan struct{}
 	workers  map[int64]*worker
 }
 
@@ -57,6 +70,10 @@ type worker struct {
 	cancel  context.CancelFunc
 	session engine.Session
 	stopped bool
+	// steering serializes deliveries of additional input to the session;
+	// unsteerable ends them for the rest of the turn once one is unconfirmed.
+	steering    sync.Mutex
+	unsteerable bool
 }
 
 // NewRuntime composes the runtime of a.
@@ -65,8 +82,12 @@ func NewRuntime(a *Agent, opts RuntimeOptions) *Runtime {
 	if now == nil {
 		now = time.Now
 	}
-	return &Runtime{a: a, h: a.Harness, engine: opts.Engine, native: opts.Native, now: now,
-		stopping: map[int64]bool{}, workers: map[int64]*worker{}}
+	registry := opts.Tools
+	if registry == nil {
+		registry = tools.NewRegistry()
+	}
+	return &Runtime{a: a, h: a.Harness, engine: opts.Engine, native: opts.Native, tools: registry, approvals: opts.Approvals,
+		now: now, stopping: map[int64]chan struct{}{}, workers: map[int64]*worker{}}
 }
 
 // Native reports whether the runtime serves the engine runtime view.
@@ -80,6 +101,10 @@ type SendInput struct {
 	Text        string   `json:"text"`
 	Attachments []string `json:"attachments"`
 	RequestID   string   `json:"requestId"`
+	// Skills and Context are the composer's materials, which turns do not
+	// carry yet.
+	Skills  []json.RawMessage `json:"skills"`
+	Context []json.RawMessage `json:"context"`
 	// WhenBusy is "reject", "followUp" or "" (steer into the running turn).
 	WhenBusy string `json:"-"`
 }
@@ -100,8 +125,14 @@ var (
 // Submit admits one chat input and returns its submission ID. A retried
 // request ID returns the first submission.
 func (r *Runtime) Submit(ctx context.Context, in SendInput) (store.SubmissionID, error) {
-	if len(in.Attachments) > 0 {
-		return 0, &WorkError{Code: "BAD_REQUEST", Message: "附件暂不支持。"}
+	in.Text = trimJS(in.Text)
+	if in.Text == "" && len(in.Attachments) == 0 && len(in.Skills) == 0 && len(in.Context) == 0 {
+		return 0, &WorkError{Code: "BAD_REQUEST", Message: "Bad Request"}
+	}
+	// Refused rather than dropped, so the composer keeps materials it would
+	// otherwise clear as sent.
+	if len(in.Attachments) > 0 || len(in.Skills) > 0 || len(in.Context) > 0 {
+		return 0, &WorkError{Code: "BAD_REQUEST", Message: "附件、技能和上下文暂不支持。"}
 	}
 	bot := store.ConversationID(in.BotID)
 	var id store.SubmissionID
@@ -113,10 +144,7 @@ func (r *Runtime) Submit(ctx context.Context, in SendInput) (store.SubmissionID,
 			}
 			return err
 		}
-		r.mu.Lock()
-		stopping := r.stopping[in.BotID]
-		r.mu.Unlock()
-		if stopping {
+		if r.isStopping(in.BotID) {
 			return errStopping
 		}
 		if r.native {
@@ -240,9 +268,23 @@ func (r *Runtime) deliver(bot int64) {
 	go r.work(bot, w)
 }
 
+func (r *Runtime) isStopping(bot int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopping[bot] != nil
+}
+
 func (r *Runtime) work(bot int64, w *worker) {
 	ctx := context.Background()
 	for {
+		// A stopping Bot's queue is being settled; nothing in it may start.
+		r.mu.Lock()
+		done := r.stopping[bot]
+		r.mu.Unlock()
+		if done != nil {
+			<-done
+			continue
+		}
 		task, err := r.next(ctx, bot)
 		if err == nil && task != nil {
 			r.run(ctx, bot, w, task)
@@ -297,7 +339,7 @@ func (r *Runtime) run(ctx context.Context, bot int64, w *worker, task *store.Tas
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	w.mu.Lock()
-	w.task, w.cancel, w.stopped = task.ID, cancel, false
+	w.task, w.cancel, w.stopped, w.unsteerable = task.ID, cancel, false, false
 	w.mu.Unlock()
 	defer func() {
 		w.mu.Lock()
@@ -313,46 +355,86 @@ func (r *Runtime) run(ctx context.Context, bot int64, w *worker, task *store.Tas
 	}
 }
 
-// steer delivers queued input to the running native turn. Input whose
-// delivery is uncertain stays queued and runs as its own turn.
+// steer delivers queued input to the running native turn, deliver in
+// harness/inputs.ts. Each input is reserved as sending before it is written;
+// an input whose delivery is not confirmed is never sent again.
 func (r *Runtime) steer(bot int64, w *worker) {
+	w.steering.Lock()
+	defer w.steering.Unlock()
 	ctx := context.Background()
-	w.mu.Lock()
-	session, active := w.session, w.task
-	w.mu.Unlock()
-	if session == nil {
-		return
-	}
-	doc, _, err := Snapshot(ctx, r.h, EngineDoc, bot)
-	if err != nil || doc.ActiveID == nil || store.TaskID(*doc.ActiveID) != active || doc.Dispatch != "accepted" {
-		return
-	}
-	for _, id := range doc.Tasks {
-		if store.TaskID(id) == active {
-			continue
+	for {
+		w.mu.Lock()
+		session, active, stopped := w.session, int64(w.task), w.stopped || w.unsteerable
+		w.mu.Unlock()
+		if session == nil || stopped {
+			return
 		}
-		task, err := r.h.store.Task(ctx, store.TaskID(id))
-		if err != nil || task.State.Status != store.TaskPending {
-			continue
-		}
-		delivery, _, err := Snapshot(ctx, r.h, EngineInputDoc, id)
-		if err != nil || delivery.Status != "queued" {
-			continue
-		}
-		var in taskInput
-		_ = json.Unmarshal(task.Input, &in)
-		if session.Steer(ctx, engine.Prompt{Text: in.Text}) != nil {
-			continue
-		}
-		owner := int64(active)
-		_ = r.h.Commit(ctx, func(tx *Tx) error {
-			delivery, err := Create(tx, EngineInputDoc, id)
-			if err != nil {
+		var next *taskInput
+		var nextID int64
+		err := r.h.Commit(ctx, func(tx *Tx) error {
+			doc, err := Edit(tx, EngineDoc, bot)
+			if err != nil || doc.ActiveID == nil || *doc.ActiveID != active || doc.Dispatch != "accepted" {
 				return err
 			}
-			delivery.Status, delivery.Owner = "accepted", &owner
+			for _, id := range doc.Tasks {
+				if id == active {
+					continue
+				}
+				task, err := tx.Task(store.TaskID(id))
+				if err != nil {
+					return err
+				}
+				if task == nil || task.State.Status != store.TaskPending || task.AbortRequested {
+					continue
+				}
+				delivery, err := Edit(tx, EngineInputDoc, id)
+				if err != nil {
+					return err
+				}
+				if delivery.Status != "queued" {
+					continue
+				}
+				owner := active
+				delivery.Status, delivery.Owner = "sending", &owner
+				var in taskInput
+				_ = json.Unmarshal(task.Input, &in)
+				next, nextID = &in, id
+				return nil
+			}
 			return nil
 		})
+		if err != nil || next == nil {
+			return
+		}
+		result := "accepted"
+		if session.Steer(ctx, engine.Prompt{Text: next.Text}) != nil {
+			result = "uncertain"
+		}
+		_ = r.h.Commit(ctx, func(tx *Tx) error {
+			delivery, err := Edit(tx, EngineInputDoc, nextID)
+			if err != nil || delivery.Status != "sending" {
+				return err
+			}
+			delivery.Status = result
+			if result == "accepted" {
+				doc, err := Edit(tx, EngineDoc, bot)
+				if err != nil {
+					return err
+				}
+				if doc.Run != nil {
+					doc.Run.InputTurns = append(doc.Run.InputTurns, next.TurnID)
+				}
+			}
+			return nil
+		})
+		if result != "accepted" {
+			w.mu.Lock()
+			if int64(w.task) == active {
+				w.unsteerable = true
+			}
+			w.mu.Unlock()
+			return
+		}
 	}
 }
 
@@ -382,12 +464,26 @@ func (r *Runtime) runEngine(ctx context.Context, bot int64, w *worker, taskID st
 			delivered = true
 			return r.reconcile(tx, store.ConversationID(bot), doc)
 		}
+		if r.isStopping(bot) {
+			// Stop settles this task; it never reaches the model.
+			delivered = true
+			return nil
+		}
 		if input.Status == "settled" {
 			doc.Tasks = without(doc.Tasks, id)
 			doc.TaskID = last(doc.Tasks)
 			r.terminal(tx, task)
 			delivered = true
 			return nil
+		}
+		if task.State.Status != store.TaskPending || task.AbortRequested || (input.Owner != nil && input.Status != "deferred") {
+			// Aborted, or reserved by another turn: its outcome belongs to
+			// that turn and it is never prompted on its own.
+			if task.State.Status != store.TaskTerminal {
+				r.terminal(tx, task)
+			}
+			delivered = true
+			return r.reconcile(tx, store.ConversationID(bot), doc)
 		}
 		task.State.Status = store.TaskRunning
 		started := r.ms()
@@ -448,13 +544,35 @@ func (r *Runtime) executeEngine(ctx context.Context, bot int64, w *worker, task 
 	if r.engine == nil {
 		return "引擎尚未配置。"
 	}
+	profile, _, err := Snapshot(ctx, r.h, AgentDoc, bot)
+	if err != nil {
+		return err.Error()
+	}
+	instructions := profile.Instructions()
 	if err := r.h.Commit(ctx, func(tx *Tx) error {
-		_, err := Create(tx, MemorySnapshotDoc, task)
+		if _, err := Create(tx, MemorySnapshotDoc, task); err != nil {
+			return err
+		}
+		doc, err := Edit(tx, EngineDoc, bot)
+		if err != nil {
+			return err
+		}
+		doc.Prompt, err = json.Marshal(map[string]any{"text": instructions, "sections": map[string]any{}, "tools": []string{}})
 		return err
 	}); err != nil {
 		return err.Error()
 	}
-	options := engine.SessionOptions{BotID: bot, SessionID: sessionID}
+	var approve tools.Approver
+	if r.approvals != nil {
+		approve = r.approvals.Approver()
+	}
+	gateway, err := mcpserver.Open(ctx, mcpserver.Options{Registry: r.tools, BotID: bot, TaskID: task, Approve: approve})
+	if err != nil {
+		return err.Error()
+	}
+	defer func() { _ = gateway.Close() }()
+	options := engine.SessionOptions{BotID: bot, SessionID: sessionID, SystemPrompt: instructions,
+		Env: map[string]string{"PERSONA_PI_MCP_URL": gateway.URL}}
 	if config.Model != nil {
 		if provider, model, ok := strings.Cut(*config.Model, "/"); ok {
 			options.Model = engine.Model{Provider: provider, ModelID: model}
@@ -473,7 +591,14 @@ func (r *Runtime) executeEngine(ctx context.Context, bot int64, w *worker, task 
 		"contextPolicy": map[string]any{"manual": true, "automatic": "native", "refresh": true}}})
 	r.readContext(ctx, session, p)
 	p.emit(ctx, map[string]any{"type": "runtime", "state": map[string]any{"nativeSkills": []any{}}})
-	settled := r.consume(ctx, session, func(e map[string]any) { p.emit(ctx, e) })
+	settled := r.consume(ctx, session, func(e map[string]any) {
+		if e["type"] == "approval" {
+			request, _ := e["approval"].(map[string]any)
+			go r.approve(ctx, bot, session, request)
+			return
+		}
+		p.emit(ctx, e)
+	})
 	cursor := "pi:"
 	if c, ok := session.(interface {
 		Checkpoint(context.Context) (string, error)
@@ -487,6 +612,8 @@ func (r *Runtime) executeEngine(ctx context.Context, bot int64, w *worker, task 
 		return err.Error()
 	}
 	p.emit(ctx, map[string]any{"type": "accepted", "id": cursor})
+	p.flush(ctx)
+	go r.steer(bot, w)
 	var failure string
 	select {
 	case failure = <-settled:
@@ -521,6 +648,23 @@ func (r *Runtime) consume(ctx context.Context, session engine.Session, emit func
 		settled <- "引擎已退出。执行结果未确认。"
 	}()
 	return settled
+}
+
+// approve answers one of Pi's approval requests. Answers are not served yet,
+// so only an Automatic request in the Bot's auto approval mode is allowed and
+// every other request is cancelled rather than left waiting.
+func (r *Runtime) approve(ctx context.Context, bot int64, session engine.Session, request map[string]any) {
+	id, _ := request["id"].(string)
+	automatic, _ := request["automatic"].(bool)
+	allow := false
+	if automatic && r.approvals != nil {
+		allow, _ = r.approvals.Automatic(ctx, bot)
+	}
+	answer := json.RawMessage(`{"cancelled":true}`)
+	if allow {
+		answer = json.RawMessage(`{"confirmed":true}`)
+	}
+	_ = session.Answer(ctx, id, answer)
 }
 
 func (r *Runtime) readContext(ctx context.Context, session engine.Session, p *projection) {
@@ -898,14 +1042,22 @@ func (r *Runtime) reconcile(tx *Tx, bot store.ConversationID, doc *EngineState) 
 // Stop revokes the Bot's running turn and settles its queued input, stop in
 // runtime/index.ts with stopEngine in reconcile.ts.
 func (r *Runtime) Stop(ctx context.Context, botID int64) error {
+	done := make(chan struct{})
 	r.mu.Lock()
-	r.stopping[botID] = true
+	previous := r.stopping[botID]
+	r.stopping[botID] = done
 	w := r.workers[botID]
 	r.mu.Unlock()
+	if previous != nil {
+		<-previous
+	}
 	defer func() {
 		r.mu.Lock()
-		delete(r.stopping, botID)
+		if r.stopping[botID] == done {
+			delete(r.stopping, botID)
+		}
 		r.mu.Unlock()
+		close(done)
 	}()
 	var active store.TaskID
 	if w != nil {
@@ -923,10 +1075,10 @@ func (r *Runtime) Stop(ctx context.Context, botID int64) error {
 			cancel()
 		}
 	}
-	if !r.native {
-		return nil
-	}
 	bot := store.ConversationID(botID)
+	if !r.native {
+		return r.stopChat(ctx, bot, active)
+	}
 	return r.h.Commit(ctx, func(tx *Tx) error {
 		doc, err := Edit(tx, EngineDoc, botID)
 		if err != nil {
@@ -989,6 +1141,65 @@ func (r *Runtime) Stop(ctx context.Context, botID int64) error {
 		}
 		return nil
 	})
+}
+
+// stopChat settles the queued model-mode turns, so none reaches the model.
+func (r *Runtime) stopChat(ctx context.Context, bot store.ConversationID, active store.TaskID) error {
+	page, err := r.h.store.Tasks(ctx, store.TaskQuery{ConversationID: bot, Kind: ChatTurn, Status: store.TaskPending}, store.Scan{Limit: 256})
+	if err != nil {
+		return err
+	}
+	return r.h.Commit(ctx, func(tx *Tx) error {
+		for _, item := range page.Items {
+			task, err := tx.Task(item.ID)
+			if err != nil {
+				return err
+			}
+			if task == nil || task.ID == active || task.State.Status != store.TaskPending {
+				continue
+			}
+			var in taskInput
+			_ = json.Unmarshal(task.Input, &in)
+			if in.SubmissionID != 0 {
+				if err := tx.SettleSubmission(in.SubmissionID, store.SubmissionUnanswered, nil, "aborted"); err != nil {
+					return err
+				}
+			}
+			task.AbortRequested = true
+			r.terminal(tx, task)
+		}
+		return nil
+	})
+}
+
+// Recover resumes the queues of Bots whose tasks outlived the previous
+// process: a task it started is faulted as uncertain, and the rest run.
+func (r *Runtime) Recover(ctx context.Context) error {
+	kind := ChatTurn
+	if r.native {
+		kind = EngineTurn
+	}
+	bots := map[int64]bool{}
+	for _, status := range []store.TaskStatus{store.TaskPending, store.TaskRunning} {
+		scan := store.Scan{Limit: 256}
+		for {
+			page, err := r.h.store.Tasks(ctx, store.TaskQuery{Kind: kind, Status: status}, scan)
+			if err != nil {
+				return err
+			}
+			for _, task := range page.Items {
+				bots[int64(task.ConversationID)] = true
+			}
+			if page.Next == "" {
+				break
+			}
+			scan.Cursor = page.Next
+		}
+	}
+	for bot := range bots {
+		r.deliver(bot)
+	}
+	return nil
 }
 
 // Idle waits until no Bot has a running or queued task.
