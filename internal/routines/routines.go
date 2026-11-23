@@ -261,7 +261,7 @@ func (s *Service) List(ctx context.Context, botID int64) (Listing, error) {
 // "bot:<id>/tool:<call>". A repeated requestID returns the stored routine unchanged.
 // Created and resumed routines become enabled; an update keeps the current state.
 func (s *Service) Manage(ctx context.Context, botID int64, change Change, requestID, source string) (any, error) {
-	result, test, err := s.apply(ctx, botID, change, requestID, source)
+	result, test, err := s.apply(ctx, botID, change, requestID, source, true)
 	if err != nil || test == nil {
 		return result, err
 	}
@@ -275,26 +275,33 @@ func (s *Service) Manage(ctx context.Context, botID int64, change Change, reques
 	return map[string]store.TaskID{"taskId": taskID}, nil
 }
 
-// apply commits a change. For run_now it returns the routine to run and commits nothing.
-func (s *Service) apply(ctx context.Context, botID int64, change Change, requestID, source string) (any, *Routine, error) {
+// apply merges the change into the document. When confirm is set (routine_*
+// tool calls), it asks the shared approver between preparing the merge and
+// committing it, without holding the service lock: a pending card must not
+// block the runner or other routines. The commit re-reads the document and
+// re-checks dedupe and revision, so a change landed during the wait is a
+// conflict rather than a silent overwrite. For run_now it returns the routine
+// to run and commits nothing.
+func (s *Service) apply(ctx context.Context, botID int64, change Change, requestID, source string, confirm bool) (any, *Routine, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	var doc document
-	meta, err := s.read(ctx, DocKind, &doc)
-	if err != nil {
+	if _, err := s.read(ctx, DocKind, &doc); err != nil {
+		s.mu.Unlock()
 		return nil, nil, err
 	}
-	now := s.now()
 	item := Routine{BotID: botID}
 	index := -1
 	if change.Action == "create" {
 		if repeated := slices.IndexFunc(doc.Items, func(item Routine) bool {
 			return item.BotID == botID && item.RequestID == requestID
 		}); repeated >= 0 {
-			return doc.Items[repeated], nil, nil
+			stored := doc.Items[repeated]
+			s.mu.Unlock()
+			return stored, nil, nil
 		}
 		id, err := s.store.MintID(ctx)
 		if err != nil {
+			s.mu.Unlock()
 			return nil, nil, err
 		}
 		item.ID = fmt.Sprintf("routine-%d", id)
@@ -303,13 +310,16 @@ func (s *Service) apply(ctx context.Context, botID int64, change Change, request
 			return item.BotID == botID && item.ID == change.ID
 		})
 		if index < 0 {
+			s.mu.Unlock()
 			return nil, nil, &Error{NotFound, "定时任务不存在。"}
 		}
 		item = doc.Items[index]
 		if item.RequestID == requestID {
+			s.mu.Unlock()
 			return item, nil, nil
 		}
 		if change.Revision == nil || *change.Revision != item.Revision {
+			s.mu.Unlock()
 			return nil, nil, &Error{Conflict, "内容已更新，请刷新后重试。"}
 		}
 	}
@@ -322,19 +332,55 @@ func (s *Service) apply(ctx context.Context, botID int64, change Change, request
 	case "create", "update":
 		item.Enabled = change.Action == "create" || item.Enabled
 		item.Source = source
-		if err := s.edit(ctx, &item, change, now); err != nil {
+		if err := s.edit(ctx, &item, change, s.now()); err != nil {
+			s.mu.Unlock()
 			return nil, nil, err
 		}
 	case "pause", "resume", "run_now", "delete":
 	default:
+		s.mu.Unlock()
 		return nil, nil, &Error{BadRequest, "参数无效：action 不受支持。"}
 	}
-	confirmed, err := s.confirmChange(ctx, botID, change.Action, &item, previous, requestID)
+	s.mu.Unlock()
+	if confirm {
+		confirmed, err := s.confirmChange(ctx, botID, change.Action, &item, previous, requestID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !confirmed {
+			return map[string]string{"status": "declined"}, nil, nil
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc = document{}
+	meta, err := s.read(ctx, DocKind, &doc)
 	if err != nil {
 		return nil, nil, err
 	}
-	if !confirmed {
-		return map[string]string{"status": "declined"}, nil, nil
+	index = -1
+	if change.Action == "create" {
+		if repeated := slices.IndexFunc(doc.Items, func(item Routine) bool {
+			return item.BotID == botID && item.RequestID == requestID
+		}); repeated >= 0 {
+			return doc.Items[repeated], nil, nil
+		}
+	} else {
+		index = slices.IndexFunc(doc.Items, func(item Routine) bool {
+			return item.BotID == botID && item.ID == change.ID
+		})
+		if index < 0 {
+			return nil, nil, &Error{NotFound, "定时任务不存在。"}
+		}
+		stored := doc.Items[index]
+		if stored.RequestID == requestID {
+			return stored, nil, nil
+		}
+		// item carries the revision read before the wait; a newer one means
+		// another change landed meanwhile and this confirmation is stale.
+		if stored.Revision != item.Revision {
+			return nil, nil, &Error{Conflict, "内容已更新，请刷新后重试。"}
+		}
 	}
 	switch change.Action {
 	case "run_now":
@@ -348,6 +394,9 @@ func (s *Service) apply(ctx context.Context, botID int64, change Change, request
 	// The runner starts a task for the new revision; a task for an older one ends itself.
 	item.NextAt, item.TaskID = nil, nil
 	if item.Enabled {
+		// now is read after any approval wait so an occurrence that passed
+		// while pending does not fire immediately.
+		now := s.now()
 		if err := item.Schedule.Validate(now); err != nil {
 			return nil, nil, err
 		}

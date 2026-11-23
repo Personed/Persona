@@ -146,6 +146,31 @@ func TestManageLifecycle(t *testing.T) {
 	}
 }
 
+// The details-panel switch is the user's own click: it commits directly
+// instead of opening a confirmation card.
+func TestEnableSkipsConfirmation(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newService(t)
+	created := create(t, service, 1, "r1")
+	service.Confirm = func(context.Context, int64, approval.Request) (bool, error) {
+		return false, errors.New("confirmation must not run")
+	}
+	if err := service.Enable(ctx, 1, created.ID, false, created.Revision, "r2"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := service.List(ctx, 1)
+	if err != nil || len(item.Items) != 1 || item.Items[0].Enabled {
+		t.Fatalf("after disable = %+v, %v", item.Items, err)
+	}
+	if err := service.Enable(ctx, 1, created.ID, true, item.Items[0].Revision, "r3"); err != nil {
+		t.Fatal(err)
+	}
+	item, err = service.List(ctx, 1)
+	if err != nil || !item.Items[0].Enabled || item.Items[0].NextAt == nil {
+		t.Fatalf("after enable = %+v, %v", item.Items, err)
+	}
+}
+
 func TestValidation(t *testing.T) {
 	ctx := context.Background()
 	service, records := newService(t)
