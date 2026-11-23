@@ -38,6 +38,8 @@ func (fauxModels) Providers(context.Context) ([]agent.Provider, error) {
 
 func (fauxModels) Configured(context.Context, string) (bool, error) { return true, nil }
 
+func (fauxModels) Refresh(context.Context, string) error { return nil }
+
 // recordedIDs is the last record ID the TypeScript runtime mints while it
 // opens (the root conversation, its documents and extension documents), so
 // the first Bot created in a fixture is ID 10.
@@ -75,6 +77,7 @@ func fixtureService(t *testing.T, file string) (http.Handler, *rpc.Server) {
 	rt := agent.NewRuntime(a, agent.RuntimeOptions{Engine: answer, Native: answer.native})
 	procedures := newRPC(t)
 	RegisterAgent(procedures, a, rt)
+	RegisterEngines(procedures, a, rt)
 	h, err := New(Config{RPC: procedures, Files: AgentFiles(a.Files)})
 	if err != nil {
 		t.Fatal(err)

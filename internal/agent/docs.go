@@ -30,11 +30,21 @@ func (a Config) Instructions() string {
 	return text
 }
 
+// ThinkingLevel returns the configured thinking level, "off" when unset.
+func (a Config) ThinkingLevel() string {
+	level := "off"
+	if raw, ok := a["thinkingLevel"]; ok {
+		_ = json.Unmarshal(raw, &level)
+	}
+	return level
+}
+
 // Change configures a conversation as pi-durable's configure: a nil field
-// keeps the current value.
+// keeps the current value. An empty ThinkingLevel removes it, as null does.
 type Change struct {
-	Model        *ModelRef
-	Instructions *string
+	Model         *ModelRef
+	Instructions  *string
+	ThinkingLevel *string
 }
 
 func (a Config) apply(change Change) {
@@ -43,6 +53,13 @@ func (a Config) apply(change Change) {
 	}
 	if change.Instructions != nil {
 		a["instructions"], _ = json.Marshal(*change.Instructions)
+	}
+	switch {
+	case change.ThinkingLevel == nil:
+	case *change.ThinkingLevel == "":
+		delete(a, "thinkingLevel")
+	default:
+		a["thinkingLevel"], _ = json.Marshal(*change.ThinkingLevel)
 	}
 }
 
