@@ -50,7 +50,7 @@ type ComputerResult struct {
 }
 
 // journalEntry is one line of a task's computer-use journal: intent before
-// dispatch, then result or uncertain. verified (desktop) and restarted
+// dispatch, then result, uncertain, or cancelled (not sent). verified (desktop) and restarted
 // (browser) clear a service's uncertainty.
 type journalEntry struct {
 	State     string          `json:"state"`
@@ -156,7 +156,7 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 		var tools []*mcp.Tool
 		for tool, err := range driver.session.session.Tools(ctx, nil) {
 			if err != nil {
-				s.dropBroken(key, driver, err)
+				s.dropBroken(ctx, key, driver, err)
 				return nil, mcpError(ctx, err)
 			}
 			tools = append(tools, tool)
@@ -180,7 +180,7 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 		}
 		result, err := driver.session.session.CallTool(ctx, params)
 		if err != nil {
-			s.dropBroken(key, driver, err)
+			s.dropBroken(ctx, key, driver, err)
 			return nil, mcpError(ctx, err)
 		}
 		raw, err := json.Marshal(result)
@@ -198,7 +198,7 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 	if err != nil {
 		return nil, err
 	}
-	if previous, ok := entries[input.CallID]; ok {
+	if previous, ok := entries[input.CallID]; ok && previous.State != "cancelled" {
 		switch {
 		case previous.State == "result" && previous.Error != nil:
 			return nil, previous.Error
@@ -229,6 +229,16 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 		_ = os.Remove(marker)
 		return nil, err
 	}
+	// Cancellation that arrives while the intent syncs still wins: nothing was sent.
+	if err := ctx.Err(); err != nil {
+		if err := appendJournal(journal, input.TaskID, journalEntry{State: "cancelled", CallID: input.CallID, Service: input.Service}); err != nil {
+			return nil, err
+		}
+		if err := os.Remove(marker); err != nil {
+			return nil, err
+		}
+		return nil, toError(ctx.Err())
+	}
 	callCtx := ctx
 	if input.Service == "browser" {
 		// Cancellation stops queued browser work; dispatched work settles first.
@@ -240,7 +250,7 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 	var wire *jsonrpc.Error
 	if callErr != nil && !errors.As(callErr, &wire) || callErr == nil && uncertainResult(result) {
 		if callErr != nil {
-			s.dropBroken(key, driver, callErr)
+			s.dropBroken(callCtx, key, driver, callErr)
 		}
 		entry := journalEntry{State: "uncertain", CallID: input.CallID, Service: input.Service}
 		if callErr == nil {
@@ -379,10 +389,11 @@ func (s *server) computerDriver(ctx context.Context, key string, input ComputerI
 }
 
 // dropBroken discards a driver session after a transport failure. Protocol
-// errors keep the session.
-func (s *server) dropBroken(key string, driver *computerDriver, err error) {
+// errors and the end of the call's own context keep the session, which other
+// calls may still be using.
+func (s *server) dropBroken(ctx context.Context, key string, driver *computerDriver, err error) {
 	var wire *jsonrpc.Error
-	if errors.As(err, &wire) {
+	if errors.As(err, &wire) || ctx.Err() != nil {
 		return
 	}
 	s.computersMu.Lock()

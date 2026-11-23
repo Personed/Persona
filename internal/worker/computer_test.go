@@ -52,6 +52,14 @@ func testBrowserDriver() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "browser", Version: "1"}, nil)
 	object := map[string]any{"type": "object"}
 	var clicks atomic.Int64
+	server.AddTool(&mcp.Tool{Name: "agent_browser_get_text", InputSchema: object}, func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Second):
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "text"}}}, nil
+		}
+	})
 	server.AddTool(&mcp.Tool{Name: "agent_browser_click", InputSchema: object}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		time.Sleep(500 * time.Millisecond)
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("clicked %d", clicks.Add(1))}}}, nil
@@ -168,6 +176,41 @@ func TestComputerBrowserCancelAfterDispatch(t *testing.T) {
 		}
 		if next, err := act(client, dir, "b", "browser", "agent_browser_click"); err != nil || text(t, next) != "clicked 2" {
 			t.Fatalf("next click = %v", err)
+		}
+	})
+}
+
+func TestComputerCancelledObservation(t *testing.T) {
+	eachComputer(t, func(t *testing.T, dir string, dial func(map[string]*MCPConfig) *Client) {
+		client := dial(nil)
+		before, err := client.Observe(context.Background(), "browser")
+		if err != nil {
+			t.Fatal(err)
+		}
+		clicked := make(chan error, 1)
+		go func() {
+			observed, err := act(client, dir, "a", "browser", "agent_browser_click")
+			if err == nil && text(t, observed) != "clicked 1" {
+				err = fmt.Errorf("click = %s", observed.Raw)
+			}
+			clicked <- err
+		}()
+		time.Sleep(100 * time.Millisecond)
+		// A cancelled observation leaves the shared driver session to the click.
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		_, err = client.Act(ctx, ComputerCall{Dir: dir, CallID: "o", Action: computer.Action{Service: "browser", Name: "agent_browser_get_text"}})
+		cancel()
+		if err == nil {
+			t.Fatal("expected the observation to be cancelled")
+		}
+		if err := <-clicked; err != nil {
+			t.Fatalf("click during a cancelled observation: %v", err)
+		}
+		if after, err := client.Observe(context.Background(), "browser"); err != nil || text(t, after) != text(t, before) {
+			t.Fatalf("driver session replaced after a cancelled observation: %v", err)
+		}
+		if _, err := act(client, dir, "b", "browser", "agent_browser_click"); err != nil {
+			t.Fatalf("action after a cancelled observation: %v", err)
 		}
 	})
 }
