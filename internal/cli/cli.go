@@ -38,6 +38,7 @@ var Commands = []Command{
 	{Name: "worker", Summary: "Run the work-computer process for a Bot.", Run: runWorker},
 	{Name: "controller", Summary: "Run the authenticated control service for remote sandboxes.", Run: controller.Run},
 	{Name: "models", Summary: "Detect local model servers and sync Pi providers.", Run: models},
+	{Name: "health", Summary: "Probe a service health endpoint.", Run: health},
 	{Name: "migrate", Summary: "Import an existing pi-durable database.", Run: runMigrate},
 	{Name: "version", Summary: "Print the build version.", Run: func(_ context.Context, _ []string, stdout io.Writer) error {
 		_, err := fmt.Fprintln(stdout, Version)

@@ -34,6 +34,8 @@ type Models interface {
 	Available(ctx context.Context, provider string) ([]Model, error)
 	Providers(ctx context.Context) ([]Provider, error)
 	Configured(ctx context.Context, provider string) (bool, error)
+	// Refresh reloads one provider's catalog from the network.
+	Refresh(ctx context.Context, provider string) error
 }
 
 var extendedThinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
@@ -167,4 +169,16 @@ func ConfiguredModel(ctx context.Context, models Models, selection *ModelRef) (M
 		}
 	}
 	return Model{}, false, nil
+}
+
+// Configure applies change to the Bot's pi.agent document, configure of pi-durable.
+func (a *Agent) Configure(ctx context.Context, bot int64, change Change) error {
+	return a.Harness.Commit(ctx, func(tx *Tx) error {
+		config, err := Edit(tx, AgentDoc, bot)
+		if err != nil {
+			return err
+		}
+		config.apply(change)
+		return nil
+	})
 }
