@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/Personed/Persona/internal/engine"
 	"github.com/Personed/Persona/internal/memory"
 	"github.com/Personed/Persona/internal/store"
+	"github.com/Personed/Persona/internal/tools"
 )
 
 // scriptEngine runs each prompt's frames, and holds the prompt open until
@@ -530,5 +533,55 @@ func TestRuntimeTaskSnapshotsMemoryIntoInstructions(t *testing.T) {
 	}
 	if again, _, _ := Snapshot(ctx, a.Harness, MemorySnapshotDoc, task); again.Text != stored.Text {
 		t.Fatalf("first task snapshot changed to %q", again.Text)
+	}
+}
+
+type probeTool struct{}
+
+func (probeTool) Definition() tools.Definition {
+	return tools.Definition{Name: "probe_read", Description: "Probe.", InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+func (probeTool) Run(context.Context, tools.Call) (tools.Result, error) { return tools.Result{}, nil }
+
+func TestRuntimeGatewayServesRegistry(t *testing.T) {
+	ctx := context.Background()
+	registry := tools.NewRegistry()
+	if err := registry.Register(probeTool{}); err != nil {
+		t.Fatal(err)
+	}
+	hold := make(chan struct{})
+	started := make(chan *scriptSession, 1)
+	a := open(t)
+	rt := NewRuntime(a, RuntimeOptions{Native: true, Tools: registry,
+		Engine: scriptEngine{frames: strings.Split(answerFrames, "\n"), hold: hold, started: started}})
+	bot := int64(a.Root)
+	if _, err := rt.Submit(ctx, SendInput{BotID: bot, Text: "hello", RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	session := <-started
+	if specs := session.options.Tools; len(specs) != 1 || specs[0].Name != "probe_read" {
+		t.Errorf("declared tools = %+v", specs)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "pi-test", Version: "0"}, nil)
+	mcpSession, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: session.options.Env["PERSONA_PI_MCP_URL"], MaxRetries: -1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := mcpSession.ListTools(ctx, nil)
+	_ = mcpSession.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(listed.Tools, func(tool *mcp.Tool) bool { return tool.Name == "probe_read" }) {
+		t.Errorf("gateway lists %d tools without probe_read", len(listed.Tools))
+	}
+	close(hold)
+	idle(t, rt)
+	doc, _, err := Snapshot(ctx, a.Harness, EngineDoc, bot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(doc.Prompt), `"tools":["probe_read"]`) {
+		t.Errorf("prompt = %s", doc.Prompt)
 	}
 }
