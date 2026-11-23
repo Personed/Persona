@@ -25,3 +25,7 @@ func fileIdentity(path string, _ fs.FileInfo) (dev, ino, links uint64) {
 	}
 	return 0, 0, uint64(data.NumberOfLinks)
 }
+
+// ownedPrivate accepts the directory: the Windows temp directory is per user
+// and has no Unix owner or mode.
+func ownedPrivate(fs.FileInfo, int) bool { return true }

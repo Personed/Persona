@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,13 +16,20 @@ import (
 
 	"github.com/Personed/Persona/internal/agent"
 	"github.com/Personed/Persona/internal/approval"
+	"github.com/Personed/Persona/internal/computers"
 	"github.com/Personed/Persona/internal/contract"
 	"github.com/Personed/Persona/internal/engine/pi"
 	"github.com/Personed/Persona/internal/hosting"
 	"github.com/Personed/Persona/internal/localmodels"
+	"github.com/Personed/Persona/internal/mcp"
+	"github.com/Personed/Persona/internal/memory"
+	"github.com/Personed/Persona/internal/routines"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/server"
+	"github.com/Personed/Persona/internal/skills"
 	"github.com/Personed/Persona/internal/store"
+	"github.com/Personed/Persona/internal/takeover"
+	"github.com/Personed/Persona/internal/tools"
 )
 
 // serve runs the local service. Procedures without a Go handler answer NOT_IMPLEMENTED.
@@ -95,27 +103,89 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	// Go keeps its own files root until the importer copies the TypeScript
 	// history: discarding an upload checks only the Go chats, so it must never
 	// see artifacts that TypeScript chats reference.
+	filesRoot := filepath.Join(*dataDir, "persona-go.sqlite.files")
 	bots, err := agent.Open(ctx, records, agent.Options{
 		Models:    agent.NewLocalModels(localmodels.DefaultEndpoints()),
-		FilesRoot: filepath.Join(*dataDir, "persona-go.sqlite.files"),
+		FilesRoot: filesRoot,
 	})
 	if err != nil {
 		return err
 	}
+	// Managed MCP secrets and Jev keys share the hosting credential store with
+	// the TypeScript service.
+	credentials, err := hosting.OpenCredentials(ctx, *dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = credentials.Close() }()
+	serviceCfg := computers.ServiceConfig{
+		DataDir:    *dataDir,
+		Deployment: "native",
+		Computer:   computers.Config{Kind: "process"},
+		Legacy:     true,
+	}
+	if cfg != nil {
+		serviceCfg.Deployment = cfg.Deployment
+		serviceCfg.Credentials = credentials
+		computer, err := computerConfig(cfg.Computer)
+		if err != nil {
+			return err
+		}
+		serviceCfg.Computer = computer
+		// preparation.ts template: workComputer ?? (kind !== "process" ? computer).
+		switch {
+		case cfg.WorkComputer != nil:
+			tmpl, err := computerConfig(*cfg.WorkComputer)
+			if err != nil {
+				return err
+			}
+			serviceCfg.Template = &tmpl
+		case serviceCfg.Computer.Kind != "process":
+			tmpl := serviceCfg.Computer
+			serviceCfg.Template = &tmpl
+		}
+	}
+	catalog := computers.New(serviceCfg, bots.Harness)
+	approvals := approval.NewService(records, nil, 0)
 	var runtime *agent.Runtime
 	if *piExtension != "" {
 		// An idle Bot has no Pi: each closes with the last session of its task.
-		engine := pi.New(pi.Config{Extensions: []string{*piExtension}, IdleTimeout: -1,
+		engine := pi.New(pi.Config{Extensions: []string{*piExtension}, IdleTimeout: -1, LocalModels: true,
 			SessionDir: filepath.Join(*dataDir, "pi", "sessions"), StateDir: filepath.Join(*dataDir, "pi", "state")})
 		defer engine.Close()
+		registry := tools.NewRegistry()
+		if err := takeover.Register(registry, catalog.Handoff(approvals)); err != nil {
+			return err
+		}
 		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
-			Approvals: approval.NewService(records, nil, 0)})
+			Tools: registry, Approvals: approvals})
 		if err := runtime.Recover(ctx); err != nil {
 			return err
 		}
 	}
-	server.RegisterAgent(procedures, bots, runtime)
+	defer catalog.Close(context.Background())
+	var botIDs []int64
+	if contacts, err := bots.Bots.List(ctx); err == nil {
+		for _, contact := range contacts {
+			botIDs = append(botIDs, contact.ID)
+		}
+	}
+	if err := catalog.Initialize(ctx, botIDs); err != nil {
+		return err
+	}
+	server.RegisterAgent(procedures, bots, runtime, catalog)
+	server.RegisterComputer(procedures, catalog)
 	server.RegisterEngines(procedures, bots, runtime)
+	// The takeover card lifecycle is the computers slice's part of engines.*.
+	server.RegisterComputerTakeover(procedures, catalog, approvals)
+	server.RegisterWork(procedures, bots, runtime, server.Work{
+		Memory:   memory.NewService(records, nil),
+		Routines: routines.NewService(records, nil),
+		Skills:   skills.NewService(records, os.DirFS(filepath.Join(filesRoot, "skills")), nil),
+	})
+	// Until the computer runtime is composed, managed MCP connections have no
+	// Runner or native catalog, and no OAuth callback route is served.
+	server.RegisterMCP(procedures, bots, mcp.NewService(records, credentials, nil), "")
 	service.Files = server.AgentFiles(bots.Files)
 	if !*headless {
 		if service.Static, err = webFS(*static); err != nil {
@@ -175,4 +245,15 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 func fileExists(name string) bool {
 	info, err := os.Stat(name)
 	return err == nil && info.Mode().IsRegular()
+}
+
+// computerConfig maps a hosting computer config onto the catalog's Config:
+// the JSON tags line up one to one.
+func computerConfig(in hosting.ComputerConfig) (computers.Config, error) {
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return computers.Config{}, err
+	}
+	var out computers.Config
+	return out, json.Unmarshal(raw, &out)
 }

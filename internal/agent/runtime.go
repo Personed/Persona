@@ -15,6 +15,7 @@ import (
 	"github.com/Personed/Persona/internal/engine"
 	"github.com/Personed/Persona/internal/engine/pi"
 	"github.com/Personed/Persona/internal/mcpserver"
+	"github.com/Personed/Persona/internal/memory"
 	"github.com/Personed/Persona/internal/store"
 	"github.com/Personed/Persona/internal/tools"
 )
@@ -55,6 +56,10 @@ type Runtime struct {
 	native    bool
 	tools     tools.Registry
 	approvals *approval.Service
+	// inspected holds each engine's last connection check by provider, as
+	// the connection cache in packages/agent/src/harness/connections.ts.
+	inspectMu sync.Mutex
+	inspected map[string]EngineInspection
 	now       func() time.Time
 
 	mu sync.Mutex
@@ -540,6 +545,25 @@ func (r *Runtime) runEngine(ctx context.Context, bot int64, w *worker, taskID st
 	_ = r.finish(context.Background(), bot, taskID, in, failure, reason)
 }
 
+// sectionOrder is the order of the TypeScript Bot's instruction sections. Only memory is
+// ported; identity, skills, and computer render nothing yet.
+var sectionOrder = []string{"computer", "identity", "memory", "skills"}
+
+const toolInstructions = "Use your native tools for commands and files in this Bot's work directory. Publish deliverable files with attach_file. Bots sharing this computer share OS permissions and accessible files."
+
+func sectionTexts(sections map[string]string) []string {
+	texts := make([]string, 0, len(sections))
+	for _, key := range sectionOrder {
+		texts = append(texts, sections[key])
+	}
+	return texts
+}
+
+// joinInstructions joins the non-empty parts of a system prompt with blank lines.
+func joinInstructions(parts ...string) string {
+	return strings.Join(slices.DeleteFunc(parts, func(part string) bool { return part == "" }), "\n\n")
+}
+
 func (r *Runtime) executeEngine(ctx context.Context, bot int64, w *worker, task int64, in taskInput, config EngineConfig, sessionID string, p *projection) string {
 	if r.engine == nil {
 		return "引擎尚未配置。"
@@ -548,16 +572,33 @@ func (r *Runtime) executeEngine(ctx context.Context, bot int64, w *worker, task 
 	if err != nil {
 		return err.Error()
 	}
-	instructions := profile.Instructions()
+	// The profile snapshot is taken once per task and kept for its retries.
+	snapshot, ok, err := Snapshot(ctx, r.h, MemorySnapshotDoc, task)
+	if err != nil {
+		return err.Error()
+	}
+	if !ok {
+		memories, _, err := Snapshot(ctx, r.h, MemoryDoc, 0)
+		if err != nil {
+			return err.Error()
+		}
+		snapshot.Text = memory.Snapshot(memories.Items, bot)
+	}
+	sections := map[string]string{"memory": snapshot.Text}
+	instructions := joinInstructions(append(append([]string{profile.Instructions()}, sectionTexts(sections)...), toolInstructions)...)
 	if err := r.h.Commit(ctx, func(tx *Tx) error {
-		if _, err := Create(tx, MemorySnapshotDoc, task); err != nil {
-			return err
+		if !ok {
+			doc, err := Create(tx, MemorySnapshotDoc, task)
+			if err != nil {
+				return err
+			}
+			doc.Text = snapshot.Text
 		}
 		doc, err := Edit(tx, EngineDoc, bot)
 		if err != nil {
 			return err
 		}
-		doc.Prompt, err = json.Marshal(map[string]any{"text": instructions, "sections": map[string]any{}, "tools": []string{}})
+		doc.Prompt, err = json.Marshal(map[string]any{"text": instructions, "sections": sections, "tools": []string{}})
 		return err
 	}); err != nil {
 		return err.Error()

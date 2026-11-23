@@ -64,16 +64,3 @@ func MCPApps() []MCPApp {
 		},
 	}
 }
-
-// Work is the work.get answer for a Bot. Memory, skills and routines are
-// served by their own packages once the runtime composes them; until then a
-// Bot reads as having none, with memory review on.
-func Work() map[string]any {
-	return map[string]any{
-		"memory":              []any{},
-		"memoryUsage":         map[string]int{"profile": 0, "work": 0},
-		"memoryReviewEnabled": true,
-		"skills":              []any{},
-		"routines":            map[string]any{"items": []any{}, "runs": []any{}},
-	}
-}
