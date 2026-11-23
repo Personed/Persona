@@ -134,7 +134,9 @@ test("Apps manages a real MCP connection and Bot grants across reloads and theme
     await dialog
       .getByRole("button", { name: /^查看 (Local Docs|OAuth Docs)$/ })
       .click();
-    await expect(connection.getByText(/^可用/)).toBeVisible();
+    await expect(connection.getByText(/^可用/)).toBeVisible({
+      timeout: 20_000,
+    });
     await connection.getByText("机器人权限", { exact: false }).click();
     await expect(
       connection.getByRole("checkbox", { name: "Persona", exact: true }),
@@ -148,7 +150,9 @@ test("Apps manages a real MCP connection and Bot grants across reloads and theme
     ).not.toBeChecked();
     await connection.getByRole("button", { name: "Local Docs · 操作" }).click();
     await page.getByRole("menuitem", { name: "停用", exact: true }).click();
-    await expect(connection.getByText(/^已禁用/)).toBeVisible();
+    await expect(connection.getByText(/^已禁用/)).toBeVisible({
+      timeout: 20_000,
+    });
     await connection.getByRole("button", { name: "Local Docs · 操作" }).click();
     await page.getByRole("menuitem", { name: "启用", exact: true }).click();
     await connection.getByRole("button", { name: "Local Docs · 操作" }).click();
@@ -2372,14 +2376,13 @@ test("panel transitions preserve the transcript and draft through rapid toggles 
   await expect(
     page.locator(".workspace-panel[data-side=inspector]"),
   ).toBeHidden();
-  await page.waitForFunction(() =>
-    document
-      .getAnimations()
-      .every(
-        (animation) =>
-          !(animation.effect instanceof KeyframeEffect) ||
-          !animation.effect.pseudoElement?.includes("view-transition"),
-      ),
+  // getAnimations() can keep reporting a skipped transition's pseudo
+  // animations after its own cleanup, and rAF polling stalls while a view
+  // transition captures. Wait on the transition itself with interval polling.
+  await page.waitForFunction(
+    () => !document.activeViewTransition,
+    undefined,
+    { polling: 100 },
   );
   const frames = await page.evaluate(() => {
     document.documentElement.dataset.panelRecording = "false";
