@@ -31,6 +31,7 @@ test("real temporary service: private pairing, auth, shutdown and cleanup", {
       (await fetch(`${service.origin}/hosting/session`)).status,
       401,
     );
+    // The endpoint exists now; without the desktop credential it refuses.
     assert.equal(
       (
         await fetch(`${service.origin}/hosting/desktop`, {
@@ -38,7 +39,7 @@ test("real temporary service: private pairing, auth, shutdown and cleanup", {
           headers: { origin: service.origin },
         })
       ).status,
-      404,
+      401,
     );
     const session = await service.pair();
     assert.ok(session.token.length >= 32);
@@ -67,7 +68,7 @@ test("real temporary service: private pairing, auth, shutdown and cleanup", {
   assert.equal(signal, null);
   await assert.rejects(access(service.directory), { code: "ENOENT" });
   console.log(
-    "health=200 anonymous=401 desktop-http=404 paired=200 cross-origin=403 shutdown=0 temporary-data=removed",
+    "health=200 anonymous=401 desktop-http=401 paired=200 cross-origin=403 shutdown=0 temporary-data=removed",
   );
 });
 

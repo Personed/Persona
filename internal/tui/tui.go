@@ -31,23 +31,33 @@ func Run(ctx context.Context, args []string, stdout io.Writer) error {
 	if flags.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", flags.Arg(0))
 	}
-	path, err := serversPath()
+	c, saved, err := connect(*server)
 	if err != nil {
 		return err
-	}
-	saved, err := loadServers(path)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-	base := strings.TrimRight(cmp.Or(*server, os.Getenv("PERSONA_SERVER"), saved.Current, DefaultServer), "/")
-	c := &client.Client{BaseURL: base, Token: cmp.Or(os.Getenv("PERSONA_TOKEN"), saved.Tokens[base])}
-	if c.Token != "" && !secure(c.BaseURL) {
-		return errInsecure(c.BaseURL)
 	}
 	m := New(ctx, c)
 	m.servers = saved
 	_, err = tea.NewProgram(m, tea.WithContext(ctx), tea.WithOutput(stdout)).Run()
 	return err
+}
+
+// connect resolves the service and device token: the flag, then PERSONA_SERVER and PERSONA_TOKEN,
+// then the last paired service and its saved token.
+func connect(server string) (*client.Client, *servers, error) {
+	path, err := serversPath()
+	if err != nil {
+		return nil, nil, err
+	}
+	saved, err := loadServers(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	base := strings.TrimRight(cmp.Or(server, os.Getenv("PERSONA_SERVER"), saved.Current, DefaultServer), "/")
+	c := &client.Client{BaseURL: base, Token: cmp.Or(os.Getenv("PERSONA_TOKEN"), saved.Tokens[base])}
+	if c.Token != "" && !secure(c.BaseURL) {
+		return nil, nil, errInsecure(c.BaseURL)
+	}
+	return c, saved, nil
 }
 
 func errInsecure(server string) error {

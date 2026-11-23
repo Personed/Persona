@@ -8,6 +8,7 @@ import {
   expect,
   type Page,
   setTestLanguage,
+  stopWorker,
   type TestInfo,
   test,
 } from "./fixtures.ts";
@@ -201,9 +202,7 @@ test("first use prepares the default Bot with a computer and model before shared
     }
     await page.screenshot({ path: testInfo.outputPath("configured.png") });
   } finally {
-    const exited = once(worker, "exit");
-    worker.disconnect();
-    await exited;
+    await stopWorker(worker);
     await rm(directory, { recursive: true, force: true, maxRetries: 10 });
   }
 });

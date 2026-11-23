@@ -130,9 +130,15 @@ export async function runMaintenanceOperation(
     stage = await mkdtemp(join(tmpdir(), "persona-pilot-backup-"));
     const snapshot = join(stage, "installation");
     await cp(paths.directory, snapshot, { recursive: true });
+    // The desktop credential is per-installation; restore regenerates it.
+    await rm(join(snapshot, "desktop-credential"), { force: true });
     await writeFile(
       join(snapshot, "persona.config.json"),
-      JSON.stringify({ ...configuration, dataDir: "data" }),
+      JSON.stringify({
+        ...configuration,
+        dataDir: "data",
+        desktopCredentialFile: undefined,
+      }),
       { mode: 0o600 },
     );
     await backup(snapshot, archive, password);

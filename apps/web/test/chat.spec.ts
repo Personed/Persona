@@ -2327,7 +2327,17 @@ test("latest bubbles stay above the composer after typing, resizing, and reloadi
   const session = await page.context().newCDPSession(page);
   await session.send("Emulation.setCPUThrottlingRate", { rate: 6 });
   const errors: string[] = [];
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("pageerror", (error) => {
+    // Under CPU throttling Chromium can abort a React view transition whose
+    // DOM update stalls; the state still applies and only the animation is
+    // skipped, so this pageerror is benign noise.
+    if (
+      error.message ===
+      "Transition was aborted because of timeout in DOM update. DOM update timed out"
+    )
+      return;
+    errors.push(error.message);
+  });
   await page.setViewportSize({ width: 1360, height: 700 });
   await page.goto(url);
   const input = page.getByLabel("消息", { exact: true });

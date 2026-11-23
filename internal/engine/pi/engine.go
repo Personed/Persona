@@ -31,6 +31,10 @@ type Config struct {
 	Command string
 	// Args are extra flags for every Pi process, such as --extension.
 	Args []string
+	// Extensions are Pi extension paths, such as pi-tools.mjs, that a session
+	// must load. At least one is required: the packaged extension supplies the
+	// shared approval callback and product tools.
+	Extensions []string
 	// SessionDir holds Pi's native session files.
 	SessionDir string
 	// StateDir holds per-Bot launch files such as the appended system prompt.
@@ -157,6 +161,26 @@ func (e *Engine) Catalog(ctx context.Context) ([]CatalogModel, error) {
 	return result.Models, err
 }
 
+// extensions returns the Pi flags that load the packaged approval/tool
+// extension. Sessions fail closed: none are launched without one readable file.
+func (e *Engine) extensions() ([]string, error) {
+	if len(e.config.Extensions) == 0 {
+		return nil, errors.New("pi: approval/tool extension is not configured")
+	}
+	args := make([]string, 0, 2*len(e.config.Extensions))
+	for _, path := range e.config.Extensions {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("pi: approval/tool extension %q is not readable: %w", path, err)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("pi: approval/tool extension %q is a directory", path)
+		}
+		args = append(args, "--extension", path)
+	}
+	return args, nil
+}
+
 // transient runs one Pi without a session for a short exchange and stops it.
 func (e *Engine) transient(ctx context.Context, env []string, run func(context.Context, *Client) error) error {
 	ctx, cancel := e.bound(ctx)
@@ -227,7 +251,11 @@ func (e *Engine) open(ctx context.Context, botID int64) (*conn, error) {
 	if !ok {
 		return nil, errors.New("pi: missing launch settings")
 	}
-	args := []string{"--mode", "rpc"}
+	extensions, err := e.extensions()
+	if err != nil {
+		return nil, err
+	}
+	args := append([]string{"--mode", "rpc"}, extensions...)
 	if e.config.SessionDir != "" {
 		args = append(args, "--session-dir", e.config.SessionDir)
 	}
