@@ -21,12 +21,18 @@ type EngineView struct {
 // View returns the Bot's chat page before the cursor, with the engine
 // runtime state when the runtime is native, view in runtime/index.ts.
 func (r *Runtime) View(ctx context.Context, bot int64, before string) (any, error) {
-	chat, err := r.h.ReadChat(ctx, bot, before)
-	if err != nil || !r.native {
-		return chat, err
+	if !r.native {
+		return r.h.ReadChat(ctx, bot, before)
+	}
+	chat, err := r.h.ReadEnginePage(ctx, bot, before, enginePage)
+	if err != nil {
+		return nil, err
 	}
 	doc, err := r.engineDoc(ctx, bot)
 	if err != nil {
+		return nil, err
+	}
+	if err := r.pendingApprovals(ctx, bot, &chat); err != nil {
 		return nil, err
 	}
 	known := map[string]bool{}
@@ -111,6 +117,55 @@ func (r *Runtime) engineDoc(ctx context.Context, bot int64) (EngineState, error)
 		return doc, err
 	}
 	return doc, nil
+}
+
+// pendingApprovals adds the Bot's pending approval requests and their cards
+// to the chat, as chatView in chat-view.ts does with approvalMessage.
+func (r *Runtime) pendingApprovals(ctx context.Context, bot int64, chat *ChatView) error {
+	if r.approvals == nil {
+		return nil
+	}
+	pending, err := r.approvals.Pending(ctx, bot)
+	if err != nil || len(pending) == 0 {
+		return err
+	}
+	var turn *string
+	for _, message := range chat.Messages {
+		var m struct {
+			Role   string  `json:"role"`
+			TurnID *string `json:"turnId"`
+		}
+		if data, err := json.Marshal(message); err == nil && json.Unmarshal(data, &m) == nil && m.Role == "user" {
+			turn = m.TurnID
+		}
+	}
+	for _, request := range pending {
+		data, err := json.Marshal(request)
+		if err != nil {
+			return err
+		}
+		chat.Approvals = append(chat.Approvals, data)
+		card := map[string]any{
+			"id": "approval:" + request.ID + ":" + strconv.FormatInt(request.RequestedAt, 10), "role": "assistant",
+			"timestamp": request.RequestedAt, "pending": true, "stopped": false, "turnId": turn,
+		}
+		if request.Takeover != nil {
+			content := []map[string]any{{"type": "text", "text": request.Detail, "key": request.ID}}
+			if len(request.Preview) > 0 {
+				var preview map[string]any
+				if json.Unmarshal(request.Preview, &preview) == nil {
+					preview["key"] = request.ID + ":preview"
+					content = append(content, preview)
+				}
+			}
+			takeover := *request.Takeover
+			card["content"], card["takeover"] = content, takeover
+		} else {
+			card["content"], card["approval"] = []any{}, map[string]any{"request": json.RawMessage(data), "state": "pending"}
+		}
+		chat.Messages = append(chat.Messages, card)
+	}
+	return nil
 }
 
 func messageID(message any) string {

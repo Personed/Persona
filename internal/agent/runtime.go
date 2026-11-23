@@ -42,12 +42,17 @@ type RuntimeOptions struct {
 	// only query_result.
 	Tools tools.Registry
 	// Approvals decides mutating product tool calls and Pi's approval
-	// requests. Until answers are served, only requests marked Automatic are
-	// allowed, in a Bot's auto approval mode; nil denies every request.
+	// requests, and serves the pending ones in the chat view; nil denies
+	// every request.
 	Approvals *approval.Service
 	// Memory counts completed turns and runs the Bot's background review
 	// (TurnCompleted and Review); nil skips both.
 	Memory *memory.Service
+	// Workspace returns the Bot's working directory on its work computer,
+	// where each native session runs; nil leaves the engine's default.
+	Workspace func(ctx context.Context, botID int64) (string, error)
+	// Skills resolves the skills an input selects; nil finds none.
+	Skills SkillLister
 	Now    func() time.Time
 }
 
@@ -61,6 +66,8 @@ type Runtime struct {
 	tools     tools.Registry
 	approvals *approval.Service
 	memory    *memory.Service
+	workspace func(ctx context.Context, botID int64) (string, error)
+	skills    SkillLister
 	// inspected holds each engine's last connection check by provider, as
 	// the connection cache in packages/agent/src/harness/connections.ts.
 	inspectMu sync.Mutex
@@ -97,7 +104,8 @@ func NewRuntime(a *Agent, opts RuntimeOptions) *Runtime {
 		registry = tools.NewRegistry()
 	}
 	return &Runtime{a: a, h: a.Harness, engine: opts.Engine, native: opts.Native, tools: registry, approvals: opts.Approvals,
-		memory: opts.Memory, now: now, stopping: map[int64]chan struct{}{}, workers: map[int64]*worker{}}
+		memory: opts.Memory, workspace: opts.Workspace, skills: opts.Skills, now: now,
+		stopping: map[int64]chan struct{}{}, workers: map[int64]*worker{}}
 }
 
 // Native reports whether the runtime serves the engine runtime view.
@@ -111,10 +119,9 @@ type SendInput struct {
 	Text        string   `json:"text"`
 	Attachments []string `json:"attachments"`
 	RequestID   string   `json:"requestId"`
-	// Skills and Context are the composer's materials, which turns do not
-	// carry yet.
-	Skills  []json.RawMessage `json:"skills"`
-	Context []json.RawMessage `json:"context"`
+	// Skills and Context are the composer's materials.
+	Skills  []SkillSelection   `json:"skills"`
+	Context []ContextSelection `json:"context"`
 	// WhenBusy is "reject", "followUp" or "" (steer into the running turn).
 	WhenBusy string `json:"-"`
 	// Routine-run submissions (routine-task.ts dispatch): DisplayText replaces
@@ -135,6 +142,7 @@ type taskInput struct {
 	RoutineRunID  string             `json:"routineRunId,omitempty"`
 	MemoryReview  bool               `json:"memoryReview,omitempty"`
 	ReviewThrough *store.EntryID     `json:"reviewThrough,omitempty"`
+	Attachments   []Attachment       `json:"attachments,omitempty"`
 }
 
 var (
@@ -151,28 +159,28 @@ func (r *Runtime) Submit(ctx context.Context, in SendInput) (store.SubmissionID,
 	}
 	// Refused rather than dropped, so the composer keeps materials it would
 	// otherwise clear as sent.
-	if len(in.Attachments) > 0 || len(in.Skills) > 0 || len(in.Context) > 0 {
+	if !r.native && (len(in.Attachments) > 0 || len(in.Skills) > 0 || len(in.Context) > 0) {
 		return 0, &WorkError{Code: "BAD_REQUEST", Message: "附件、技能和上下文暂不支持。"}
+	}
+	files := make([]Attachment, 0, len(in.Attachments))
+	for _, id := range in.Attachments {
+		file, err := r.a.Files.Metadata(in.BotID, id)
+		if err != nil {
+			return 0, &WorkError{Code: "NOT_FOUND", Message: "Not Found"}
+		}
+		files = append(files, file)
 	}
 	bot := store.ConversationID(in.BotID)
 	var id store.SubmissionID
-	err := r.h.Commit(ctx, func(tx *Tx) error {
-		existing, err := tx.SubmissionByRequest(bot, in.RequestID)
-		if err != nil || existing != nil {
-			if existing != nil {
-				id = existing.ID
+	err := r.a.Files.Exclusive(in.BotID, func() error {
+		var materials *Materials
+		if len(in.Skills) > 0 || len(in.Context) > 0 {
+			var err error
+			if materials, err = r.prepareMaterials(ctx, in); err != nil {
+				return err
 			}
-			return err
 		}
-		if r.isStopping(in.BotID) {
-			return errStopping
-		}
-		if r.native {
-			id, err = r.submitEngine(tx, bot, in)
-		} else {
-			id, err = r.submitChat(tx, bot, in)
-		}
-		return err
+		return r.commitSubmission(ctx, bot, in, files, materials, &id)
 	})
 	if err != nil {
 		return 0, err
@@ -181,7 +189,28 @@ func (r *Runtime) Submit(ctx context.Context, in SendInput) (store.SubmissionID,
 	return id, nil
 }
 
-func (r *Runtime) submitEngine(tx *Tx, bot store.ConversationID, in SendInput) (store.SubmissionID, error) {
+func (r *Runtime) commitSubmission(ctx context.Context, bot store.ConversationID, in SendInput, files []Attachment, materials *Materials, id *store.SubmissionID) error {
+	return r.h.Commit(ctx, func(tx *Tx) error {
+		existing, err := tx.SubmissionByRequest(bot, in.RequestID)
+		if err != nil || existing != nil {
+			if existing != nil {
+				*id = existing.ID
+			}
+			return err
+		}
+		if r.isStopping(in.BotID) {
+			return errStopping
+		}
+		if r.native {
+			*id, err = r.submitEngine(tx, bot, in, files, materials)
+		} else {
+			*id, err = r.submitChat(tx, bot, in)
+		}
+		return err
+	})
+}
+
+func (r *Runtime) submitEngine(tx *Tx, bot store.ConversationID, in SendInput, files []Attachment, materials *Materials) (store.SubmissionID, error) {
 	doc, err := Create(tx, EngineDoc, int64(bot))
 	if err != nil {
 		return 0, err
@@ -214,16 +243,39 @@ func (r *Runtime) submitEngine(tx *Tx, bot store.ConversationID, in SendInput) (
 			message["routine"] = map[string]any{"runId": run.ID, "title": run.Title, "scheduledAt": run.ScheduledAt}
 		}
 	}
+	if len(files) > 0 {
+		attachments, err := json.Marshal(files)
+		if err != nil {
+			return 0, err
+		}
+		message["attachments"] = json.RawMessage(attachments)
+	}
+	if materials != nil {
+		raw, err := json.Marshal(materials)
+		if err != nil {
+			return 0, err
+		}
+		message["materials"] = json.RawMessage(raw)
+	}
 	data, err := json.Marshal(message)
 	if err != nil {
 		return 0, err
+	}
+	text, err := materialText(in.Text, materials)
+	if err != nil {
+		return 0, err
+	}
+	parts := []string{text}
+	for _, file := range files {
+		parts = append(parts, "Uploaded file: "+file.Path)
 	}
 	entry, err := tx.AppendEntry(store.Entry{ConversationID: bot, Kind: EngineMessage, Data: data})
 	if err != nil {
 		return 0, err
 	}
 	sub.Status, sub.Entry = store.SubmissionPlaced, &entry
-	input, err := json.Marshal(taskInput{Text: in.Text, SubmissionID: sub.ID, Previous: doc.TaskID, TurnID: turn, EntryID: entry, Source: in.Source, RoutineRunID: in.RoutineRunID})
+	input, err := json.Marshal(taskInput{Text: strings.Join(parts, "\n\n"), SubmissionID: sub.ID, Previous: doc.TaskID, TurnID: turn,
+		EntryID: entry, Source: in.Source, RoutineRunID: in.RoutineRunID, Attachments: files})
 	if err != nil {
 		return 0, err
 	}
@@ -442,9 +494,9 @@ func (r *Runtime) steer(bot int64, w *worker) {
 		if err != nil || next == nil {
 			return
 		}
-		result := "accepted"
-		if session.Steer(ctx, engine.Prompt{Text: next.Text}) != nil {
-			result = "uncertain"
+		result := "uncertain"
+		if images, err := r.images(bot, next.Attachments); err == nil && session.Steer(ctx, engine.Prompt{Text: next.Text, Images: images}) == nil {
+			result = "accepted"
 		}
 		_ = r.h.Commit(ctx, func(tx *Tx) error {
 			delivery, err := Edit(tx, EngineInputDoc, nextID)
@@ -666,6 +718,11 @@ func (r *Runtime) executeEngine(ctx context.Context, bot int64, w *worker, task 
 	defer func() { _ = gateway.Close() }()
 	options := engine.SessionOptions{BotID: bot, SessionID: sessionID, SystemPrompt: instructions, Tools: specs,
 		Env: map[string]string{"PERSONA_PI_MCP_URL": gateway.URL}}
+	if r.workspace != nil {
+		if options.WorkDir, err = r.workspace(ctx, bot); err != nil {
+			return err.Error()
+		}
+	}
 	if config.Model != nil {
 		if provider, model, ok := strings.Cut(*config.Model, "/"); ok {
 			options.Model = engine.Model{Provider: provider, ModelID: model}
@@ -701,7 +758,11 @@ func (r *Runtime) executeEngine(ctx context.Context, bot int64, w *worker, task 
 		}
 	}
 	p.emit(ctx, map[string]any{"type": "accepted", "id": cursor, "ready": false})
-	if err := session.Prompt(ctx, engine.Prompt{RequestID: strconv.FormatInt(task, 10), Text: in.Text}); err != nil {
+	images, err := r.images(bot, in.Attachments)
+	if err != nil {
+		return err.Error()
+	}
+	if err := session.Prompt(ctx, engine.Prompt{RequestID: strconv.FormatInt(task, 10), Text: in.Text, Images: images}); err != nil {
 		return err.Error()
 	}
 	p.emit(ctx, map[string]any{"type": "accepted", "id": cursor})

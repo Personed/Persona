@@ -344,18 +344,22 @@ func accepted(t *testing.T, a *Agent, bot int64) {
 	t.Fatal("turn was never accepted")
 }
 
-func TestRuntimeRejectsEmptyAndUnsupportedInput(t *testing.T) {
+func TestRuntimeRejectsEmptyInputAndMissingMaterials(t *testing.T) {
 	ctx := context.Background()
 	a, rt := runtimeFor(t, true, scriptEngine{frames: strings.Split(answerFrames, "\n")})
 	bot := int64(a.Root)
-	for _, in := range []SendInput{
-		{BotID: bot, Text: " \n\t\u00a0", RequestID: "r1"},
-		{BotID: bot, Text: "hi", RequestID: "r2", Skills: []json.RawMessage{json.RawMessage(`"skill"`)}},
-		{BotID: bot, Text: "hi", RequestID: "r3", Context: []json.RawMessage{json.RawMessage(`{}`)}},
+	for _, c := range []struct {
+		in   SendInput
+		code string
+	}{
+		{SendInput{BotID: bot, Text: " \n\t\u00a0", RequestID: "r1"}, "BAD_REQUEST"},
+		{SendInput{BotID: bot, Text: "hi", RequestID: "r2", Skills: []SkillSelection{{ID: "skill", Revision: 1}}}, "NOT_FOUND"},
+		{SendInput{BotID: bot, Text: "hi", RequestID: "r3", Context: []ContextSelection{{ID: "c", Type: "message", MessageID: "missing"}}}, "NOT_FOUND"},
+		{SendInput{BotID: bot, Text: "hi", RequestID: "r4", Attachments: []string{"missing"}}, "NOT_FOUND"},
 	} {
 		var refused *WorkError
-		if _, err := rt.Submit(ctx, in); !errors.As(err, &refused) || refused.Code != "BAD_REQUEST" {
-			t.Fatalf("submit %q = %v", in.RequestID, err)
+		if _, err := rt.Submit(ctx, c.in); !errors.As(err, &refused) || refused.Code != c.code {
+			t.Fatalf("submit %q = %v", c.in.RequestID, err)
 		}
 	}
 	page, err := a.Harness.Store().Submissions(ctx, store.SubmissionQuery{ConversationID: store.ConversationID(bot)}, store.Scan{Limit: 8})
