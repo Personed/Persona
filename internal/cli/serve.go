@@ -18,6 +18,7 @@ import (
 	"github.com/Personed/Persona/internal/contract"
 	"github.com/Personed/Persona/internal/engine/pi"
 	"github.com/Personed/Persona/internal/hosting"
+	"github.com/Personed/Persona/internal/localmodels"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/server"
 	"github.com/Personed/Persona/internal/store"
@@ -94,7 +95,10 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	// Go keeps its own files root until the importer copies the TypeScript
 	// history: discarding an upload checks only the Go chats, so it must never
 	// see artifacts that TypeScript chats reference.
-	bots, err := agent.Open(ctx, records, agent.Options{FilesRoot: filepath.Join(*dataDir, "persona-go.sqlite.files")})
+	bots, err := agent.Open(ctx, records, agent.Options{
+		Models:    agent.NewLocalModels(localmodels.DefaultEndpoints()),
+		FilesRoot: filepath.Join(*dataDir, "persona-go.sqlite.files"),
+	})
 	if err != nil {
 		return err
 	}
