@@ -48,7 +48,6 @@ type Target struct {
 	drv    driver
 
 	mu       sync.Mutex
-	pending  chan struct{}
 	changing bool
 	remote   *remoteInfo
 }
@@ -111,7 +110,7 @@ func (t *Target) bind() error {
 // status reports the target's state, Computer.status.
 func (t *Target) status(ctx context.Context) (Status, error) {
 	if t.drv == nil {
-		os_, arch := runtime.GOOS, runtime.GOARCH
+		osName, arch := runtime.GOOS, runtime.GOARCH
 		boundary := "host"
 		if t.cfg.Deployment == "container" {
 			boundary = "application"
@@ -121,7 +120,7 @@ func (t *Target) status(ctx context.Context) (Status, error) {
 			ID:         "process",
 			Kind:       "process",
 			State:      "running",
-			OS:         fmt.Sprintf("%s %s", os_, arch),
+			OS:         fmt.Sprintf("%s %s", osName, arch),
 			Arch:       arch,
 			Directory:  filepath.Join(t.cfg.DataDir, "agent.sqlite.files"),
 			Boundary:   boundary,
@@ -139,16 +138,16 @@ func (t *Target) status(ctx context.Context) (Status, error) {
 		text := err.Error()
 		message = &text
 	}
-	os_, arch := "", ""
+	osName, arch := "", ""
 	if t.remote != nil {
-		os_, arch = t.remote.Platform, t.remote.Arch
+		osName, arch = t.remote.Platform, t.remote.Arch
 	}
 	return Status{
 		Deployment: t.cfg.Deployment,
 		ID:         t.record.Config.ID,
 		Kind:       t.record.Config.Kind,
 		State:      state,
-		OS:         empty(os_, nil),
+		OS:         empty(osName, nil),
 		Arch:       empty(arch, nil),
 		Directory:  t.drv.directory(),
 		Boundary:   "sandbox",
@@ -200,7 +199,7 @@ func (t *Target) manage(ctx context.Context, action string, requireIdle func(con
 }
 
 // close releases the target's environments and services.
-func (t *Target) close(ctx context.Context) error {
+func (t *Target) close(context.Context) error {
 	// Environments and service workers land with the views/tools slices.
 	return nil
 }

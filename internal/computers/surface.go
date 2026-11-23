@@ -79,7 +79,7 @@ type AssistantTestResult struct {
 }
 
 // Setup is computer.setup: the preparation state of preparation.ts.
-func (c *Catalog) Setup(ctx context.Context) (map[string]any, error) {
+func (c *Catalog) Setup(context.Context) (map[string]any, error) {
 	return map[string]any{
 		"deployment": c.cfg.Deployment,
 		"canIsolate": c.cfg.Template != nil,
@@ -235,7 +235,7 @@ var randomID = func() string {
 // ConfigureService toggles a bound service (computer.service). The worker-side
 // enable/install lands with the services layer; this stores the toggle and the
 // prepare/install intent, as tools.ts configure does.
-func (c *Catalog) ConfigureService(ctx context.Context, botID int64, service string, enabled bool, install bool) (ServiceStates, error) {
+func (c *Catalog) ConfigureService(ctx context.Context, botID int64, service string, enabled bool, _ bool) (ServiceStates, error) {
 	if service != "browser" && service != "desktop" {
 		return ServiceStates{}, rpc.NewError("BAD_REQUEST", "服务无效。")
 	}
@@ -408,7 +408,7 @@ func (c *Catalog) AssistantKey(ctx context.Context, botID int64, provider, key s
 }
 
 // AssistantTest checks provider connectivity (computer.assistantTest).
-func (c *Catalog) AssistantTest(ctx context.Context, botID int64, provider string) (AssistantTestResult, error) {
+func (c *Catalog) AssistantTest(ctx context.Context, _ int64, provider string) (AssistantTestResult, error) {
 	key := c.assistKey(provider)
 	if key == "" {
 		return AssistantTestResult{}, errors.New("请先保存这个来源的密钥。")

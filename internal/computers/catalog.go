@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"runtime"
 	"strconv"
 	"sync"
 	"unicode/utf16"
@@ -567,9 +566,11 @@ func (c *Catalog) Manage(ctx context.Context, id, action string) (View, error) {
 }
 
 // ServiceSettings stores a binding's service toggle (computer.service).
+// Disabling ends the record's service workers (services.ts close).
 func (c *Catalog) ServiceSettings(ctx context.Context, botID int64, service string, enabled bool) error {
 	key := strconv.FormatInt(botID, 10)
-	return c.h.Commit(ctx, func(tx *agent.Tx) error {
+	var computerID string
+	err := c.h.Commit(ctx, func(tx *agent.Tx) error {
 		doc, err := agent.Edit(tx, ComputersDoc, 0)
 		if err != nil {
 			return err
@@ -583,8 +584,13 @@ func (c *Catalog) ServiceSettings(ctx context.Context, botID int64, service stri
 		}
 		binding.Services[service] = enabled
 		doc.Bindings[key] = binding
+		computerID = *binding.ComputerID
 		return nil
 	})
+	if err == nil && !enabled {
+		c.svcs.closeRecord(computerID)
+	}
+	return err
 }
 
 // AttachmentComputerID reports which computer file attachments use.
@@ -690,7 +696,7 @@ func (c *Catalog) emit() {
 	}
 }
 
-// Close stops every live target (close of catalog.ts).
+// Close stops every live target and service worker (close of catalog.ts).
 func (c *Catalog) Close(ctx context.Context) error {
 	c.mu.Lock()
 	targets := make([]*Target, 0, len(c.targets))
@@ -702,10 +708,6 @@ func (c *Catalog) Close(ctx context.Context) error {
 	for _, t := range targets {
 		errs = append(errs, t.close(ctx))
 	}
+	c.svcs.close()
 	return errors.Join(errs...)
-}
-
-// hostArch reports the local target's OS/arch labels for the process computer.
-func hostLabels() (string, string) {
-	return runtime.GOOS, runtime.GOARCH
 }

@@ -2,7 +2,6 @@ package computers
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 
 	"github.com/Personed/Persona/internal/rpc"
@@ -32,8 +31,6 @@ type control struct {
 	lease     int64
 	releasing bool
 	revision  int
-	calls     int
-	botID     int64
 }
 
 // serviceWorker is the worker.Client surface the services layer needs. The
@@ -44,8 +41,6 @@ type serviceWorker interface {
 	Close() error
 }
 
-var _ = json.Marshal
-
 // errUnavailable reports a missing binding or disabled service.
 func errUnavailable(message string) error {
 	return rpc.NewError("SERVICE_UNAVAILABLE", message)
@@ -55,22 +50,20 @@ func errUnavailable(message string) error {
 type services struct {
 	c *Catalog
 
-	mu               sync.Mutex
-	workers          map[serviceKey]*serviceWorker
-	records          map[serviceKey]string // key -> record id
-	controls         map[string]*control
-	isolatedBrowsers map[int64]bool
-	leased           int64 // next viewer lease
+	mu       sync.Mutex
+	workers  map[serviceKey]*serviceWorker
+	records  map[serviceKey]string // key -> record id
+	controls map[string]*control
+	leased   int64 // next viewer lease
 }
 
 func newServices(c *Catalog) *services {
 	return &services{
-		c:                c,
-		workers:          map[serviceKey]*serviceWorker{},
-		records:          map[serviceKey]string{},
-		controls:         map[string]*control{},
-		isolatedBrowsers: map[int64]bool{},
-		leased:           1,
+		c:        c,
+		workers:  map[serviceKey]*serviceWorker{},
+		records:  map[serviceKey]string{},
+		controls: map[string]*control{},
+		leased:   1,
 	}
 }
 
@@ -119,10 +112,6 @@ func (s *services) workerFor(ctx context.Context, botID int64, service string) (
 	return w, workDir, nil
 }
 
-// takeRequest marks a takeover grant's chat card live for its viewer.
-// finishRequest completes the live request owned by the viewer.
-var _ = worker.Options{}
-
 // controlOf returns the service control state, creating it owned by the Bot.
 func (s *services) controlOf(service string) *control {
 	s.mu.Lock()
@@ -165,17 +154,6 @@ func (s *services) close() {
 	for _, w := range dead {
 		_ = w.Close()
 	}
-}
-
-// requestControl grants or revokes the Bot's ownership of service input.
-func (s *services) requestControl(service string, botID int64, own bool) {
-	ctl := s.controlOf(service)
-	if own {
-		ctl.owner = true
-		ctl.botID = botID
-		return
-	}
-	ctl.owner = false
 }
 
 // takeover reserves a viewer lease for the service (services.ts takeover):

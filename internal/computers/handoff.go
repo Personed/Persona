@@ -13,17 +13,6 @@ import (
 	"github.com/Personed/Persona/internal/worker"
 )
 
-// Takeover is the pending request's takeover card payload (runtime.ts
-// approval.takeover): the grant whose viewer owns control.
-type Takeover struct {
-	ID         string `json:"id"`
-	Service    string `json:"service"`
-	ComputerID string `json:"computerId"`
-	Revision   int64  `json:"revision"`
-	State      string `json:"state"` // waiting | granted | expired
-	URL        string `json:"url,omitempty"`
-}
-
 // newRequestID mints a uuid-shaped id without a dependency.
 func newRequestID() string {
 	var b [16]byte
@@ -88,6 +77,13 @@ func (c *Catalog) Handoff(approver *approval.Service) takeover.Handoff {
 		if err != nil {
 			return false, err
 		}
+		if answer.Allow {
+			// The "return control" answer completes the live request and
+			// releases the viewer lease (runtime.ts answer → finishRequest).
+			if err := c.FinishRequest(ctx, request.BotID, id); err != nil {
+				return false, err
+			}
+		}
 		return answer.Allow, nil
 	}
 }
@@ -141,7 +137,7 @@ func (c *Catalog) TakeRequest(ctx context.Context, botID int64, requestID, viewI
 
 // FinishRequest completes the live request owned by the viewer (runtime.ts
 // answer → views.finishRequest). Only an allowed answer settles it.
-func (c *Catalog) FinishRequest(ctx context.Context, botID int64, requestID string) error {
+func (c *Catalog) FinishRequest(_ context.Context, botID int64, requestID string) error {
 	c.vw.mu.Lock()
 	var owner *view
 	for _, session := range c.vw.sessions {

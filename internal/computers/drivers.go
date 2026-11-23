@@ -75,7 +75,7 @@ func (d *dockerDriver) inspect(ctx context.Context) (string, error) {
 	return "missing", nil
 }
 
-func (d *dockerDriver) checkNetwork(ctx context.Context) error {
+func (d *dockerDriver) checkNetwork(context.Context) error {
 	if d.target == nil {
 		return errors.New("configuração do computador inválida")
 	}

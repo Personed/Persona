@@ -137,7 +137,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	var botIDs []int64
 	if contacts, err := bots.Bots.List(ctx); err == nil {
 		for _, contact := range contacts {
-			botIDs = append(botIDs, contact.Bot.ID)
+			botIDs = append(botIDs, contact.ID)
 		}
 	}
 	if err := catalog.Initialize(ctx, botIDs); err != nil {

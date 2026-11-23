@@ -47,13 +47,6 @@ func newViews(s *services) *views {
 	return &views{s: s, sessions: map[string]*view{}}
 }
 
-// openInput is computer.watch's first stream event.
-type openInput struct {
-	BotID       int64  `json:"botId"`
-	Service     string `json:"service"`
-	CursorColor string `json:"cursorColor,omitempty"`
-}
-
 // frame is one computer.watch stream event to the client.
 type frame struct {
 	Type    string          `json:"type"` // opened, message, closed, error
