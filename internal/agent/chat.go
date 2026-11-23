@@ -15,23 +15,31 @@ import (
 func (r *Runtime) runChat(ctx context.Context, bot int64, w *worker, taskID store.TaskID, in taskInput) {
 	id := int64(taskID)
 	run, _ := json.Marshal(map[string]any{"taskId": id, "turnId": in.TurnID})
+	uncertain := false
 	err := r.h.Commit(ctx, func(tx *Tx) error {
 		live, err := Create(tx, LiveDoc, bot)
 		if err != nil {
 			return err
 		}
-		live.Run, live.Generation = run, nil
 		task, err := tx.Task(taskID)
 		if err != nil || task == nil {
 			return err
 		}
+		if task.State.Status == store.TaskRunning {
+			// Started by a previous process: never prompt it again.
+			live.Run, live.Generation, live.Tools = nil, nil, nil
+			r.fault(tx, task)
+			uncertain = true
+			return tx.SettleSubmission(in.SubmissionID, store.SubmissionUnanswered, nil, uncertainTurn)
+		}
+		live.Run, live.Generation = run, nil
 		task.State.Status = store.TaskRunning
 		started := r.ms()
 		task.StartedAt = &started
 		tx.PutTask(task)
 		return nil
 	})
-	if err != nil {
+	if err != nil || uncertain {
 		return
 	}
 	answer, failure := r.executeChat(ctx, bot, w, taskID, in)

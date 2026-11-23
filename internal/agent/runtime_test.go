@@ -274,3 +274,28 @@ func TestChatRuntimeStoresModelMessages(t *testing.T) {
 		t.Fatalf("view = %s", got)
 	}
 }
+
+func TestRuntimeNeverReplaysTurnAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	started := make(chan *scriptSession, 1)
+	a, before := runtimeFor(t, true, scriptEngine{frames: strings.Split(answerFrames, "\n"), hold: make(chan struct{}), started: started})
+	bot := int64(a.Root)
+	first, err := before.Submit(ctx, SendInput{BotID: bot, Text: "hello", RequestID: "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	after := NewRuntime(a, RuntimeOptions{Engine: scriptEngine{frames: strings.Split(answerFrames, "\n")}, Native: true})
+	if _, err := after.Submit(ctx, SendInput{BotID: bot, Text: "again", RequestID: "r2"}); err != nil {
+		t.Fatal(err)
+	}
+	idle(t, after)
+	sub, _ := a.Harness.Store().Submission(ctx, first)
+	if sub.Status != store.SubmissionUnanswered {
+		t.Fatalf("interrupted submission = %+v", sub)
+	}
+	view := engineView(t, after, bot)
+	if got := encoded(t, view.Runs); !strings.Contains(got, `"status":"uncertain"`) || !strings.Contains(got, `"status":"ended"`) {
+		t.Fatalf("runs = %s", got)
+	}
+}

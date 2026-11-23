@@ -375,6 +375,13 @@ func (r *Runtime) runEngine(ctx context.Context, bot int64, w *worker, taskID st
 		if err != nil || task == nil {
 			return err
 		}
+		if task.State.Status == store.TaskRunning {
+			// A previous process started this turn; its outcome is uncertain,
+			// so it ends as faulted and is never prompted again.
+			r.fault(tx, task)
+			delivered = true
+			return r.reconcile(tx, store.ConversationID(bot), doc)
+		}
 		if input.Status == "settled" {
 			doc.Tasks = without(doc.Tasks, id)
 			doc.TaskID = last(doc.Tasks)
@@ -539,6 +546,16 @@ func (r *Runtime) terminal(tx *Tx, task *store.Task) {
 	task.State = store.TaskState{Status: store.TaskTerminal, Outcome: &store.TaskOutcome{Status: "completed", Result: json.RawMessage("null")}}
 	tx.PutTask(task)
 }
+
+func (r *Runtime) fault(tx *Tx, task *store.Task) {
+	ended := r.ms()
+	task.EndedAt = &ended
+	task.State = store.TaskState{Status: store.TaskTerminal, Outcome: &store.TaskOutcome{Status: "faulted",
+		Error: &store.OutcomeError{Message: uncertainTurn}}}
+	tx.PutTask(task)
+}
+
+const uncertainTurn = "服务已重启。执行结果未确认，请核对后再发送。"
 
 func (r *Runtime) appendMessage(tx *Tx, bot store.ConversationID, message *Draft) (store.EntryID, error) {
 	data, err := json.Marshal(message)
