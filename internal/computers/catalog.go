@@ -194,9 +194,9 @@ type View struct {
 }
 
 type capabilities struct {
-	Commands bool  `json:"commands"`
-	Files    bool  `json:"files"`
-	Desktop  bool  `json:"desktop"`
+	Commands bool `json:"commands"`
+	Files    bool `json:"files"`
+	Desktop  bool `json:"desktop"`
 }
 
 func (c *Catalog) view(ctx context.Context, item Record) (View, error) {
@@ -257,10 +257,10 @@ func (c *Catalog) List(ctx context.Context) (List, error) {
 
 // BindingView is a Bot's binding with its computer's view.
 type BindingView struct {
-	ComputerID *string `json:"computerId"`
-	Revision   int64   `json:"revision"`
-	RequestID  string  `json:"requestId"`
-	ApprovalMode string `json:"approvalMode,omitempty"`
+	ComputerID   *string         `json:"computerId"`
+	Revision     int64           `json:"revision"`
+	RequestID    string          `json:"requestId"`
+	ApprovalMode string          `json:"approvalMode,omitempty"`
 	Services     map[string]bool `json:"services,omitempty"`
 	Assistance   *Assistance     `json:"assistance,omitempty"`
 	Computer     *View           `json:"computer"`

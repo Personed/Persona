@@ -15,15 +15,15 @@ import (
 
 // Status is ComputerStatus of index.ts: the wire shape of a target's state.
 type Status struct {
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`
-	Deployment string `json:"deployment"`
-	State      string `json:"state"` // running | stopped | missing | unavailable
-	OS         string `json:"os"`
-	Arch       string `json:"arch"`
-	Directory  string `json:"directory"`
-	Boundary   string `json:"boundary"`
-	Network    string `json:"network"`
+	ID         string  `json:"id"`
+	Kind       string  `json:"kind"`
+	Deployment string  `json:"deployment"`
+	State      string  `json:"state"` // running | stopped | missing | unavailable
+	OS         string  `json:"os"`
+	Arch       string  `json:"arch"`
+	Directory  string  `json:"directory"`
+	Boundary   string  `json:"boundary"`
+	Network    string  `json:"network"`
 	Error      *string `json:"error"`
 }
 

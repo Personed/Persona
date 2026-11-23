@@ -54,8 +54,8 @@ func RegisterAgent(s *rpc.Server, a *agent.Agent, rt *agent.Runtime, catalog ...
 
 type agentRoutes struct {
 	catalog *computers.Catalog
-	a  *agent.Agent
-	rt *agent.Runtime
+	a       *agent.Agent
+	rt      *agent.Runtime
 }
 
 // wrap converts a WorkError into its oRPC error, as the TypeScript routers do.

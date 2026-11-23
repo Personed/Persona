@@ -12,12 +12,12 @@ import (
 
 // AssistanceView is computer.assistant's output, assistance.ts state().
 type AssistanceView struct {
-	ComputerID *string           `json:"computerId"`
-	Revision   int64             `json:"revision"`
-	Enabled    bool              `json:"enabled"`
-	Provider   string            `json:"provider"`
-	Configured map[string]bool   `json:"configured"`
-	Available  bool              `json:"available"`
+	ComputerID *string         `json:"computerId"`
+	Revision   int64           `json:"revision"`
+	Enabled    bool            `json:"enabled"`
+	Provider   string          `json:"provider"`
+	Configured map[string]bool `json:"configured"`
+	Available  bool            `json:"available"`
 }
 
 // Assistant is computer.assistant: the Bot's Jev assistance state.

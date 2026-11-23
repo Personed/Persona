@@ -12,19 +12,19 @@ import (
 // Kind "process" is the service's own host; "docker" a managed container;
 // "controller" a remote sandbox behind an authenticated controller.
 type Config struct {
-	Kind           string `json:"kind"`
-	ID             string `json:"id,omitempty"`
-	Image          string `json:"image,omitempty"`
-	Volume         string `json:"volume,omitempty"`
-	Network        string `json:"network,omitempty"`
-	ProxyImage     string `json:"proxyImage,omitempty"`
+	Kind           string  `json:"kind"`
+	ID             string  `json:"id,omitempty"`
+	Image          string  `json:"image,omitempty"`
+	Volume         string  `json:"volume,omitempty"`
+	Network        string  `json:"network,omitempty"`
+	ProxyImage     string  `json:"proxyImage,omitempty"`
 	CPUs           float64 `json:"cpus,omitempty"`
-	MemoryMiB      int64  `json:"memoryMiB,omitempty"`
-	Pids           int64  `json:"pids,omitempty"`
-	TimeoutSeconds int64  `json:"timeoutSeconds,omitempty"`
-	Endpoint       string `json:"endpoint,omitempty"`
-	CredentialFile string `json:"credentialFile,omitempty"`
-	SSH            *SSH   `json:"ssh,omitempty"`
+	MemoryMiB      int64   `json:"memoryMiB,omitempty"`
+	Pids           int64   `json:"pids,omitempty"`
+	TimeoutSeconds int64   `json:"timeoutSeconds,omitempty"`
+	Endpoint       string  `json:"endpoint,omitempty"`
+	CredentialFile string  `json:"credentialFile,omitempty"`
+	SSH            *SSH    `json:"ssh,omitempty"`
 }
 
 // SSH is the optional bootstrap of a docker config's ssh target.
@@ -59,12 +59,12 @@ type Assistance struct {
 
 // Binding is one Bot's computer assignment in the catalog document.
 type Binding struct {
-	ComputerID   *string           `json:"computerId"`
-	Revision     int64             `json:"revision"`
-	RequestID    string            `json:"requestId"`
-	ApprovalMode string            `json:"approvalMode,omitempty"`
-	Services     map[string]bool   `json:"services,omitempty"`
-	Assistance   *Assistance       `json:"assistance,omitempty"`
+	ComputerID   *string         `json:"computerId"`
+	Revision     int64           `json:"revision"`
+	RequestID    string          `json:"requestId"`
+	ApprovalMode string          `json:"approvalMode,omitempty"`
+	Services     map[string]bool `json:"services,omitempty"`
+	Assistance   *Assistance     `json:"assistance,omitempty"`
 }
 
 // Doc is the catalog document, ComputersDoc of state.ts.
