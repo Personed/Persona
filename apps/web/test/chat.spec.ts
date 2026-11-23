@@ -259,7 +259,7 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => {
   if (worker.exitCode === null) await stop();
-  await rm(directory, { recursive: true, force: true });
+  await rm(directory, { recursive: true, force: true, maxRetries: 10 });
 });
 
 test("model selection updates immediately and restores a failed save", async ({
