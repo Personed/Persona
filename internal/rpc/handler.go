@@ -210,6 +210,11 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request, stream Stre
 	}
 	close(writes)
 	<-finished
+	// A stream the service closes while it stops ends like a lost connection,
+	// so oRPC clients retry instead of reading a finished iterator.
+	if s.streams.Err() != nil && r.Context().Err() == nil {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 // envelope is the RPC serializer body of value: {"json": value}, or {} for Void.

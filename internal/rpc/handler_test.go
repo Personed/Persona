@@ -232,6 +232,29 @@ func TestStreamCancel(t *testing.T) {
 	}
 }
 
+func TestCloseStreamsAbortsConnection(t *testing.T) {
+	s := newServer(t)
+	s.HandleStream("subscribe", func(ctx context.Context, _ json.RawMessage, send func(any) error) (any, error) {
+		if err := send(1); err != nil {
+			return nil, err
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	server := httptest.NewServer(s)
+	defer server.Close()
+	resp, err := http.Post(server.URL+"/rpc/subscribe", "application/json", strings.NewReader(`{"json":{"botId":1}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadFull(resp.Body, make([]byte, 10))
+	s.CloseStreams()
+	if _, err := io.ReadAll(resp.Body); err == nil {
+		t.Error("closed stream ended cleanly, want an aborted connection")
+	}
+}
+
 func TestVoidStreamDone(t *testing.T) {
 	s := newServer(t)
 	s.HandleStream("work.subscribe", func(context.Context, json.RawMessage, func(any) error) (any, error) {

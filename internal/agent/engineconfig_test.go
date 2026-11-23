@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/Personed/Persona/internal/engine"
+	"github.com/Personed/Persona/internal/engine/pi"
 )
 
 type modelEngine struct{ scriptEngine }
@@ -51,5 +53,39 @@ func TestConfigurePreparesInspectedModel(t *testing.T) {
 	}
 	if doc, _, _ = Snapshot(ctx, a.Harness, EngineDoc, bot); doc.Revision != 2 || *doc.Config.Model != other {
 		t.Fatalf("selected doc = %+v", doc)
+	}
+}
+
+type catalogModelEngine struct{ modelEngine }
+
+func (catalogModelEngine) Catalog(context.Context) ([]pi.CatalogModel, error) {
+	return []pi.CatalogModel{{Provider: "faux", ID: "r1", Name: "推理模型", Reasoning: true, Input: []string{"text"}}}, nil
+}
+
+func TestSelectAcceptsOfferedEffort(t *testing.T) {
+	ctx := context.Background()
+	a := open(t)
+	rt := NewRuntime(a, RuntimeOptions{Engine: catalogModelEngine{}, Native: true})
+	bot := int64(a.Root)
+	model := "faux/r1"
+	config := EngineConfig{Provider: "pi", Model: &model}
+	inspected := rt.Inspect(ctx, config)
+	if len(inspected.Models) != 1 {
+		t.Fatalf("models = %+v", inspected.Models)
+	}
+	m := inspected.Models[0]
+	if m.Name != "推理模型" || m.Images == nil || *m.Images || m.Effort == nil ||
+		!slices.ContainsFunc(m.Effort.Options, func(o Option) bool { return o.ID == "high" }) {
+		t.Fatalf("model = %+v", m)
+	}
+	var work *WorkError
+	if err := rt.Select(ctx, bot, config, &model, map[string]any{"thinkingLevel": "extreme"}, 0, "a"); !errors.As(err, &work) || work.Code != "BAD_REQUEST" {
+		t.Fatalf("unoffered effort: %v", err)
+	}
+	if err := rt.Select(ctx, bot, config, &model, map[string]any{"thinkingLevel": "high"}, 0, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if doc, _, _ := Snapshot(ctx, a.Harness, EngineDoc, bot); doc.Config.Options["thinkingLevel"] != "high" {
+		t.Fatalf("doc = %+v", doc)
 	}
 }
