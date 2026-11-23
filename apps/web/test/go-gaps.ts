@@ -32,9 +32,8 @@ export const goGaps: Record<string, string[]> = {
       "large histories render a bounded window and retain the earlier reading anchor",
       "panel transitions preserve the transcript and draft through rapid toggles and reduced motion",
     ],
-  "routine tools: serve does not offer routine_* to Pi's native MCP catalog": [
-    "chat routine changes require confirmation and link runs to Work",
-  ],
+  "routine tools: Pi's scripted routine_create call shows no routine approval card in chat":
+    ["chat routine changes require confirmation and link runs to Work"],
   "native questions: Pi's ask_user is not stored as a shared question card": [
     "native questions use the shared card and native replies persist",
     "shared question and approval cards persist answers and terminal states",
