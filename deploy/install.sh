@@ -21,4 +21,4 @@ docker info --format '{{.OSType}}' | grep -qx linux
 docker compose -f "$compose" build
 docker compose -f "$compose" run --rm --no-deps -v "$PWD:/source:ro" controller $install
 docker compose -f "$compose" up -d
-printf '%s\n' 'Persona: http://localhost:4310' "首次管理员码：docker compose -f $compose exec app cat /data/owner-code"
+printf '%s\n' 'Persona: http://localhost:4310' "首次管理员码：docker compose -f $compose cp app:/data/owner-code - | tar -xO"
