@@ -37,11 +37,6 @@ export const goGaps: Record<string, string[]> = {
   "shared approval cards: the Go fixture cannot open an approval request": [
     "shared question and approval cards persist answers and terminal states",
   ],
-  "MCP apps: Go has no application catalog, connection runner, or OAuth callback composed into serve":
-    [
-      "Apps completes and cancels browser OAuth with stored state",
-      "Apps manages a real MCP connection and Bot grants across reloads and themes",
-    ],
   "native Harness controls: unhosted persona serve offers no device pairing": [
     "native Harness controls persist and client accounts retain model access",
   ],
