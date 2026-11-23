@@ -19,8 +19,12 @@ import (
 	"github.com/Personed/Persona/internal/engine/pi"
 	"github.com/Personed/Persona/internal/hosting"
 	"github.com/Personed/Persona/internal/localmodels"
+	"github.com/Personed/Persona/internal/mcp"
+	"github.com/Personed/Persona/internal/memory"
+	"github.com/Personed/Persona/internal/routines"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/server"
+	"github.com/Personed/Persona/internal/skills"
 	"github.com/Personed/Persona/internal/store"
 )
 
@@ -95,9 +99,10 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	// Go keeps its own files root until the importer copies the TypeScript
 	// history: discarding an upload checks only the Go chats, so it must never
 	// see artifacts that TypeScript chats reference.
+	filesRoot := filepath.Join(*dataDir, "persona-go.sqlite.files")
 	bots, err := agent.Open(ctx, records, agent.Options{
 		Models:    agent.NewLocalModels(localmodels.DefaultEndpoints()),
-		FilesRoot: filepath.Join(*dataDir, "persona-go.sqlite.files"),
+		FilesRoot: filesRoot,
 	})
 	if err != nil {
 		return err
@@ -116,6 +121,20 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	server.RegisterAgent(procedures, bots, runtime)
 	server.RegisterEngines(procedures, bots, runtime)
+	server.RegisterWork(procedures, bots, runtime, server.Work{
+		Memory:   memory.NewService(records, nil),
+		Routines: routines.NewService(records, nil),
+		Skills:   skills.NewService(records, os.DirFS(filepath.Join(filesRoot, "skills")), nil),
+	})
+	// Managed MCP secrets share the hosting credential store with the
+	// TypeScript service. Until the computer runtime is composed, connections
+	// have no Runner or native catalog, and no OAuth callback route is served.
+	credentials, err := hosting.OpenCredentials(ctx, *dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = credentials.Close() }()
+	server.RegisterMCP(procedures, bots, mcp.NewService(records, credentials, nil), "")
 	service.Files = server.AgentFiles(bots.Files)
 	if !*headless {
 		if service.Static, err = webFS(*static); err != nil {

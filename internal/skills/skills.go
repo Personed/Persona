@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/Personed/Persona/internal/computer"
 	"github.com/Personed/Persona/internal/store"
@@ -72,6 +73,7 @@ type ErrorCode string
 // Error codes.
 const (
 	NotFound   ErrorCode = "NOT_FOUND"
+	Conflict   ErrorCode = "CONFLICT"
 	BadRequest ErrorCode = "BAD_REQUEST"
 )
 
@@ -92,6 +94,8 @@ type Service struct {
 	store     store.Store
 	packages  fs.FS
 	workspace Workspace
+	// mu serializes read-modify-write cycles; store.Store has no conditional writes.
+	mu sync.Mutex
 }
 
 // NewService returns a Service. packages holds "<hash>.zip" files (the "skills"
