@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 type dockerDriver struct {
 	config Config
 	target *controller.Target
+	docker *controller.Docker
 }
 
 func newDocker(config Config) driver {
@@ -29,6 +31,7 @@ func newDocker(config Config) driver {
 	if err == nil {
 		if parsed, err := controller.ParseDockerConfig(raw); err == nil {
 			if docker, err := controller.NewDocker(parsed, nil); err == nil {
+				d.docker = docker
 				d.target = controller.NewTarget(docker)
 			}
 		}
@@ -92,6 +95,18 @@ func (d *dockerDriver) stop(ctx context.Context) error {
 func (d *dockerDriver) rebuild(ctx context.Context) error {
 	_, err := d.target.Change(ctx, controller.ActionRebuild)
 	return err
+}
+
+// daemon returns the argv of `persona worker serve` inside the container for
+// the Bot's workspace (docker.ts process: docker exec -i).
+func (d *dockerDriver) daemon(botID int64) ([]string, error) {
+	if d.docker == nil {
+		return nil, errors.New("configuração do computador inválida")
+	}
+	config := d.docker.Config()
+	workdir := d.directory() + "/bots/" + strconv.FormatInt(botID, 10) + "/workspace"
+	return config.HostCommand("docker", "container", "exec", "-i", "--user", controller.SandboxUser,
+		"--workdir", workdir, config.Names().Container, "persona", "worker", "serve")
 }
 
 // --- controller driver (controller.ts) ---

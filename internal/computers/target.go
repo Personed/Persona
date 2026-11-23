@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 
 	"github.com/Personed/Persona/internal/rpc"
+	"github.com/Personed/Persona/internal/worker"
 )
 
 // Status is ComputerStatus of index.ts: the wire shape of a target's state.
@@ -201,4 +203,38 @@ func (t *Target) manage(ctx context.Context, action string, requireIdle func(con
 func (t *Target) close(ctx context.Context) error {
 	// Environments and service workers land with the views/tools slices.
 	return nil
+}
+
+// workDir is the Bot workspace on the computer (SandboxWorkspace in index.ts).
+func (t *Target) workDir(botID int64) string {
+	if t.drv == nil {
+		return filepath.Join(t.cfg.DataDir, "agent.sqlite.files", "bots", strconv.FormatInt(botID, 10), "workspace")
+	}
+	return t.drv.directory() + "/bots/" + strconv.FormatInt(botID, 10) + "/workspace"
+}
+
+// transport returns the worker.Transport reaching this computer's worker and
+// the workspace the first call should use. A process target launches
+// `persona worker serve` locally; docker execs into its container; controller
+// opens the CONNECT bridge (not yet wired).
+func (t *Target) transport(botID int64) (worker.Transport, string, error) {
+	dir := t.workDir(botID)
+	if t.drv == nil {
+		binary, err := os.Executable()
+		if err != nil {
+			return nil, "", err
+		}
+		return worker.Local(binary), dir, nil
+	}
+	switch drv := t.drv.(type) {
+	case *dockerDriver:
+		args, err := drv.daemon(botID)
+		if err != nil {
+			return nil, "", err
+		}
+		return func(token string) []string {
+			return append(args, "--token", token)
+		}, dir, nil
+	}
+	return nil, "", errors.New("工作电脑控制端通道尚未接入。")
 }

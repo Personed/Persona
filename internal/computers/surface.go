@@ -8,6 +8,7 @@ import (
 
 	"github.com/Personed/Persona/internal/agent"
 	"github.com/Personed/Persona/internal/rpc"
+	"github.com/Personed/Persona/internal/worker"
 )
 
 // AssistanceView is computer.assistant's output, assistance.ts state().
@@ -258,9 +259,8 @@ type ServiceStates struct {
 	Desktop ServiceState `json:"desktop"`
 }
 
-// Services reports the Bot's bound services (computer.services). Until the
-// service-target worker layer lands, a bound+enabled service reports its
-// configured state without live availability.
+// Services reports the Bot's bound services (computer.services): the worker's
+// prepare answer where reachable, the configured state otherwise.
 func (c *Catalog) Services(ctx context.Context, botID int64) (ServiceStates, error) {
 	doc, _, err := agent.Snapshot(ctx, c.h, ComputersDoc, 0)
 	if err != nil {
@@ -271,32 +271,129 @@ func (c *Catalog) Services(ctx context.Context, botID int64) (ServiceStates, err
 	if enabled == nil {
 		enabled = map[string]bool{}
 	}
-	// A binding without a computer has no services.
 	if binding.ComputerID == nil {
 		return ServiceStates{}, nil
 	}
-	return ServiceStates{
+	states := ServiceStates{
 		Browser: ServiceState{Available: enabled["browser"]},
 		Desktop: ServiceState{Available: enabled["desktop"]},
-	}, nil
+	}
+	for _, service := range []string{"browser", "desktop"} {
+		if !enabled[service] {
+			continue
+		}
+		w, dir, err := c.svcs.workerFor(ctx, botID, service)
+		if err != nil {
+			text := err.Error()
+			if service == "browser" {
+				states.Browser.Error = &text
+			} else {
+				states.Desktop.Error = &text
+			}
+			continue
+		}
+		result, err := w.ComputerRequest(ctx, worker.ComputerInput{Action: "prepare", Service: service, Dir: dir})
+		var prepared struct {
+			Available     bool    `json:"available"`
+			Error         *string `json:"error"`
+			Mode          string  `json:"mode"`
+			SharedDesktop bool    `json:"sharedDesktop"`
+		}
+		if err == nil && len(result.Result) > 0 {
+			err = json.Unmarshal(result.Result, &prepared)
+		}
+		if err != nil {
+			// The worker has no prepare op yet: report the configured state.
+			continue
+		}
+		state := ServiceState{Available: prepared.Available, Error: prepared.Error, Mode: prepared.Mode}
+		if service == "browser" {
+			states.Browser = state
+		} else {
+			states.Desktop = state
+		}
+	}
+	return states, nil
 }
 
 // BrowserMode switches headless/headed (computer.browserMode). Only a
-// confirmed restart may change it; RestartBrowser on the worker clears an
-// unknown browser outcome. The worker call lands with the services layer.
+// confirmed restart may change it; the worker's mode op owns the restart.
+// Browser and desktop control are held during the change.
 func (c *Catalog) BrowserMode(ctx context.Context, botID int64, mode string) (ServiceStates, error) {
-	return ServiceStates{}, rpc.NewError("SERVICE_UNAVAILABLE", "浏览器模式需要 worker 服务层。")
+	if mode != "headless" && mode != "headed" {
+		return ServiceStates{}, rpc.NewError("BAD_REQUEST", "浏览器模式无效。")
+	}
+	w, dir, err := c.svcs.workerFor(ctx, botID, "browser")
+	if err != nil {
+		return ServiceStates{}, err
+	}
+	result, err := w.ComputerRequest(ctx, worker.ComputerInput{Action: "mode", Service: "browser", Dir: dir, Mode: mode})
+	if err != nil {
+		return ServiceStates{}, err
+	}
+	var changed struct {
+		Available bool    `json:"available"`
+		Error     *string `json:"error"`
+		Mode      string  `json:"mode"`
+	}
+	if len(result.Result) > 0 {
+		if err := json.Unmarshal(result.Result, &changed); err != nil {
+			return ServiceStates{}, err
+		}
+	}
+	if !changed.Available {
+		message := "浏览器模式未确认。"
+		if changed.Error != nil {
+			message = *changed.Error
+		}
+		return ServiceStates{}, rpc.NewError("SERVICE_UNAVAILABLE", message)
+	}
+	return c.Services(ctx, botID)
 }
 
-// Watch streams a service viewer (computer.watch). The viewer lease and frame
-// pump land with the views layer.
+// Watch streams a service viewer (computer.watch): opens the worker's view
+// session, then pumps frames until the stream or the viewer ends.
 func (c *Catalog) Watch(ctx context.Context, botID int64, service string, emit func(any) error) error {
-	return rpc.NewError("SERVICE_UNAVAILABLE", "电脑接入尚未配置。")
+	if service != "browser" && service != "desktop" {
+		return rpc.NewError("BAD_REQUEST", "服务无效。")
+	}
+	session, first, err := c.vw.open(ctx, botID, service, "")
+	if err != nil {
+		return err
+	}
+	defer c.vw.close(context.Background(), session.id)
+	if err := emit(frame{Type: "opened", ViewID: session.id, Message: first}); err != nil {
+		return err
+	}
+	for {
+		batch, err := c.vw.next(ctx, session.id)
+		if err != nil {
+			return err
+		}
+		if batch.Closed {
+			return emit(frame{Type: "closed", ViewID: session.id})
+		}
+		for _, message := range batch.Messages {
+			if err := emit(frame{Type: "message", ViewID: session.id, Message: message}); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // Input sends a viewer action (computer.input), views.ts action().
 func (c *Catalog) Input(ctx context.Context, botID int64, view string, action json.RawMessage) (any, error) {
-	return nil, rpc.NewError("SERVICE_UNAVAILABLE", "电脑接入尚未配置。")
+	session := c.vw.get(view)
+	if session == nil {
+		return nil, rpc.NewError("NOT_FOUND", "viewer fechado.")
+	}
+	if session.botID != botID {
+		return nil, rpc.NewError("FORBIDDEN", "viewer 不属于该 Bot。")
+	}
+	if err := c.vw.action(ctx, view, action); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true}, nil
 }
 
 // AssistantKey stores the provider key (computer.assistantKey).

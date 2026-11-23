@@ -27,6 +27,8 @@ import (
 	"github.com/Personed/Persona/internal/server"
 	"github.com/Personed/Persona/internal/skills"
 	"github.com/Personed/Persona/internal/store"
+	"github.com/Personed/Persona/internal/takeover"
+	"github.com/Personed/Persona/internal/tools"
 )
 
 // serve runs the local service. Procedures without a Go handler answer NOT_IMPLEMENTED.
@@ -108,24 +110,29 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	var runtime *agent.Runtime
-	if *piExtension != "" {
-		// An idle Bot has no Pi: each closes with the last session of its task.
-		engine := pi.New(pi.Config{Extensions: []string{*piExtension}, IdleTimeout: -1,
-			SessionDir: filepath.Join(*dataDir, "pi", "sessions"), StateDir: filepath.Join(*dataDir, "pi", "state")})
-		defer engine.Close()
-		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
-			Approvals: approval.NewService(records, nil, 0)})
-		if err := runtime.Recover(ctx); err != nil {
-			return err
-		}
-	}
 	catalog := computers.New(computers.ServiceConfig{
 		DataDir:    *dataDir,
 		Deployment: "native",
 		Computer:   computers.Config{Kind: "process"},
 		Legacy:     true,
 	}, bots.Harness)
+	approvals := approval.NewService(records, nil, 0)
+	var runtime *agent.Runtime
+	if *piExtension != "" {
+		// An idle Bot has no Pi: each closes with the last session of its task.
+		engine := pi.New(pi.Config{Extensions: []string{*piExtension}, IdleTimeout: -1,
+			SessionDir: filepath.Join(*dataDir, "pi", "sessions"), StateDir: filepath.Join(*dataDir, "pi", "state")})
+		defer engine.Close()
+		registry := tools.NewRegistry()
+		if err := takeover.Register(registry, catalog.Handoff(approvals)); err != nil {
+			return err
+		}
+		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
+			Tools: registry, Approvals: approvals})
+		if err := runtime.Recover(ctx); err != nil {
+			return err
+		}
+	}
 	defer catalog.Close(context.Background())
 	var botIDs []int64
 	if contacts, err := bots.Bots.List(ctx); err == nil {

@@ -34,6 +34,9 @@ type Catalog struct {
 	pendingMu sync.Mutex
 	pending   map[int64]*pendingOp
 	keyring   *Keyring
+
+	svcs *services
+	vw   *views
 }
 
 type startOp struct {
@@ -56,12 +59,15 @@ type ServiceConfig struct {
 
 // New returns a catalog over the agent harness.
 func New(cfg ServiceConfig, h *agent.Harness) *Catalog {
-	return &Catalog{
+	c := &Catalog{
 		h: h, store: h.Store(), cfg: cfg,
 		targets: map[string]*Target{}, changing: map[string]bool{},
 		transfers: map[int64]int{}, starting: map[string]*startOp{},
 		pending: map[int64]*pendingOp{}, keyring: NewKeyring(cfg.DataDir),
 	}
+	c.svcs = newServices(c)
+	c.vw = newViews(c.svcs)
+	return c
 }
 
 // Initialize seeds the catalog document on first boot, as Computers.initialize.
@@ -646,6 +652,19 @@ func (c *Catalog) ensureReady(ctx context.Context, id string) error {
 		}
 	}
 	return nil
+}
+
+// recordOf returns the catalog record for an id.
+func (c *Catalog) recordOf(ctx context.Context, id string) (*Record, error) {
+	doc, _, err := agent.Snapshot(ctx, c.h, ComputersDoc, 0)
+	if err != nil {
+		return nil, err
+	}
+	item := requireComputer(doc.Items, id)
+	if item == nil {
+		return nil, rpc.NewError("NOT_FOUND", "电脑不存在。")
+	}
+	return item, nil
 }
 
 func (c *Catalog) target(item Record) *Target {
