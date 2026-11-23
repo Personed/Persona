@@ -3320,6 +3320,18 @@ test("message insertion moves typing continuously and completion fades it out", 
   );
   await page.evaluate(() => document.activeViewTransition?.finished);
   await expect(typing).toHaveCount(0);
+  // The typing row can leave in a transition after the reply's, so wait for
+  // the sampler to see its exit.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as unknown as { messageMotion: { frames: Sample[] } }
+          ).messageMotion.frames.filter((frame) => frame.exit).length,
+      ),
+    )
+    .toBeGreaterThan(2);
   const frames = await page.evaluate(() => {
     const state = (
       window as unknown as {

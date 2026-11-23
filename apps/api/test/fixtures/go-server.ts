@@ -135,12 +135,8 @@ async function complete(
   const model = String(body.model ?? "");
   const aborted = new AbortController();
   response.on("close", () => aborted.abort());
-  // Pi runs tools itself, so a gated tool holds the request that reports its result.
-  const afterTool =
-    (body.messages as { role: string }[] | undefined)?.at(-1)?.role === "tool";
-  const waiting = afterTool && toolGate ? toolGate : gate;
-  if (waiting === toolGate) toolGate = undefined;
-  else gate = undefined;
+  const waiting = gate;
+  gate = undefined;
   if (waiting) {
     aborted.signal.addEventListener("abort", () => waiting.resolve(), {
       once: true,
