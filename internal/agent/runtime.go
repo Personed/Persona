@@ -370,16 +370,20 @@ func (r *Runtime) next(ctx context.Context, bot int64) (*store.Task, error) {
 func (r *Runtime) run(ctx context.Context, bot int64, w *worker, task *store.Task) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var in taskInput
+	_ = json.Unmarshal(task.Input, &in)
 	w.mu.Lock()
-	w.task, w.cancel, w.stopped, w.unsteerable = task.ID, cancel, false, false
+	w.task, w.cancel, w.stopped = task.ID, cancel, false
+	// Routine runs and memory reviews are their own turns: chat input queued
+	// while one runs becomes the next turn rather than steering into it,
+	// routine-task.ts's "queue new chat input as a separate turn".
+	w.unsteerable = in.RoutineRunID != "" || in.MemoryReview
 	w.mu.Unlock()
 	defer func() {
 		w.mu.Lock()
 		w.task, w.cancel, w.session = 0, nil, nil
 		w.mu.Unlock()
 	}()
-	var in taskInput
-	_ = json.Unmarshal(task.Input, &in)
 	if r.native {
 		r.runEngine(ctx, bot, w, task.ID, in)
 	} else {
