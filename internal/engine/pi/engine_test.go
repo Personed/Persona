@@ -89,7 +89,7 @@ func TestEngineSessionOverRPC(t *testing.T) {
 		Model:         engine.Model{Provider: "anthropic", ModelID: "claude"},
 		ThinkingLevel: "high",
 		SystemPrompt:  "Be Persona.",
-		Env:           map[string]string{"PERSONA_TEST_ENV": "bot-1"},
+		Env:           map[string]string{"PERSONA_TEST_ENV": "bot-1", "PERSONA_PI_MCP_URL": "http://127.0.0.1:9/mcp"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestEngineSessionOverRPC(t *testing.T) {
 	if _, ok := <-s.Events(); ok {
 		t.Fatal("events still open after Abort")
 	}
-	next, err := e.Start(ctx, engine.SessionOptions{BotID: 1, WorkDir: work})
+	next, err := e.Start(ctx, engine.SessionOptions{Env: gatewayEnv(), BotID: 1, WorkDir: work})
 	if err != nil {
 		t.Fatalf("Start after Abort: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestEngineReusesProcessAndResumes(t *testing.T) {
 	e := newTestEngine(t)
 	e.config.IdleTimeout = time.Hour
 	ctx := context.Background()
-	options := engine.SessionOptions{BotID: 1, SystemPrompt: "a"}
+	options := engine.SessionOptions{Env: gatewayEnv(), BotID: 1, SystemPrompt: "a"}
 	first, err := e.Start(ctx, options)
 	if err != nil {
 		t.Fatal(err)
@@ -256,7 +256,7 @@ func TestEngineInfoAndModelsLeaveNoProcess(t *testing.T) {
 
 func TestEngineRequestRejected(t *testing.T) {
 	e := newTestEngine(t)
-	s, err := e.Start(context.Background(), engine.SessionOptions{BotID: 1})
+	s, err := e.Start(context.Background(), engine.SessionOptions{Env: gatewayEnv(), BotID: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestEngineIdleBotsHaveNoProcess(t *testing.T) {
 	ctx := context.Background()
 	var procs []*Process
 	for botID := int64(1); botID <= 3; botID++ {
-		s, err := e.Start(ctx, engine.SessionOptions{BotID: botID})
+		s, err := e.Start(ctx, engine.SessionOptions{Env: gatewayEnv(), BotID: botID})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -310,7 +310,7 @@ func TestEngineRequiresApprovalToolExtension(t *testing.T) {
 		StopGrace:  200 * time.Millisecond,
 	})
 	t.Cleanup(e.Close)
-	if _, err := e.Start(context.Background(), engine.SessionOptions{BotID: 1}); err == nil {
+	if _, err := e.Start(context.Background(), engine.SessionOptions{Env: gatewayEnv(), BotID: 1}); err == nil {
 		t.Fatal("session started without the approval/tool extension")
 	}
 	if e.Live() != 0 {
@@ -329,7 +329,7 @@ func TestEngineSyncsLocalProviders(t *testing.T) {
 			Models:  []localmodels.Model{{ID: "llama3"}},
 		}}
 	}
-	s, err := e.Start(context.Background(), engine.SessionOptions{BotID: 1})
+	s, err := e.Start(context.Background(), engine.SessionOptions{Env: gatewayEnv(), BotID: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestEngineLocalModelsAbsent(t *testing.T) {
 	e.config.LocalModels = true
 	e.config.AgentDir = t.TempDir()
 	e.config.localScan = func(context.Context) []localmodels.Server { return nil }
-	s, err := e.Start(context.Background(), engine.SessionOptions{BotID: 1})
+	s, err := e.Start(context.Background(), engine.SessionOptions{Env: gatewayEnv(), BotID: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,5 +386,16 @@ func TestWriteToolsFile(t *testing.T) {
 	}
 	if json.Unmarshal(data, &file) != nil || file.URL != "http://127.0.0.1:9/mcp" || len(file.Tools) != 1 || file.Tools[0].Name != "memory_search" {
 		t.Fatalf("tools file %s", data)
+	}
+}
+
+func gatewayEnv() map[string]string {
+	return map[string]string{"PERSONA_PI_MCP_URL": "http://127.0.0.1:9/mcp"}
+}
+
+func TestEngineRefusesSessionWithoutGateway(t *testing.T) {
+	e := newTestEngine(t)
+	if _, err := e.Start(context.Background(), engine.SessionOptions{BotID: 1}); err == nil || !strings.Contains(err.Error(), "PERSONA_PI_MCP_URL") {
+		t.Fatalf("start without gateway = %v", err)
 	}
 }

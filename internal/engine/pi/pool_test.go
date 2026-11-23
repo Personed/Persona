@@ -337,3 +337,15 @@ func TestPoolStopDuringStartIsNotClosed(t *testing.T) {
 	}
 	release()
 }
+
+func TestPoolNegativeIdleClosesOnRelease(t *testing.T) {
+	a := newFakeInstance()
+	pool := NewPool(-1, func(context.Context, int64) (*fakeInstance, error) { return a, nil })
+	defer pool.Close()
+	_, release, err := pool.Acquire(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	waitFor(t, "close on release", func() bool { return pool.Live() == 0 && a.closes.Load() == 1 })
+}
