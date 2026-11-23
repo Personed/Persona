@@ -140,20 +140,25 @@ async function complete(
   // Pi runs tools itself, so a gated tool holds the request that reports its result.
   const afterTool =
     (body.messages as { role: string }[] | undefined)?.at(-1)?.role === "tool";
-  const waiting = afterTool && toolGate ? toolGate : gate;
+  const next = scripted.shift();
+  // Like web-server.ts's faux answer factory, gate holds only the unscripted answer.
+  const waiting = afterTool && toolGate ? toolGate : next ? undefined : gate;
   if (waiting === toolGate) toolGate = undefined;
-  else gate = undefined;
+  else if (waiting) gate = undefined;
   if (waiting) {
     aborted.signal.addEventListener("abort", () => waiting.resolve(), {
       once: true,
     });
     await waiting.promise;
   }
-  const reply = scripted.shift() ?? {
+  const reply = next ?? {
     text: `已收到：${lastUserText(body as never)}。这是一条用于验证流式显示和会话恢复的完整回复。（${model}）`,
   };
   if (reply.stopReason === "error") {
-    response.writeHead(500, { "Content-Type": "application/json" });
+    // Pi retries a 500; a faux error without a message is not retried.
+    response.writeHead(reply.errorMessage ? 500 : 400, {
+      "Content-Type": "application/json",
+    });
     response.end(JSON.stringify({ error: { message: reply.errorMessage } }));
     return;
   }
@@ -174,6 +179,17 @@ async function complete(
     }
   }
   const calls = reply.toolCalls ?? [];
+  // Pi declares product tools from the Persona MCP server under mcp__persona__,
+  // while web-server.ts registers them by their own names.
+  const declared = new Set(
+    (body.tools as { function?: { name?: string } }[] | undefined)?.map(
+      (tool) => tool.function?.name,
+    ),
+  );
+  const toolName = (name: string) =>
+    !declared.has(name) && declared.has(`mcp__persona__${name}`)
+      ? `mcp__persona__${name}`
+      : name;
   for (const [index, call] of calls.entries())
     chunk(response, model, {
       tool_calls: [
@@ -182,7 +198,7 @@ async function complete(
           id: call.id,
           type: "function",
           function: {
-            name: call.name,
+            name: toolName(call.name),
             arguments: JSON.stringify(call.arguments),
           },
         },

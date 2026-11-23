@@ -11,9 +11,12 @@ import (
 )
 
 const (
-	windowSize     = 50
-	pageEntries    = 500
-	pageMessages   = 200
+	windowSize   = 50
+	pageEntries  = 500
+	pageMessages = 200
+	// enginePage is the page the get procedure and chat updates read for a
+	// native runtime.
+	enginePage     = 200
 	maxSafeInteger = 1<<53 - 1
 )
 
@@ -170,6 +173,50 @@ func (h *Harness) ReadChat(ctx context.Context, id int64, before string) (ChatVi
 		if len(chat.Messages) > 0 {
 			cursor = messageCursor(chat.Messages[0])
 		} else if len(entries) > 0 {
+			cursor = fmt.Sprintf("%d:0", entries[0].ID)
+		}
+		chat.Before = &cursor
+	}
+	return chat, nil
+}
+
+// ReadEnginePage returns up to limit messages before the cursor
+// "entry:index", read from the newest limit entries, as view in
+// runtime/index.ts reads a page for a native runtime.
+func (h *Harness) ReadEnginePage(ctx context.Context, id int64, before string, limit int) (ChatView, error) {
+	view, err := h.conversationDocs(ctx, id)
+	if err != nil {
+		return ChatView{}, err
+	}
+	entry, index := splitCursor(before)
+	entries, more, err := h.newest(ctx, id, store.EntryID(entry), limit)
+	if err != nil {
+		return ChatView{}, err
+	}
+	view.entries = entries
+	chat := projectChat(view)
+	var kept []any
+	for _, message := range chat.Messages {
+		cursor := messageCursor(message)
+		if entry != 0 && cursor != "" {
+			e, i := splitCursor(cursor)
+			if e > entry || (e == entry && i >= index) {
+				continue
+			}
+		}
+		kept = append(kept, message)
+	}
+	all := len(kept)
+	if all > limit {
+		kept = kept[all-limit:]
+	}
+	chat.Messages = append([]any{}, kept...)
+	if more || all > limit {
+		cursor := ""
+		if len(chat.Messages) > 0 {
+			cursor = messageCursor(chat.Messages[0])
+		}
+		if cursor == "" && len(entries) > 0 {
 			cursor = fmt.Sprintf("%d:0", entries[0].ID)
 		}
 		chat.Before = &cursor
