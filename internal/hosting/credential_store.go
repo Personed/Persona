@@ -38,6 +38,17 @@ type CredentialStore struct {
 
 var _ Credentials = (*CredentialStore)(nil)
 
+// EnsureCredentialKey creates the profile's credential key when neither the
+// key nor the database exists yet, and fails the same way OpenCredentials
+// does when a database exists without its key. Components that create
+// hosting.sqlite without going through OpenCredentials (the session store)
+// call this first so the profile is never left with a database the
+// credential store and the TypeScript backup check both refuse.
+func EnsureCredentialKey(directory string) error {
+	_, err := openCredentialKey(directory)
+	return err
+}
+
 // OpenCredentials opens (or initializes) the encrypted store. If an existing
 // database lost its key, it fails without generating an unusable replacement.
 func OpenCredentials(ctx context.Context, directory string) (*CredentialStore, error) {
