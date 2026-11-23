@@ -912,19 +912,17 @@ func TestComputerBrowserView(t *testing.T) {
 
 func TestBrowserDaemonExecutable(t *testing.T) {
 	names := browserNativeNames()
-	if len(names) == 0 {
-		t.Skip("agent-browser has no native binary for " + runtime.GOARCH)
-	}
 	root := t.TempDir()
 	bin := filepath.Join(root, "node_modules", "agent-browser", "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	launcher := filepath.Join(bin, "agent-browser.js")
-	native := filepath.Join(bin, names[0])
+	// Both architectures: Node.js's can differ from the worker's.
+	x64, arm64 := filepath.Join(bin, names[0]), filepath.Join(bin, names[len(names)-1])
 	similar := filepath.Join(bin, names[0]+"-helper")
 	other := filepath.Join(root, names[0])
-	for _, path := range []string{launcher, native, similar, other} {
+	for _, path := range []string{launcher, x64, arm64, similar, other} {
 		if err := os.WriteFile(path, nil, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -932,7 +930,7 @@ func TestBrowserDaemonExecutable(t *testing.T) {
 	for _, check := range []struct {
 		executable string
 		want       bool
-	}{{launcher, true}, {native, true}, {similar, false}, {other, false}, {filepath.Join(bin, "node"), false}} {
+	}{{launcher, true}, {x64, true}, {arm64, true}, {similar, false}, {other, false}, {filepath.Join(bin, "node"), false}} {
 		if got := browserDaemonExecutable(check.executable, launcher); got != check.want {
 			t.Errorf("browserDaemonExecutable(%s) = %v", check.executable, got)
 		}

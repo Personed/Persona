@@ -423,21 +423,22 @@ func browserDaemonExecutable(executable, launcher string) bool {
 	return false
 }
 
-// browserNativeNames are agent-browser's native binary names for this
-// platform, as its npm launcher selects them.
+// browserNativeNames are agent-browser's published native binary names for
+// this OS. The npm launcher picks one by Node.js's architecture, which can
+// differ from the worker's (x64 Node.js under Rosetta, for one).
 func browserNativeNames() []string {
-	arch := map[string]string{"amd64": "x64", "arm64": "arm64"}[runtime.GOARCH]
-	if arch == "" {
-		return nil
+	var names []string
+	for _, arch := range []string{"x64", "arm64"} {
+		switch runtime.GOOS {
+		case "windows":
+			names = append(names, "agent-browser-win32-"+arch+".exe")
+		case "linux":
+			names = append(names, "agent-browser-linux-"+arch, "agent-browser-linux-musl-"+arch)
+		default:
+			names = append(names, "agent-browser-"+runtime.GOOS+"-"+arch)
+		}
 	}
-	switch runtime.GOOS {
-	case "windows":
-		return []string{"agent-browser-win32-" + arch + ".exe", "agent-browser-win32-x64.exe"}
-	case "linux":
-		return []string{"agent-browser-linux-" + arch, "agent-browser-linux-musl-" + arch}
-	default:
-		return []string{"agent-browser-" + runtime.GOOS + "-" + arch}
-	}
+	return names
 }
 
 func samePath(a, b string) bool {
