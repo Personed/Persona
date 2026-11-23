@@ -585,3 +585,32 @@ func TestRuntimeGatewayServesRegistry(t *testing.T) {
 		t.Errorf("prompt = %s", doc.Prompt)
 	}
 }
+
+func TestConditionalRoutineStaysOutOfPreview(t *testing.T) {
+	ctx := context.Background()
+	a, rt := runtimeFor(t, true, scriptEngine{frames: strings.Split(answerFrames, "\n")})
+	bot := int64(a.Root)
+	if err := a.Harness.Commit(ctx, func(tx *Tx) error {
+		doc, err := Create(tx, RoutinesDoc, 0)
+		if err != nil {
+			return err
+		}
+		doc.Runs = append(doc.Runs, RoutineRun{ID: "run-1", RoutineID: "routine-1", BotID: bot,
+			Title: "version check", ScheduledAt: 7, RequestID: "routine:r1:7", Delivery: "conditional"})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Submit(ctx, SendInput{BotID: bot, Text: "Scheduled task: version check\nUse routine_report once after checking evidence.",
+		DisplayText: "定时任务：version check", RequestID: "routine:r1:7", Source: "routine", RoutineRunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	idle(t, rt)
+	preview, _, err := botPreview(ctx, a.Harness.Store(), bot, "bot instructions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview != "bot instructions" {
+		t.Fatalf("preview = %q", preview)
+	}
+}

@@ -18,11 +18,12 @@ const flushDelay = 50 * time.Millisecond
 // document, EngineProjection in projection.ts. Events of a turn that is no
 // longer active are dropped.
 type projection struct {
-	r     *Runtime
-	bot   int64
-	task  int64
-	turn  string
-	entry store.EntryID
+	r       *Runtime
+	bot     int64
+	task    int64
+	turn    string
+	entry   store.EntryID
+	routine *RoutineRun
 
 	mu         sync.Mutex
 	write      sync.Mutex
@@ -85,6 +86,16 @@ func (p *projection) emit(ctx context.Context, event map[string]any) {
 		}
 		received := now
 		message = &Draft{ID: messageID, TurnID: p.turn, Role: role, Content: []map[string]any{}, Timestamp: now, ReceivedAt: &received}
+		if p.routine != nil && p.routine.Delivery == "conditional" {
+			message.Hidden = true
+			message.Routine, _ = json.Marshal(map[string]any{
+				"runId":       p.routine.ID,
+				"title":       p.routine.Title,
+				"scheduledAt": p.routine.ScheduledAt,
+				"turnId":      p.turn,
+				"delivery":    p.routine.Delivery,
+			})
+		}
 		p.messages = append(p.messages, message)
 	}
 	if native, ok := event["native"]; ok && native != nil {

@@ -153,6 +153,8 @@ type Draft struct {
 	ToolName    string           `json:"toolName,omitempty"`
 	IsError     *bool            `json:"isError,omitempty"`
 	ToolStatus  string           `json:"toolStatus,omitempty"`
+	Hidden      bool             `json:"hidden,omitempty"`
+	Routine     json.RawMessage  `json:"routine,omitempty"`
 	Native      json.RawMessage  `json:"native,omitempty"`
 	ParentID    string           `json:"parentId,omitempty"`
 	Activity    json.RawMessage  `json:"activity,omitempty"`
