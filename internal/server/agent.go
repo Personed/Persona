@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/Personed/Persona/internal/agent"
+	"github.com/Personed/Persona/internal/computers"
 	"github.com/Personed/Persona/internal/rpc"
 )
 
@@ -18,8 +19,11 @@ type botTarget struct {
 // apps/api/src/router.ts does. With a runtime it also serves chat input (send,
 // stop, changes, subscribe) and full message reads; engine selection stays
 // unregistered until engine controls are composed.
-func RegisterAgent(s *rpc.Server, a *agent.Agent, rt *agent.Runtime) {
+func RegisterAgent(s *rpc.Server, a *agent.Agent, rt *agent.Runtime, catalog ...*computers.Catalog) {
 	r := agentRoutes{a: a, rt: rt}
+	if len(catalog) != 0 {
+		r.catalog = catalog[0]
+	}
 	if rt != nil {
 		s.Handle("send", r.send)
 		s.Handle("stop", r.stop)
@@ -46,14 +50,12 @@ func RegisterAgent(s *rpc.Server, a *agent.Agent, rt *agent.Runtime) {
 	s.Handle("work.profile", r.profile)
 	s.Handle("work.update", r.update)
 	s.Handle("mcp.catalog", func(context.Context, json.RawMessage) (any, error) { return agent.MCPApps(), nil })
-	s.Handle("computer.list", func(context.Context, json.RawMessage) (any, error) {
-		return nil, rpc.NewError("SERVICE_UNAVAILABLE", "电脑接入尚未配置。")
-	})
 }
 
 type agentRoutes struct {
-	a  *agent.Agent
-	rt *agent.Runtime
+	catalog *computers.Catalog
+	a       *agent.Agent
+	rt      *agent.Runtime
 }
 
 // wrap converts a WorkError into its oRPC error, as the TypeScript routers do.
@@ -126,7 +128,15 @@ func (r agentRoutes) subscribeBots(ctx context.Context, _ json.RawMessage, send 
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"items": items, "computers": []any{}, "defaultComputerId": nil, "bindings": map[string]any{}}, nil
+		list := map[string]any{"items": items, "computers": []any{}, "defaultComputerId": nil, "bindings": map[string]any{}}
+		if r.catalog != nil {
+			if catalog, err := r.catalog.List(ctx); err == nil {
+				list["computers"] = catalog.Items
+				list["defaultComputerId"] = catalog.DefaultID
+				list["bindings"] = catalog.Bindings
+			}
+		}
+		return list, nil
 	}, send)
 }
 

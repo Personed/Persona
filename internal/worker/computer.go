@@ -30,13 +30,19 @@ import (
 // browser (agent-browser) driver. Dir is the Bot work directory; its .persona
 // folder holds the browser profile and the computer-use journal.
 type ComputerInput struct {
-	Action    string          `json:"action"` // catalog, call, verify, restart
+	Action    string          `json:"action"` // catalog, call, verify, restart, prepare, install, mode, settle, view
 	Service   string          `json:"service"`
 	Dir       string          `json:"dir"`
 	TaskID    int64           `json:"taskId,omitempty"`
 	CallID    string          `json:"callId,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+	// View sub-operations of the "view" action: open, next, send, close.
+	View        string          `json:"view,omitempty"`
+	ViewID      string          `json:"viewId,omitempty"`
+	Message     json.RawMessage `json:"message,omitempty"`
+	Mode        string          `json:"mode,omitempty"`
+	CursorColor string          `json:"cursorColor,omitempty"`
 	// Driver replaces the default `cua-driver mcp` or `agent-browser mcp`.
 	Driver *MCPConfig `json:"driver,omitempty"`
 }
@@ -606,6 +612,14 @@ func (c *Client) VerifyComputer(ctx context.Context, dir string, taskID int64, s
 func (c *Client) RestartBrowser(ctx context.Context, dir string, taskID int64) error {
 	_, err := c.computerCall(ctx, ComputerInput{Action: "restart", Service: "browser", Dir: dir, TaskID: taskID})
 	return err
+}
+
+// ComputerRequest sends a ComputerRequest operation (service-types.ts):
+// settle, catalog, prepare, install, mode, view and call. The view
+// sub-operations ride in View ("open", "next", "send", "close") with the
+// viewer id and message.
+func (c *Client) ComputerRequest(ctx context.Context, input ComputerInput) (ComputerResult, error) {
+	return c.computerCall(ctx, input)
 }
 
 // ComputerCatalog lists the driver's native tools with their schemas.
