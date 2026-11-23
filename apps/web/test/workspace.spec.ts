@@ -2453,6 +2453,8 @@ test("Work follows a native turn, opens its record and preserves it after stop a
   await expect(dialog).toContainText("检查 Work 工作记录");
   await page.keyboard.press("Escape");
   await expect(card.locator(".work-open")).toBeFocused();
+  worker.send("wait-model");
+  await once(worker, "message");
   await card.getByRole("button", { name: "停止执行", exact: true }).click();
   await expect(card).toContainText("已停止");
   await expect(dialog).not.toBeVisible();

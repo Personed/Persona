@@ -11,7 +11,7 @@ export const goGaps: Record<string, string[]> = {
       "takeover card first click opens the browser and resumes after completion",
       "takeover controls the Agent browser and preserves its layout through fullscreen",
     ],
-  "fixture tool: web-server.ts scripts a gated, file-publishing test tool; Go serve has no counterpart and the fixture scripts Pi's ls":
+  "fixture tool: web-server.ts scripts a gated, file-publishing test tool; the Go fixture's echo tool publishes no files":
     [
       "Bot identity stays consistent and image previews work in drafts and history",
       "attachment retry keeps its request and draft after a lost receipt",
@@ -26,6 +26,7 @@ export const goGaps: Record<string, string[]> = {
       "published files wait for the complete reply",
       "typing follows the Bot and failures retain their error message",
     ],
+
   "chat window: Go reads a fixed 50-entry page; pi-durable's view window grows to 100 entries and pages older ones":
     [
       "chat reads older pages and retains them through live updates",
@@ -37,10 +38,15 @@ export const goGaps: Record<string, string[]> = {
   "shared approval cards: the Go fixture cannot open an approval request": [
     "shared question and approval cards persist answers and terminal states",
   ],
-  "native Work records: work.records does not yet project native turns": [
-    "Work follows a native turn, opens its record and preserves it after stop and reload",
-    "monitoring stays quiet, delivers one result and opens the native Work record",
-  ],
+  "native Work records: Go does not yet open a Work record for a running native turn":
+    [
+      "Work follows a native turn, opens its record and preserves it after stop and reload",
+    ],
+  "MCP apps: Go has no application catalog, connection runner, or OAuth callback composed into serve":
+    [
+      "Apps completes and cancels browser OAuth with stored state",
+      "Apps manages a real MCP connection and Bot grants across reloads and themes",
+    ],
   "native Harness controls: unhosted persona serve offers no device pairing": [
     "native Harness controls persist and client accounts retain model access",
   ],
