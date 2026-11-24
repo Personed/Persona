@@ -149,7 +149,7 @@ func (c *Catalog) FinishRequest(_ context.Context, botID int64, requestID string
 	owner.taking = false
 	owner.requestID = ""
 	if owner.lease != 0 {
-		c.svcs.release(owner.service, owner.lease)
+		c.svcs.release(owner.service, owner.botID, owner.lease)
 		owner.lease = 0
 		owner.controller = false
 	}

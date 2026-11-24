@@ -2,6 +2,7 @@ package computers
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/Personed/Persona/internal/computer"
@@ -55,7 +56,8 @@ type services struct {
 	workers  map[serviceKey]*serviceWorker
 	records  map[serviceKey]string // key -> record id
 	controls map[string]*control
-	leased   int64 // next viewer lease
+	isolated map[int64]bool // Bots whose browser does not share the desktop (services.ts isolatedBrowsers)
+	leased   int64          // next viewer lease
 }
 
 func newServices(c *Catalog) *services {
@@ -64,6 +66,7 @@ func newServices(c *Catalog) *services {
 		workers:  map[serviceKey]*serviceWorker{},
 		records:  map[serviceKey]string{},
 		controls: map[string]*control{},
+		isolated: map[int64]bool{},
 		leased:   1,
 	}
 }
@@ -132,15 +135,37 @@ func (s *services) workerFor(ctx context.Context, botID int64, service string) (
 }
 
 // controlOf returns the service control state, creating it owned by the Bot.
-func (s *services) controlOf(service string) *control {
+func (s *services) controlOf(service string, botID int64) *control {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ctl := s.controls[service]
+	return s.control(service, botID)
+}
+
+// control resolves the lane as services.ts control(): an isolated browser owns
+// its lane per Bot, and every other service shares the desktop lane.
+func (s *services) control(service string, botID int64) *control {
+	key := "desktop"
+	if service == "browser" && s.isolated[botID] {
+		key = fmt.Sprintf("browser:%d", botID)
+	}
+	ctl := s.controls[key]
 	if ctl == nil {
 		ctl = &control{owner: true}
-		s.controls[service] = ctl
+		s.controls[key] = ctl
 	}
 	return ctl
+}
+
+// setIsolated records whether the Bot's browser shares the desktop, as the
+// prepare result's sharedDesktop does in services.ts.
+func (s *services) setIsolated(botID int64, on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if on {
+		s.isolated[botID] = true
+	} else {
+		delete(s.isolated, botID)
+	}
 }
 
 // closeRecord ends every worker for the record (disable/close, services.ts
@@ -189,11 +214,7 @@ func (s *services) takeover(ctx context.Context, service string, botID int64) (i
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ctl := s.controls[service]
-	if ctl == nil {
-		ctl = &control{owner: true}
-		s.controls[service] = ctl
-	}
+	ctl := s.control(service, botID)
 	lease := s.leased
 	s.leased++
 	ctl.lease = lease
@@ -257,8 +278,8 @@ func (c *Catalog) Workspace(ctx context.Context, botID int64) (computer.Target, 
 }
 
 // release returns control to the Bot (services.ts release).
-func (s *services) release(service string, lease int64) {
-	ctl := s.controlOf(service)
+func (s *services) release(service string, botID int64, lease int64) {
+	ctl := s.controlOf(service, botID)
 	if ctl.lease != lease || ctl.releasing {
 		return
 	}
