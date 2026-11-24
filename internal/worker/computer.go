@@ -89,6 +89,10 @@ func observation(service, name string) bool {
 	return strings.HasPrefix(name, "get_") || strings.HasPrefix(name, "list_") || name == "screenshot" || name == "zoom"
 }
 
+// Observation reports whether a native service tool only observes; every other
+// call routes through the shared approver, as computer.tools.invoke does.
+func Observation(service, name string) bool { return observation(service, name) }
+
 var errComputerUncertain = &Error{Code: "COMPUTER_UNCERTAIN", Message: "A computer action's outcome is unknown. Observe the computer, confirm the task state, then verify before more actions. Do not replay the action."}
 
 var errBrowserUncertain = &Error{Code: "COMPUTER_UNCERTAIN", Message: "A browser action's outcome is unknown. Observe the page, then use agent_browser_restart before more browser actions. Restart closes this Bot's tabs and unsaved input. Do not replay the action."}
@@ -695,6 +699,17 @@ func driverConfig(input ComputerInput) (*MCPConfig, error) {
 	config := MCPConfig{Transport: "stdio", Command: "cua-driver", Args: []string{"mcp"}}
 	if input.Service == "browser" {
 		config.Command = "agent-browser"
+	}
+	// PERSONA_COMPUTER_DRIVER_<SERVICE> holds a JSON MCPConfig replacing the
+	// default driver, which test fixtures use to serve a scripted service.
+	if input.Driver == nil {
+		if override := os.Getenv("PERSONA_COMPUTER_DRIVER_" + strings.ToUpper(input.Service)); override != "" {
+			var parsed MCPConfig
+			if err := json.Unmarshal([]byte(override), &parsed); err != nil {
+				return nil, fmt.Errorf("worker: PERSONA_COMPUTER_DRIVER_%s: %w", strings.ToUpper(input.Service), err)
+			}
+			input.Driver = &parsed
+		}
 	}
 	if input.Driver != nil {
 		config = *input.Driver

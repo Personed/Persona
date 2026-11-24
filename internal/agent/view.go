@@ -193,6 +193,15 @@ func (r *Runtime) Message(ctx context.Context, bot int64, id, cursor string) (an
 		if !r.native {
 			return nil, nil
 		}
+		// A pending approval card is stored in persona.computer-requests, as
+		// runtime/index.ts message() reads it before engine drafts.
+		if view, err := r.h.conversationDocs(ctx, bot); err == nil {
+			for _, raw := range view.approvals {
+				if message := pendingApproval(raw, nil); message != nil && message["id"] == id {
+					return message, nil
+				}
+			}
+		}
 		doc, _, err := Snapshot(ctx, r.h, EngineDoc, bot)
 		if err != nil {
 			return nil, err
