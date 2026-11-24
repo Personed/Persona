@@ -124,10 +124,17 @@ func (c *Catalog) NativeCatalog(ctx context.Context, botID int64) (mcp.NativeCat
 	if err != nil {
 		return mcp.NativeCatalog{}, err
 	}
-	if engine.ComputerID == nil {
+	// The Bot's work computer is its computers binding, which Assign owns;
+	// switchSession only mirrors it into the engine document when the engine
+	// runs, so a Bot configured without a run still has no computerId there.
+	computerID, err := c.ComputerID(ctx, botID)
+	if err != nil {
+		return mcp.NativeCatalog{}, err
+	}
+	if computerID == nil {
 		return mcp.NativeCatalog{}, errors.New("请先选择 Bot 的工作电脑和 Harness。")
 	}
-	result, err := c.MCP(ctx, *engine.ComputerID, botID, worker.MCPInput{
+	result, err := c.MCP(ctx, *computerID, botID, worker.MCPInput{
 		Action: "native",
 		Config: &worker.MCPConfig{Provider: engine.Config.Provider},
 	})
@@ -138,6 +145,6 @@ func (c *Catalog) NativeCatalog(ctx context.Context, botID int64) (mcp.NativeCat
 	for i, item := range result.Items {
 		items[i] = mcp.NativeItem{Name: item.Name, Source: item.Source, Enabled: item.Enabled, Status: item.Status}
 	}
-	return mcp.NativeCatalog{Provider: engine.Config.Provider, ComputerID: *engine.ComputerID,
+	return mcp.NativeCatalog{Provider: engine.Config.Provider, ComputerID: *computerID,
 		Items: items, Inheritance: result.Inheritance, Readonly: result.Readonly}, nil
 }
