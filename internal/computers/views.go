@@ -175,13 +175,17 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 	if err != nil {
 		return err
 	}
-	// Input is only allowed while this viewer holds control; bot-owned input
-	// from a viewer is dropped (viewAccess in services.ts).
-	if !session.controller && envelope.Action != "ack" {
-		ctl := v.s.controlOf(session.service)
-		if !ctl.owner && ctl.lease != session.lease {
-			return nil
-		}
+	// Input requires this viewer's granted lease, as viewAccess in
+	// services.ts; a viewer never drives a Bot-owned computer.
+	ctl := v.s.controlOf(session.service)
+	if ctl.lease != 0 && ctl.lease != session.lease {
+		return rpc.NewError("CONFLICT", "用户正在另一窗口接管。请等待交还控制权。")
+	}
+	if session.lease != 0 && ctl.lease != session.lease {
+		return rpc.NewError("CONFLICT", "这次接管已失效。")
+	}
+	if envelope.Action != "ack" && session.lease == 0 {
+		return rpc.NewError("CONFLICT", "请先接管，再操作电脑。")
 	}
 	_, err = w.ComputerRequest(ctx, worker.ComputerInput{
 		Action: "view", View: "send", Service: session.service, Dir: dir,
