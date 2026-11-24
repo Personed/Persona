@@ -25,6 +25,7 @@ const database = process.argv[2];
 if (!database) throw new Error("Database required");
 const root = fileURLToPath(new URL("../../../..", import.meta.url));
 const directory = dirname(database);
+const noMessage = "persona-fixture: failure without a message";
 const models = [
   { id: "faux-1", name: "测试模型一" },
   { id: "faux-2", name: "测试模型二", reasoning: true },
@@ -160,7 +161,9 @@ async function complete(
     response.writeHead(reply.errorMessage ? 500 : 400, {
       "Content-Type": "application/json",
     });
-    response.end(JSON.stringify({ error: { message: reply.errorMessage } }));
+    response.end(
+      JSON.stringify({ error: { message: reply.errorMessage ?? noMessage } }),
+    );
     return;
   }
   response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -276,7 +279,10 @@ const agentDir = join(directory, "pi-agent");
 await mkdir(agentDir, { recursive: true });
 await writeFile(
   join(agentDir, "settings.json"),
-  JSON.stringify({ defaultProvider: "faux", defaultModel: "faux-1" }),
+  JSON.stringify({
+    defaultProvider: "faux",
+    defaultModel: "faux-1",
+  }),
 );
 await writeFile(
   join(agentDir, "models.json"),
@@ -328,6 +334,10 @@ const args = [
   join(root, "contracts", "api"),
   "-pi-extension",
   join(root, "packages", "agent", "src", "harness", "pi-tools.mjs"),
+  // serve always runs Pi with --no-extensions, so settings.json extensions
+  // never load; the faux failure stream must be an explicit extension.
+  "-pi-extension",
+  fileURLToPath(new URL("./pi-faux-failure.mjs", import.meta.url)),
 ];
 const options = {
   // Outside the repository so persona.config.json does not select hosted mode.
@@ -336,6 +346,7 @@ const options = {
     ...process.env,
     PI_CODING_AGENT_DIR: agentDir,
     ...(hosting ? { PERSONA_CONFIG: config } : {}),
+    PERSONA_FAUX_NO_MESSAGE: noMessage,
     PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
   },
   stdio: ["pipe", "pipe", "pipe"],
