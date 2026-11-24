@@ -215,6 +215,10 @@ func (s *services) takeover(ctx context.Context, service string, botID int64) (i
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ctl := s.control(service, botID)
+	// services.ts takeover: one viewer holds a lane at a time.
+	if ctl.lease != 0 {
+		return 0, rpc.NewError("CONFLICT", "用户正在接管这台电脑。")
+	}
 	lease := s.leased
 	s.leased++
 	ctl.lease = lease
