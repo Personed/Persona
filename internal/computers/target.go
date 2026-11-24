@@ -224,6 +224,11 @@ func (t *Target) workDir(botID int64) string {
 func (t *Target) transport(botID int64) (worker.Transport, string, error) {
 	dir := t.workDir(botID)
 	if t.drv == nil {
+		// index.ts createWorkspace makes the local Bot workspace before the
+		// first worker call; a missing cwd aborts any spawned process.
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, "", err
+		}
 		binary, err := os.Executable()
 		if err != nil {
 			return nil, "", err
