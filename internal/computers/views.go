@@ -79,8 +79,9 @@ func (v *views) open(ctx context.Context, botID int64, service, cursorColor stri
 	}
 	prepared, err := w.ComputerRequest(ctx, worker.ComputerInput{Action: "prepare", Service: service, Dir: dir})
 	var state struct {
-		Available bool    `json:"available"`
-		Error     *string `json:"error"`
+		Available     bool    `json:"available"`
+		Error         *string `json:"error"`
+		SharedDesktop *bool   `json:"sharedDesktop"`
 	}
 	if err == nil && len(prepared.Result) > 0 {
 		err = json.Unmarshal(prepared.Result, &state)
@@ -94,6 +95,11 @@ func (v *views) open(ctx context.Context, botID int64, service, cursorColor stri
 			message = *state.Error
 		}
 		return nil, errUnavailable(message)
+	}
+	// A browser that does not share the desktop holds its own control lane
+	// (services.ts isolatedBrowsers on the prepare result).
+	if service == "browser" {
+		v.s.setIsolated(botID, state.SharedDesktop != nil && !*state.SharedDesktop)
 	}
 	id := newViewID()
 	session := &view{
@@ -150,12 +156,12 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 		return rpc.NewError("NOT_FOUND", "viewer fechado.")
 	}
 	var envelope struct {
-		Action string `json:"action"`
+		Type string `json:"type"` // ack, take, back, text, key, pointer (viewer-types.ts)
 	}
 	if err := json.Unmarshal(message, &envelope); err != nil {
 		return err
 	}
-	switch envelope.Action {
+	switch envelope.Type {
 	case "take":
 		// Takeover: reserve this viewer's lease before the grant waits.
 		lease, err := v.s.takeover(ctx, session.service, session.botID)
@@ -166,7 +172,7 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 		session.controller = true
 	case "back":
 		if session.lease != 0 {
-			v.s.release(session.service, session.lease)
+			v.s.release(session.service, session.botID, session.lease)
 			session.lease = 0
 			session.controller = false
 		}
@@ -177,14 +183,14 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 	}
 	// Input requires this viewer's granted lease, as viewAccess in
 	// services.ts; a viewer never drives a Bot-owned computer.
-	ctl := v.s.controlOf(session.service)
+	ctl := v.s.controlOf(session.service, session.botID)
 	if ctl.lease != 0 && ctl.lease != session.lease {
 		return rpc.NewError("CONFLICT", "用户正在另一窗口接管。请等待交还控制权。")
 	}
 	if session.lease != 0 && ctl.lease != session.lease {
 		return rpc.NewError("CONFLICT", "这次接管已失效。")
 	}
-	if envelope.Action != "ack" && session.lease == 0 {
+	if envelope.Type != "ack" && session.lease == 0 {
 		return rpc.NewError("CONFLICT", "请先接管，再操作电脑。")
 	}
 	_, err = w.ComputerRequest(ctx, worker.ComputerInput{
@@ -203,7 +209,7 @@ func (v *views) close(ctx context.Context, id string) {
 	}
 	session.closeOnce.Do(func() {
 		if session.lease != 0 {
-			v.s.release(session.service, session.lease)
+			v.s.release(session.service, session.botID, session.lease)
 			session.lease = 0
 		}
 		v.remove(session)
