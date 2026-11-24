@@ -159,6 +159,7 @@ type Draft struct {
 	ParentID    string           `json:"parentId,omitempty"`
 	Activity    json.RawMessage  `json:"activity,omitempty"`
 	Attachments json.RawMessage  `json:"attachments,omitempty"`
+	Materials   json.RawMessage  `json:"materials,omitempty"`
 }
 
 func initialEngine() EngineState {

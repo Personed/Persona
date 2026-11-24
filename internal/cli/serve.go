@@ -143,6 +143,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	defer func() { _ = credentials.Close() }()
 	serviceCfg := computers.ServiceConfig{
 		DataDir:    *dataDir,
+		FilesRoot:  filesRoot,
 		Deployment: "native",
 		Computer:   computers.Config{Kind: "process"},
 		Legacy:     true,
@@ -210,7 +211,14 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			return deliverySvc.Deliver(ctx, call, delivery.Message{Notice: &delivery.Notice{Text: text}})
 		}
 		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
-			Tools: registry, Approvals: approvals, Memory: memorySvc})
+			Tools: registry, Approvals: approvals, Memory: memorySvc, Skills: skillSvc,
+			Workspace: func(ctx context.Context, botID int64) (string, error) {
+				_, dir, err := catalog.Workspace(ctx, botID)
+				if err == nil {
+					err = os.MkdirAll(dir, 0o700)
+				}
+				return dir, err
+			}})
 		if err := runtime.Recover(ctx); err != nil {
 			return err
 		}

@@ -141,20 +141,25 @@ async function complete(
   // Pi runs tools itself, so a gated tool holds the request that reports its result.
   const afterTool =
     (body.messages as { role: string }[] | undefined)?.at(-1)?.role === "tool";
-  const waiting = afterTool && toolGate ? toolGate : gate;
+  const next = scripted.shift();
+  // Like web-server.ts's faux answer factory, gate holds only the unscripted answer.
+  const waiting = afterTool && toolGate ? toolGate : next ? undefined : gate;
   if (waiting === toolGate) toolGate = undefined;
-  else gate = undefined;
+  else if (waiting) gate = undefined;
   if (waiting) {
     aborted.signal.addEventListener("abort", () => waiting.resolve(), {
       once: true,
     });
     await waiting.promise;
   }
-  const reply = scripted.shift() ?? {
+  const reply = next ?? {
     text: `已收到：${lastUserText(body as never)}。这是一条用于验证流式显示和会话恢复的完整回复。（${model}）`,
   };
   if (reply.stopReason === "error") {
-    response.writeHead(500, { "Content-Type": "application/json" });
+    // Pi retries a 500; a faux error without a message is not retried.
+    response.writeHead(reply.errorMessage ? 500 : 400, {
+      "Content-Type": "application/json",
+    });
     response.end(JSON.stringify({ error: { message: reply.errorMessage } }));
     return;
   }

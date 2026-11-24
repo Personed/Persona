@@ -21,9 +21,12 @@ type EngineView struct {
 // View returns the Bot's chat page before the cursor, with the engine
 // runtime state when the runtime is native, view in runtime/index.ts.
 func (r *Runtime) View(ctx context.Context, bot int64, before string) (any, error) {
-	chat, err := r.h.ReadChat(ctx, bot, before)
-	if err != nil || !r.native {
-		return chat, err
+	if !r.native {
+		return r.h.ReadChat(ctx, bot, before)
+	}
+	chat, err := r.h.ReadEnginePage(ctx, bot, before, enginePage)
+	if err != nil {
+		return nil, err
 	}
 	doc, err := r.engineDoc(ctx, bot)
 	if err != nil {

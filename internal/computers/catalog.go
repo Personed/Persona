@@ -46,7 +46,10 @@ type startOp struct {
 
 // ServiceConfig is the service-side environment the catalog binds to.
 type ServiceConfig struct {
-	DataDir    string
+	DataDir string
+	// FilesRoot holds the local computer's Bot workspaces, beside the Bot
+	// files that uploads publish; empty keeps the TypeScript files root.
+	FilesRoot  string
 	Deployment string // "native" or "container"
 	// Computer is the local service's own target configuration.
 	Computer Config
