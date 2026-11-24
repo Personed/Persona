@@ -242,6 +242,11 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 		v.s.release(session.service, session.botID, session.lease)
 		session.lease = 0
 		session.controller = false
+		// The takeover card falls back to waiting while its viewer no
+		// longer holds control (catalog.ts's control-change commit).
+		if session.requestID != "" && v.s.c.approver != nil {
+			_ = v.s.c.approver.SetTakeover(ctx, session.botID, session.requestID, false)
+		}
 		return nil
 	}
 	w, dir, err := v.s.workerFor(ctx, session.botID, session.service)
@@ -273,6 +278,34 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 	return err
 }
 
+// capture takes one screen image for the takeover card preview: it opens a
+// short-lived viewer, reads one frame and closes it (views.ts capture).
+func (v *views) capture(ctx context.Context, botID int64, service string) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	session, err := v.open(ctx, botID, service, "")
+	if err != nil {
+		return nil, err
+	}
+	defer v.close(context.Background(), session.id)
+	batch, err := v.next(ctx, session.id)
+	if err != nil {
+		return nil, err
+	}
+	for _, message := range batch.Messages {
+		var frame struct {
+			Data     json.RawMessage `json:"data"`
+			MimeType string          `json:"mimeType"`
+		}
+		if err := json.Unmarshal(message, &frame); err == nil && len(frame.Data) > 0 {
+			return json.Marshal(map[string]any{
+				"type": "image", "data": frame.Data, "mimeType": frame.MimeType,
+			})
+		}
+	}
+	return nil, errUnavailable("没有可用画面。")
+}
+
 // close ends the viewer: releases its lease reservation and closes the
 // worker's session. Closing a viewer does not complete a takeover request.
 func (v *views) close(ctx context.Context, id string) {
@@ -293,7 +326,13 @@ func (v *views) close(ctx context.Context, id string) {
 			v.s.release(session.service, session.botID, session.lease)
 			session.lease = 0
 		}
+		session.controller = false
+		requestID := session.requestID
 		session.mu.Unlock()
+		// A viewer closing mid-takeover hands control back first.
+		if requestID != "" && v.s.c.approver != nil {
+			_ = v.s.c.approver.SetTakeover(ctx, session.botID, requestID, false)
+		}
 		v.remove(session)
 		close(session.done)
 		if w, dir, err := v.s.workerFor(ctx, session.botID, session.service); err == nil {

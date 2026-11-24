@@ -67,8 +67,12 @@ func (c *Catalog) Handoff(approver *approval.Service) takeover.Handoff {
 		if request.Service == "browser" {
 			title = "Browser"
 		}
+		// A preview frame shows the live screen on the card, like views.ts
+		// capture; a computer that cannot produce one just skips it.
+		preview, _ := c.vw.capture(ctx, request.BotID, request.Service)
 		answer, err := approver.Request(ctx, request.BotID, approval.Request{
 			ID: id, Title: title, Detail: request.Reason, Kind: approval.Permission,
+			Preview: preview,
 			Takeover: &approval.Takeover{
 				ID: id, Service: request.Service, ComputerID: *binding.ComputerID,
 				Revision: binding.Revision, State: "waiting", URL: url,
@@ -161,6 +165,11 @@ func (c *Catalog) TakeRequest(ctx context.Context, botID int64, requestID, viewI
 	// Concurrent requests from the owning viewer reuse the live grant.
 	session.taking = true
 	session.requestID = requestID
+	// The card flips to "controlling" while the viewer holds control, as
+	// catalog.ts commits it through the views callback.
+	if err := approver.SetTakeover(ctx, botID, requestID, true); err != nil {
+		return err
+	}
 	return nil
 }
 

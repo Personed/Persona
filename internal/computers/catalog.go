@@ -10,6 +10,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/Personed/Persona/internal/agent"
+	"github.com/Personed/Persona/internal/approval"
 	"github.com/Personed/Persona/internal/hosting"
 	"github.com/Personed/Persona/internal/rpc"
 	"github.com/Personed/Persona/internal/store"
@@ -37,6 +38,15 @@ type Catalog struct {
 
 	svcs *services
 	vw   *views
+
+	// approver updates a pending takeover card when its owning viewer's
+	// control changes (catalog.ts's views callback); nil until wired.
+	approver *approval.Service
+}
+
+// SetApprover wires the shared approval service for takeover card updates.
+func (c *Catalog) SetApprover(approver *approval.Service) {
+	c.approver = approver
 }
 
 type startOp struct {

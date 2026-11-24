@@ -200,6 +200,21 @@ func (s *services) close() {
 	}
 }
 
+// viewerLease reports the outstanding viewer lease on the service's lane, as
+// services.ts control.lease: Bot calls are rejected while a viewer holds it.
+func (s *services) viewerLease(service string, botID int64) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := "desktop"
+	if service == "browser" && s.isolated[botID] {
+		key = fmt.Sprintf("browser:%d", botID)
+	}
+	if ctl := s.controls[key]; ctl != nil {
+		return ctl.lease
+	}
+	return 0
+}
+
 // nextLease issues a viewer lease ID (services.ts takeover's lease argument).
 func (s *services) nextLease() int64 {
 	s.mu.Lock()

@@ -213,6 +213,7 @@ func RegisterComputer(s *rpc.Server, c *computers.Catalog) {
 // finishing the live request before resolving it, as runtime.ts
 // execution.answer does.
 func RegisterComputerTakeover(s *rpc.Server, c *computers.Catalog, approvals *approval.Service) {
+	c.SetApprover(approvals)
 	s.Handle("engines.takeRequest", func(ctx context.Context, input json.RawMessage) (any, error) {
 		var in struct {
 			BotID int64  `json:"botId"`

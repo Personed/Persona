@@ -20,6 +20,9 @@ type Definition struct {
 	Annotations map[string]any `json:"annotations,omitempty"`
 	// Mutates routes the call through the shared approval callback.
 	Mutates bool `json:"-"`
+	// Automatic lets the Bot's "auto" approval mode allow a mutating call
+	// without asking, like the TypeScript computer approval callback.
+	Automatic bool `json:"-"`
 }
 
 // Content is one block of a tool result: "text", "image" or "resource".

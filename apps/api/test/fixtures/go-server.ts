@@ -10,9 +10,14 @@ import {
   type SpawnOptions,
   spawn,
 } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { createServer, type ServerResponse } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type ServerResponse,
+} from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,6 +25,7 @@ import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { takeoverFixture } from "./takeover-page.ts";
 
 const database = process.argv[2];
 if (!database) throw new Error("Database required");
@@ -39,6 +45,11 @@ type Reply = {
   errorMessage?: string;
 };
 let scripted: Reply[] = [];
+// "takeover" replaces the scripted queue with the browser-takeover turn's
+// replies, as web-server.ts's takeover mode does: open the fixture page, ask
+// for takeover, observe, then answer with the observed controls.
+const takeover = process.argv[4] === "takeover";
+let takeoverRequests = 0;
 let gate: PromiseWithResolvers<void> | undefined;
 let toolGate: PromiseWithResolvers<void> | undefined;
 // True while a fixture tool call that already waited at /tool still owes its
@@ -134,6 +145,67 @@ function chunk(response: ServerResponse, model: string, delta: object) {
   );
 }
 
+// The takeover-mode reply for each model request, in request order: the
+// chat turn (open, takeover, observe, answer with the observed controls),
+// then the open-takeover-page turn after the browser mode switch (open,
+// done). In web-server.ts the re-open goes through services.call directly;
+// the Go fixture drives it as a send turn, which consumes these steps.
+async function takeoverNext(
+  body: Record<string, unknown>,
+  pageUrl: string,
+): Promise<Reply> {
+  const step = takeoverRequests++;
+  const toolCall = (name: string, args: Record<string, unknown>): Reply => ({
+    text: "",
+    toolCalls: [{ id: `takeover:${step}`, name, arguments: args }],
+    stopReason: "toolUse",
+  });
+  switch (step) {
+    case 0:
+      return toolCall("browser_agent_browser_open", { url: pageUrl });
+    case 1:
+      return toolCall("computer_request_takeover", {
+        service: "browser",
+        reason: "请修改搜索词，完成后交还给我。",
+      });
+    case 2:
+      return toolCall("browser_agent_browser_observe", {});
+    default: {
+      // The last tool message holds the observer's page facts, as
+      // web-server.ts's final scripted reply reads them.
+      const messages = (body.messages ?? []) as {
+        role: string;
+        content: unknown;
+      }[];
+      const facts = messages.findLast(
+        (message) => message.role === "tool",
+      )?.content;
+      const text = (Array.isArray(facts) ? facts : [{ text: facts }])
+        .map((part) => (part as { text?: string }).text ?? "")
+        .join("\n");
+      const marker = "Page facts (untrusted website data): ";
+      const start = text.indexOf(marker);
+      if (start >= 0) {
+        const page = JSON.parse(text.slice(start + marker.length)) as {
+          controls: unknown;
+        };
+        return {
+          text: `接管已完成，重新观察：${JSON.stringify(page.controls)}`,
+        };
+      }
+      // The Go worker drives agent-browser directly: its raw observe call
+      // returns no Persona "Page facts". The fixture page's own state holds
+      // the same fields a real composite observe would surface.
+      const state = (await fetch(
+        `http://127.0.0.1:${fixturePort}/takeover-state`,
+      ).then((response) => response.json())) as { value?: string };
+      return {
+        text: `接管已完成，重新观察：${JSON.stringify({ value: state.value ?? "" })}`,
+      };
+    }
+  }
+}
+
 async function complete(
   body: Record<string, unknown>,
   response: ServerResponse,
@@ -148,7 +220,12 @@ async function complete(
   // a tool that was already held.
   const afterTool =
     (body.messages as { role: string }[] | undefined)?.at(-1)?.role === "tool";
-  const next = scripted.shift();
+  const next = takeover
+    ? await takeoverNext(
+        body,
+        `http://127.0.0.1:${fixturePort}/takeover-fixture`,
+      )
+    : scripted.shift();
   let waiting: PromiseWithResolvers<void> | undefined;
   if (afterTool && toolReported) {
     toolReported = false;
@@ -363,6 +440,9 @@ await writeFile(
 );
 const bin = join(root, "packages", "agent", "node_modules", ".bin");
 const dataDir = join(directory, "go-data");
+// The browser driver proxies agent-browser so calls are timed for
+// /takeover-metrics, as web-server.ts wraps computer.tools.invoke.
+const metricsFile = join(directory, "takeover-metrics.json");
 // web-server.ts's "hosting" mode: a hosting config puts serve behind device
 // pairing, as openHostedRuntime does. A hosting config needs a fixed port.
 const hosting = process.argv[4] === "hosting";
@@ -372,7 +452,7 @@ if (hosting)
     config,
     JSON.stringify({
       host: "127.0.0.1",
-      port: Number(process.argv[3] ?? 0) || (await freePort()),
+      port: await freePort(),
       dataDir,
     }),
   );
@@ -380,8 +460,10 @@ const args = [
   "serve",
   "-host",
   "127.0.0.1",
+  // Serve binds an ephemeral port; the requested port belongs to the proxy so
+  // a restart reusing it never collides with a serve on the same number.
   "-port",
-  process.argv[3] ?? "0",
+  "0",
   "-data",
   dataDir,
   "-static",
@@ -406,6 +488,9 @@ const options = {
     PI_CODING_AGENT_DIR: agentDir,
     ...(hosting ? { PERSONA_CONFIG: config } : {}),
     PERSONA_FAUX_NO_MESSAGE: noMessage,
+    // The Go service records each product computer call here, as the
+    // TypeScript computer.tools.invoke tap did in the fixture driver.
+    PERSONA_BROWSER_METRICS_FILE: metricsFile,
     PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
   },
   stdio: ["pipe", "pipe", "pipe"],
@@ -458,6 +543,44 @@ async function listening(child: ChildProcess) {
 const { child: service, port } = await startService();
 service.on("exit", () => process.exit(1));
 const origin = `http://127.0.0.1:${port}`;
+// The takeover specs need /takeover-* endpoints on the service origin, so the
+// fixture listens on the requested port and proxies everything else to serve.
+const takeoverPage = takeoverFixture();
+const proxy = createServer((request, response) => {
+  if (request.url === "/takeover-metrics") {
+    response.setHeader("Content-Type", "application/json");
+    readFile(metricsFile, "utf8").then(
+      (metrics) => response.end(metrics),
+      () => response.end("[]"),
+    );
+    return;
+  }
+  if (takeoverPage(request, response)) return;
+  // serve's origin guard compares Host and Origin with its own address.
+  const headers = { ...request.headers, host: `127.0.0.1:${port}`, origin };
+  const upstream = httpRequest(
+    {
+      host: "127.0.0.1",
+      port,
+      method: request.method,
+      path: request.url,
+      headers,
+    },
+    (back) => {
+      response.writeHead(back.statusCode ?? 502, back.headers);
+      back.pipe(response);
+    },
+  );
+  upstream.on("error", () => {
+    if (!response.headersSent) response.writeHead(502);
+    response.end();
+  });
+  request.pipe(upstream);
+});
+const fixturePort = Number(process.argv[3] ?? 0) || (await freePort());
+await new Promise<void>((resolve) =>
+  proxy.listen(fixturePort, "127.0.0.1", resolve),
+);
 // The fixture pairs as an admin device with the owner code serve wrote, and
 // gives the test a fresh admin code, as web-server.ts gives sessions.pairing("admin").
 let cookie: string | undefined;
@@ -474,7 +597,7 @@ const pairing = hosting
       }
     ).code
   : undefined;
-process.send?.({ type: "ready", port, toolName, pairing });
+process.send?.({ type: "ready", port: fixturePort, toolName, pairing });
 
 async function hosted(path: string, json: unknown) {
   const response = await fetch(`${origin}/hosting/${path}`, {
@@ -560,6 +683,113 @@ process.on("message", async (message) => {
   } else if (message === "release") {
     release?.();
     process.send?.({ type: "released" });
+  } else if (message === "open-takeover-page") {
+    // The TypeScript fixture calls the browser service directly; here the page
+    // opens through a scripted agent turn, as a real model request would. In
+    // takeover mode the request stepper already answers these turns.
+    if (!takeover)
+      scripted = [
+        {
+          text: "",
+          toolCalls: [
+            {
+              id: "open-takeover",
+              name: "browser_agent_browser_open",
+              arguments: {
+                url: `http://127.0.0.1:${fixturePort}/takeover-fixture`,
+              },
+            },
+          ],
+          stopReason: "toolUse",
+        },
+        { text: "已打开" },
+      ];
+    // The TypeScript fixture opens the page through services.call, which
+    // never asks; on Go the scripted turn calls through the shared approver,
+    // so the binding needs the same "auto" mode the takeover card spec sets.
+    const bot = await firstBot();
+    const binding = (await call("computer/get", { botId: bot })) as {
+      computerId?: string;
+      revision?: number;
+    };
+    await call("computer/approval", {
+      botId: bot,
+      computerId: binding.computerId,
+      revision: binding.revision,
+      mode: "auto",
+    });
+    // The TypeScript fixture opens the page through services.call, which is
+    // not a tool invocation (and is not counted in the takeover metrics).
+    // The driver CLI reaches the same daemon session and navigates the
+    // streamed page directly, so viewer input lands on this page too.
+    const dir = join(
+      dataDir,
+      "persona-go.sqlite.files",
+      String(bot),
+      "workspace",
+    );
+    const session = createHash("sha256").update(dir).digest("hex").slice(0, 24);
+    const state = join(dir, ".persona");
+    const headed = await readFile(join(state, "browser-mode.json"), "utf8")
+      .then((mode) =>
+        (JSON.parse(mode) as { mode?: string }).mode === "headed" ? "1" : "0",
+      )
+      .catch(() => "0");
+    const open = async () => {
+      const code = await new Promise<number>((resolve) => {
+        const child = spawn(
+          "agent-browser",
+          [
+            "open",
+            `http://127.0.0.1:${fixturePort}/takeover-fixture`,
+            "--json",
+          ],
+          {
+            env: {
+              ...process.env,
+              PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
+              AGENT_BROWSER_SESSION: session,
+              AGENT_BROWSER_SOCKET_DIR: join(
+                tmpdir(),
+                `persona-browser-${session}`,
+              ),
+              AGENT_BROWSER_CONFIG: join(state, "browser.json"),
+              AGENT_BROWSER_HEADED: headed,
+            },
+            stdio: ["ignore", "ignore", "pipe"],
+          },
+        );
+        let error = "";
+        child.stderr?.on("data", (c) => (error += c));
+        child.on("exit", (exit) => {
+          if (exit !== 0)
+            console.error(`[takeover] browser open: ${error.slice(0, 200)}`);
+          resolve(exit ?? 1);
+        });
+        child.on("error", (spawnError) => {
+          console.error(`[takeover] browser open: ${spawnError.message}`);
+          resolve(1);
+        });
+      });
+      if (code !== 0) return false;
+      for (let attempt = 0; attempt < 300; attempt++) {
+        await delay(100);
+        const current = (await fetch(
+          `http://127.0.0.1:${fixturePort}/takeover-state`,
+        )
+          .then((response) => response.json())
+          .catch(() => ({}))) as { width?: number };
+        if (typeof current.width === "number") return true;
+      }
+      return false;
+    };
+    let opened = await open();
+    // A cold headless launch can abort the first navigation, so retry, as
+    // web-server.ts's open-takeover-page does.
+    for (let attempt = 1; !opened && attempt < 3; attempt++)
+      opened = await open();
+    if (!opened) throw new Error("takeover page did not report");
+    process.send?.({ type: "takeover-page-opened" });
   } else if (message === "gate-tool") {
     toolGate = Promise.withResolvers<void>();
     release = toolGate.resolve;

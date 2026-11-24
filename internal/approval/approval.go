@@ -229,15 +229,62 @@ func (s *Service) Pending(ctx context.Context, botID int64) ([]Request, error) {
 	return requests, nil
 }
 
-// Approver asks the user before each mutating product tool call. These requests
-// are never automatic: the registry cannot tell which tools "auto" mode may allow.
+// SetTakeover flips a pending takeover card between "controlling" and
+// "waiting", as catalog.ts commits it when the owning viewer's control
+// changes. Unknown or settled requests are left alone.
+func (s *Service) SetTakeover(ctx context.Context, botID int64, id string, controlling bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	meta, doc, err := s.load(ctx, botID)
+	if err != nil {
+		return err
+	}
+	state := "waiting"
+	if controlling {
+		state = "controlling"
+	}
+	changed := false
+	for i, value := range doc.approvals {
+		var request map[string]json.RawMessage
+		if err := json.Unmarshal(value, &request); err != nil {
+			return fmt.Errorf("approval: decode %s: %w", DocKind, err)
+		}
+		var requestID string
+		_ = json.Unmarshal(request["id"], &requestID)
+		if requestID != id {
+			continue
+		}
+		var takeover map[string]json.RawMessage
+		if err := json.Unmarshal(request["takeover"], &takeover); err != nil || takeover == nil {
+			continue
+		}
+		encoded, _ := json.Marshal(state)
+		takeover["state"] = encoded
+		if request["takeover"], err = json.Marshal(takeover); err != nil {
+			return err
+		}
+		if doc.approvals[i], err = json.Marshal(request); err != nil {
+			return err
+		}
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return s.save(ctx, botID, meta, doc)
+}
+
+// Approver asks the user before each mutating call. Requests are automatic only
+// when the definition marks them (native computer calls, which "auto" mode
+// allows without asking, as computer.tools.invoke does).
 func (s *Service) Approver() tools.Approver {
 	return func(ctx context.Context, call tools.Call, definition tools.Definition) (bool, error) {
 		answer, err := s.Request(ctx, call.BotID, Request{
-			ID:     "tool:" + call.CallID,
-			Title:  definition.Name,
-			Fields: fields(call.Input),
-			Kind:   Permission,
+			ID:        "tool:" + call.CallID,
+			Title:     definition.Name,
+			Fields:    fields(call.Input),
+			Kind:      Permission,
+			Automatic: definition.Automatic,
 		})
 		return answer.Allow, err
 	}
@@ -304,14 +351,47 @@ func (s *Service) settle(ctx context.Context, botID int64, request Request, valu
 			state = "answered"
 		}
 	}
-	data, err := json.Marshal(message{
+	msg := message{
 		ID:        "approval:" + request.ID + ":" + strconv.FormatInt(request.RequestedAt, 10),
 		Role:      "assistant",
-		Content:   []struct{}{},
+		Content:   []json.RawMessage{},
 		Timestamp: request.RequestedAt,
 		Stopped:   state == "expired",
-		Approval:  messageApproval{Request: value, State: state, Answer: answer},
-	})
+	}
+	if request.Takeover != nil {
+		// A settled takeover keeps its card (messages.ts approvalMessage):
+		// the request's takeover payload with state "done" when allowed,
+		// "expired" otherwise, and the detail text and preview as content.
+		takeover := *request.Takeover
+		takeover.State = "expired"
+		if answer != nil && answer.Allow {
+			takeover.State = "done"
+		}
+		text, _ := json.Marshal(map[string]any{
+			"type": "text", "text": request.Detail, "key": request.ID,
+		})
+		msg.Content = []json.RawMessage{text}
+		if request.Preview != nil {
+			preview := map[string]json.RawMessage{}
+			if err := json.Unmarshal(request.Preview, &preview); err != nil {
+				return nil, err
+			}
+			preview["key"], _ = json.Marshal(request.ID + ":preview")
+			part, err := json.Marshal(preview)
+			if err != nil {
+				return nil, err
+			}
+			msg.Content = append(msg.Content, part)
+		}
+		encoded, err := json.Marshal(takeover)
+		if err != nil {
+			return nil, err
+		}
+		msg.Takeover = encoded
+	} else {
+		msg.Approval = &messageApproval{Request: value, State: state, Answer: answer}
+	}
+	data, err := json.Marshal(msg)
 	if err != nil {
 		return nil, err
 	}
@@ -363,13 +443,14 @@ func (s *Service) flush(ctx context.Context, botID int64) error {
 }
 
 type message struct {
-	ID        string          `json:"id"`
-	Role      string          `json:"role"`
-	Content   []struct{}      `json:"content"`
-	Timestamp int64           `json:"timestamp"`
-	Pending   bool            `json:"pending"`
-	Stopped   bool            `json:"stopped"`
-	Approval  messageApproval `json:"approval"`
+	ID        string            `json:"id"`
+	Role      string            `json:"role"`
+	Content   []json.RawMessage `json:"content"`
+	Timestamp int64             `json:"timestamp"`
+	Pending   bool              `json:"pending"`
+	Stopped   bool              `json:"stopped"`
+	Approval  *messageApproval  `json:"approval,omitempty"`
+	Takeover  json.RawMessage   `json:"takeover,omitempty"`
 }
 
 type messageApproval struct {
