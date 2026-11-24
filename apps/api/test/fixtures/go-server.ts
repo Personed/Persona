@@ -41,6 +41,9 @@ type Reply = {
 let scripted: Reply[] = [];
 let gate: PromiseWithResolvers<void> | undefined;
 let toolGate: PromiseWithResolvers<void> | undefined;
+// True while a fixture tool call that already waited at /tool still owes its
+// tool result to a model request, which then must not take the next gate.
+let toolReported = false;
 let modelStarted = Promise.withResolvers<void>();
 
 function lastUserText(body: {
@@ -139,14 +142,24 @@ async function complete(
   const model = String(body.model ?? "");
   const aborted = new AbortController();
   response.on("close", () => aborted.abort());
-  // Pi runs tools itself, so a gated tool holds the request that reports its result.
+  // Pi runs tools itself, so a gated tool holds the request that reports its
+  // result — except the fixture tool, which already waits at /tool. A gate
+  // armed for the next tool call must not be stolen by the request reporting
+  // a tool that was already held.
   const afterTool =
     (body.messages as { role: string }[] | undefined)?.at(-1)?.role === "tool";
   const next = scripted.shift();
-  // Like web-server.ts's faux answer factory, gate holds only the unscripted answer.
-  const waiting = afterTool && toolGate ? toolGate : next ? undefined : gate;
-  if (waiting === toolGate) toolGate = undefined;
-  else if (waiting) gate = undefined;
+  let waiting: PromiseWithResolvers<void> | undefined;
+  if (afterTool && toolReported) {
+    toolReported = false;
+    waiting = next ? undefined : gate;
+  } else if (afterTool && toolGate) {
+    waiting = toolGate;
+    toolGate = undefined;
+  } else {
+    waiting = next ? undefined : gate;
+  }
+  if (waiting && waiting === gate) gate = undefined;
   if (waiting) {
     aborted.signal.addEventListener("abort", () => waiting.resolve(), {
       once: true,
@@ -231,7 +244,11 @@ async function complete(
 // The fixture tool's Pi extension asks here before it returns, so a gated
 // tool stays running the way web-server.ts's test tool does.
 async function runTool(response: ServerResponse) {
+  // Each "gate-tool" arms one hold for the next tool call. Mark the call's
+  // result outstanding so the request that reports it skips the tool gate.
   const waiting = toolGate;
+  toolGate = undefined;
+  toolReported = true;
   if (waiting) {
     response.on("close", () => waiting.resolve());
     await waiting.promise;
