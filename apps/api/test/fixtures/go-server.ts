@@ -11,8 +11,9 @@ import {
   spawn,
 } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -299,6 +300,20 @@ await writeFile(
   }),
 );
 const bin = join(root, "packages", "agent", "node_modules", ".bin");
+const dataDir = join(directory, "go-data");
+// web-server.ts's "hosting" mode: a hosting config puts serve behind device
+// pairing, as openHostedRuntime does. A hosting config needs a fixed port.
+const hosting = process.argv[4] === "hosting";
+const config = join(directory, "go-hosting.json");
+if (hosting)
+  await writeFile(
+    config,
+    JSON.stringify({
+      host: "127.0.0.1",
+      port: Number(process.argv[3] ?? 0) || (await freePort()),
+      dataDir,
+    }),
+  );
 const args = [
   "serve",
   "-host",
@@ -306,7 +321,7 @@ const args = [
   "-port",
   process.argv[3] ?? "0",
   "-data",
-  join(directory, "go-data"),
+  dataDir,
   "-static",
   process.env.PERSONA_TEST_STATIC_DIR ?? join(root, "apps", "web", "dist"),
   "-contract",
@@ -320,6 +335,7 @@ const options = {
   env: {
     ...process.env,
     PI_CODING_AGENT_DIR: agentDir,
+    ...(hosting ? { PERSONA_CONFIG: config } : {}),
     PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
   },
   stdio: ["pipe", "pipe", "pipe"],
@@ -371,17 +387,60 @@ async function listening(child: ChildProcess) {
 
 const { child: service, port } = await startService();
 service.on("exit", () => process.exit(1));
+const origin = `http://127.0.0.1:${port}`;
+// The fixture pairs as an admin device with the owner code serve wrote, and
+// gives the test a fresh admin code, as web-server.ts gives sessions.pairing("admin").
+let cookie: string | undefined;
+if (hosting) {
+  const code = await readFile(join(dataDir, "owner-code"), "utf8");
+  const exchanged = await hosted("exchange", { code, label: "fixture" });
+  cookie = exchanged.headers.getSetCookie()[0]?.split(";")[0];
+}
 await configure();
+const pairing = hosting
+  ? (
+      (await (await hosted("pairing", { scope: "admin" })).json()) as {
+        code: string;
+      }
+    ).code
+  : undefined;
 // Pi's own ls stands in for web-server.ts's gated test tool.
-process.send?.({ type: "ready", port, toolName: "ls" });
+process.send?.({ type: "ready", port, toolName: "ls", pairing });
+
+async function hosted(path: string, json: unknown) {
+  const response = await fetch(`${origin}/hosting/${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: origin,
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+    body: JSON.stringify(json),
+  });
+  if (!response.ok)
+    throw new Error(`${path}: ${response.status} ${await response.text()}`);
+  return response;
+}
+
+async function freePort() {
+  const server = createNetServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  if (!address || typeof address === "string") throw new Error("Port required");
+  return address.port;
+}
 
 // web-server.ts opens every Bot with the faux model and prepares its engine;
 // here each Bot is configured through engines.configure instead.
 async function call(path: string, json: unknown) {
-  const origin = `http://127.0.0.1:${port}`;
   const response = await fetch(`${origin}/rpc/${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Origin: origin },
+    headers: {
+      "Content-Type": "application/json",
+      Origin: origin,
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
     body: JSON.stringify({ json }),
   });
   if (!response.ok)
@@ -403,12 +462,17 @@ async function configure() {
       config: { model: string | null };
     };
     // A restart keeps the model the test chose.
-    if (profile.config.model?.startsWith("faux/")) continue;
-    await call("engines/configure", {
+    if (!profile.config.model?.startsWith("faux/"))
+      await call("engines/configure", {
+        botId: id,
+        config: { provider: "pi", model: "faux/faux-1" },
+        revision: profile.revision,
+        requestId: crypto.randomUUID(),
+      });
+    // engines.prepare's inspection, so engines.get lists the catalog's names.
+    await call("engines/inspect", {
       botId: id,
-      config: { provider: "pi", model: "faux/faux-1" },
-      revision: profile.revision,
-      requestId: crypto.randomUUID(),
+      config: { provider: "pi", model: profile.config.model ?? "faux/faux-1" },
     });
   }
 }

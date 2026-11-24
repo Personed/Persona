@@ -515,7 +515,8 @@ test("sending paints the outgoing message before the network receipt", async ({
       )
       .toBe(1);
     const duration = await page.evaluate(
-      () => performance.getEntriesByName("send-paint")[0]!.duration,
+      () =>
+        performance.getEntriesByName("send-paint")[0]?.duration ?? Number.NaN,
     );
     console.log(
       `send paint with 320 history messages and 4x CPU: ${duration.toFixed(1)}ms`,
@@ -2453,6 +2454,8 @@ test("Work follows a native turn, opens its record and preserves it after stop a
   await expect(dialog).toContainText("检查 Work 工作记录");
   await page.keyboard.press("Escape");
   await expect(card.locator(".work-open")).toBeFocused();
+  worker.send("wait-model");
+  await once(worker, "message");
   await card.getByRole("button", { name: "停止执行", exact: true }).click();
   await expect(card).toContainText("已停止");
   await expect(dialog).not.toBeVisible();

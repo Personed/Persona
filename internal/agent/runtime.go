@@ -585,6 +585,7 @@ func (r *Runtime) runEngine(ctx context.Context, bot int64, w *worker, taskID st
 	var drafts []*Draft
 	var config EngineConfig
 	var sessionID string
+	var routine *RoutineRun
 	err = r.h.Commit(ctx, func(tx *Tx) error {
 		doc, err := Edit(tx, EngineDoc, bot)
 		if err != nil {
@@ -608,6 +609,13 @@ func (r *Runtime) runEngine(ctx context.Context, bot int64, w *worker, taskID st
 			}
 		}
 		drafts, config = doc.Drafts, doc.Config
+		if in.RoutineRunID != "" {
+			var err error
+			routine, err = r.routineRun(tx, bot, in.RoutineRunID)
+			if err != nil {
+				return err
+			}
+		}
 		if doc.SessionID != nil {
 			sessionID = *doc.SessionID
 		}
@@ -616,7 +624,7 @@ func (r *Runtime) runEngine(ctx context.Context, bot int64, w *worker, taskID st
 	if err != nil {
 		return
 	}
-	p := &projection{r: r, bot: bot, task: id, turn: in.TurnID, entry: in.EntryID, messages: drafts}
+	p := &projection{r: r, bot: bot, task: id, turn: in.TurnID, entry: in.EntryID, routine: routine, messages: drafts}
 	failure := r.executeEngine(ctx, bot, w, id, in, config, sessionID, p)
 	p.flush(context.Background())
 	reason := failure
