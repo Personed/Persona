@@ -155,6 +155,8 @@ func (s *server) computer(ctx context.Context, input ComputerInput) (*ComputerRe
 		}
 		defer lane.Unlock()
 		return s.restartBrowser(ctx, input, journal, marker)
+	case "view":
+		return s.view(ctx, input, key, marker)
 	case "prepare", "install", "mode", "settle":
 		return s.computerStatus(ctx, input, key, journal, marker)
 	case "catalog":
@@ -311,6 +313,10 @@ func (s *server) restartBrowser(ctx context.Context, input ComputerInput, journa
 	s.computersMu.Lock()
 	old := s.computers[key]
 	delete(s.computers, key)
+	if s.browserRestarts == nil {
+		s.browserRestarts = map[string]uint64{}
+	}
+	s.browserRestarts[key]++
 	s.computersMu.Unlock()
 	if old != nil {
 		old.session.close()
@@ -772,6 +778,7 @@ func privateSocketDir(path string) error {
 }
 
 func (s *server) closeComputers() {
+	s.closeViews()
 	s.computersMu.Lock()
 	drivers := s.computers
 	s.computers = map[string]*computerDriver{}
