@@ -119,11 +119,18 @@ func (c *Catalog) TakeRequest(ctx context.Context, botID int64, requestID, viewI
 		return rpc.NewError("FORBIDDEN", "viewer 不属于该请求。")
 	}
 	if session.lease == 0 {
-		lease, err := c.svcs.takeover(ctx, session.service, botID)
-		if err != nil {
+		lease := c.svcs.nextLease()
+		session.lease = lease
+		if err := c.svcs.takeover(ctx, session.service, botID, lease); err != nil {
+			session.lease = 0
 			return err
 		}
-		session.lease = lease
+		// A viewer that closed during the grant released nothing it never
+		// saw; give the claimed lane back.
+		if c.vw.get(viewID) == nil {
+			c.svcs.release(session.service, botID, lease)
+			return rpc.NewError("GONE", "画面连接已断开。")
+		}
 		session.controller = true
 	}
 	// Concurrent requests from the owning viewer reuse the live grant.

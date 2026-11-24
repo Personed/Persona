@@ -168,11 +168,18 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 		if session.lease != 0 {
 			return nil
 		}
-		lease, err := v.s.takeover(ctx, session.service, session.botID)
-		if err != nil {
+		lease := v.s.nextLease()
+		session.lease = lease
+		if err := v.s.takeover(ctx, session.service, session.botID, lease); err != nil {
+			session.lease = 0
 			return err
 		}
-		session.lease = lease
+		// A viewer that closed during the grant released nothing it never
+		// saw; give the claimed lane back (views.ts sessions.has).
+		if v.get(id) == nil {
+			v.s.release(session.service, session.botID, lease)
+			return rpc.NewError("GONE", "画面连接已断开。")
+		}
 		session.controller = true
 		return nil
 	case "back":

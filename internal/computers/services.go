@@ -200,30 +200,42 @@ func (s *services) close() {
 	}
 }
 
-// takeover reserves a viewer lease for the service (services.ts takeover):
-// serializes on the lane, waits for the service to settle, then records the
-// lease so viewAccess is reserved before the grant waits.
-func (s *services) takeover(ctx context.Context, service string, botID int64) (int64, error) {
-	w, dir, err := s.workerFor(ctx, botID, service)
-	if err != nil {
-		return 0, err
-	}
-	// The worker settles dispatched work before control changes.
-	if _, err := w.ComputerRequest(ctx, worker.ComputerInput{Action: "settle", Service: service, Dir: dir}); err != nil {
-		return 0, err
-	}
+// nextLease issues a viewer lease ID (services.ts takeover's lease argument).
+func (s *services) nextLease() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ctl := s.control(service, botID)
-	// services.ts takeover: one viewer holds a lane at a time.
-	if ctl.lease != 0 {
-		return 0, rpc.NewError("CONFLICT", "用户正在接管这台电脑。")
-	}
 	lease := s.leased
 	s.leased++
+	return lease
+}
+
+// takeover claims a viewer lease for the service before the service settles
+// (services.ts takeover): the reservation is visible to a closing viewer, one
+// viewer holds a lane at a time, and a failed settle gives it back.
+func (s *services) takeover(ctx context.Context, service string, botID int64, lease int64) error {
+	s.mu.Lock()
+	ctl := s.control(service, botID)
+	if ctl.lease != 0 {
+		s.mu.Unlock()
+		return rpc.NewError("CONFLICT", "用户正在接管这台电脑。")
+	}
 	ctl.lease = lease
 	ctl.owner = false
-	return lease, nil
+	s.mu.Unlock()
+	w, dir, err := s.workerFor(ctx, botID, service)
+	if err == nil {
+		// The worker settles dispatched work before control changes.
+		_, err = w.ComputerRequest(ctx, worker.ComputerInput{Action: "settle", Service: service, Dir: dir})
+	}
+	if err != nil {
+		s.mu.Lock()
+		if ctl.lease == lease {
+			ctl.lease = 0
+		}
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // Workspace dials the worker of the Bot's bound work computer and returns it
