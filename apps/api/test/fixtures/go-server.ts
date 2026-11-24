@@ -282,9 +282,6 @@ await writeFile(
   JSON.stringify({
     defaultProvider: "faux",
     defaultModel: "faux-1",
-    extensions: [
-      fileURLToPath(new URL("./pi-faux-failure.mjs", import.meta.url)),
-    ],
   }),
 );
 await writeFile(
@@ -337,6 +334,10 @@ const args = [
   join(root, "contracts", "api"),
   "-pi-extension",
   join(root, "packages", "agent", "src", "harness", "pi-tools.mjs"),
+  // serve always runs Pi with --no-extensions, so settings.json extensions
+  // never load; the faux failure stream must be an explicit extension.
+  "-pi-extension",
+  fileURLToPath(new URL("./pi-faux-failure.mjs", import.meta.url)),
 ];
 const options = {
   // Outside the repository so persona.config.json does not select hosted mode.
