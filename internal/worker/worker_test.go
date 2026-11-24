@@ -56,7 +56,24 @@ func TestMain(m *testing.M) {
 			}
 			os.Exit(0)
 		case "close":
-			_ = os.WriteFile(os.Getenv("TEST_BROWSER_CLOSED"), []byte(os.Getenv("AGENT_BROWSER_SESSION")), 0o600)
+			_ = os.WriteFile(os.Getenv("TEST_BROWSER_CLOSED"), []byte(os.Getenv("AGENT_BROWSER_SOCKET_DIR")+"\n"+os.Getenv("AGENT_BROWSER_SESSION")), 0o600)
+			os.Exit(0)
+		case "linger":
+			// A browser daemon that ignores `close`.
+			time.Sleep(time.Minute)
+			os.Exit(0)
+		case "set", "install":
+			if log := os.Getenv("TEST_BROWSER_CLI"); log != "" {
+				file, err := os.OpenFile(log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+				if err == nil {
+					fmt.Fprintln(file, strings.Join(append(os.Args[1:], os.Getenv("AGENT_BROWSER_HEADED")), " "))
+					_ = file.Close()
+				}
+			}
+			if os.Getenv("TEST_BROWSER_FAIL") != "" {
+				fmt.Fprintln(os.Stderr, "browser unavailable")
+				os.Exit(1)
+			}
 			os.Exit(0)
 		case "pi-gateway":
 			if err := testPiGateway(os.Getenv("PERSONA_PI_MCP_URL")); err != nil {
