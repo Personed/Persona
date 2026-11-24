@@ -113,7 +113,7 @@ func (s *Service) Enable(ctx context.Context, botID int64, id string, enabled bo
 	if enabled {
 		action = "resume"
 	}
-	_, _, err := s.apply(ctx, botID, Change{Action: action, ID: id, Revision: &revision}, requestID, "user")
+	_, _, err := s.apply(ctx, botID, Change{Action: action, ID: id, Revision: &revision}, requestID, "user", false)
 	return err
 }
 

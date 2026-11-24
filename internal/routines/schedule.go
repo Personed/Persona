@@ -1,8 +1,10 @@
 package routines
 
 import (
+	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,3 +123,28 @@ func hostTimeZone() string {
 
 // HostTimeZone is the host's IANA zone name for prompt sections.
 func HostTimeZone() string { return hostTimeZone() }
+
+var timeLabelPattern = regexp.MustCompile(`^(\d{1,2}) (\d{1,2}) \* \* (\*|1-5|[0-6])$`)
+
+var weekDayLabels = []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
+
+// TimeLabel renders a cron expression the way the TypeScript schedule-label
+// does (routineTimeLabel): 每天/工作日/每周几 HH:MM, or the raw expression.
+func TimeLabel(expression string) string {
+	match := timeLabelPattern.FindStringSubmatch(expression)
+	if match == nil {
+		return expression
+	}
+	frequency := "每天"
+	switch match[3] {
+	case "*":
+	case "1-5":
+		frequency = "工作日"
+	default:
+		weekday, _ := strconv.Atoi(match[3])
+		frequency = "每" + weekDayLabels[weekday]
+	}
+	minute, _ := strconv.Atoi(match[1])
+	hour, _ := strconv.Atoi(match[2])
+	return fmt.Sprintf("%s %02d:%02d", frequency, hour, minute)
+}

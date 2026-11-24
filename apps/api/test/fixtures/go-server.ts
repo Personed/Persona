@@ -39,7 +39,7 @@ type Reply = {
 let scripted: Reply[] = [];
 let gate: PromiseWithResolvers<void> | undefined;
 let toolGate: PromiseWithResolvers<void> | undefined;
-let modelStarted = Promise.withResolvers<void>();
+const modelStarted = Promise.withResolvers<void>();
 
 function lastUserText(body: {
   messages?: { role: string; content: unknown }[];
@@ -137,8 +137,12 @@ async function complete(
   const model = String(body.model ?? "");
   const aborted = new AbortController();
   response.on("close", () => aborted.abort());
-  const waiting = gate;
-  gate = undefined;
+  // Pi runs tools itself, so a gated tool holds the request that reports its result.
+  const afterTool =
+    (body.messages as { role: string }[] | undefined)?.at(-1)?.role === "tool";
+  const waiting = afterTool && toolGate ? toolGate : gate;
+  if (waiting === toolGate) toolGate = undefined;
+  else gate = undefined;
   if (waiting) {
     aborted.signal.addEventListener("abort", () => waiting.resolve(), {
       once: true,
@@ -169,18 +173,19 @@ async function complete(
       });
     }
   }
-  // Pi declares Persona's product tools as mcp__persona__<name>; tests script
-  // the product name, as web-server.ts's tools are called.
-  const declared = new Set(
-    ((body.tools as { function?: { name?: string } }[] | undefined) ?? []).map(
-      (tool) => tool.function?.name,
-    ),
-  );
-  const calls = (reply.toolCalls ?? []).map((call) =>
-    declared.has(`mcp__persona__${call.name}`)
-      ? { ...call, name: `mcp__persona__${call.name}` }
-      : call,
-  );
+  // Specs script bare tool names; map them to the name the engine declared —
+  // persona tools arrive as mcp__persona__<name> and Pi's native tools as-is.
+  const declared = new Map<string, string>();
+  for (const tool of (body.tools ?? []) as {
+    function?: { name?: string };
+  }[]) {
+    const name = tool.function?.name;
+    if (!name) continue;
+    declared.set(name, name);
+    const bare = name.replace(/^mcp__persona__/, "");
+    if (!declared.has(bare)) declared.set(bare, name);
+  }
+  const calls = reply.toolCalls ?? [];
   for (const [index, call] of calls.entries())
     chunk(response, model, {
       tool_calls: [
@@ -189,8 +194,8 @@ async function complete(
           id: call.id,
           type: "function",
           function: {
-            name: call.name,
-            arguments: JSON.stringify(call.arguments),
+            name: declared.get(call.name) ?? call.name,
+            arguments: JSON.stringify(call.arguments ?? {}),
           },
         },
       ],
@@ -211,17 +216,6 @@ async function complete(
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     })}\n\ndata: [DONE]\n\n`,
   );
-  response.end();
-}
-
-// The fixture tool's Pi extension asks here before it returns, so a gated
-// tool stays running the way web-server.ts's test tool does.
-async function runTool(response: ServerResponse) {
-  const waiting = toolGate;
-  if (waiting) {
-    response.on("close", () => waiting.resolve());
-    await waiting.promise;
-  }
   response.end();
 }
 
@@ -249,8 +243,6 @@ const ollama = createServer((request, response) => {
       });
     if (request.url === "/v1/chat/completions" && request.method === "POST")
       return void complete(JSON.parse(raw || "{}"), response);
-    if (request.url === "/tool" && request.method === "POST")
-      return void runTool(response);
     response.statusCode = 404;
     response.end();
   });
@@ -259,6 +251,7 @@ await new Promise<void>((resolve) => ollama.listen(0, "127.0.0.1", resolve));
 const ollamaAddress = ollama.address();
 if (!ollamaAddress || typeof ollamaAddress === "string")
   throw new Error("Port required");
+const ollamaPort = ollamaAddress.port;
 
 let binary = process.env.PERSONA_GO_BIN;
 if (!binary) {
@@ -272,6 +265,7 @@ if (!binary) {
     stdio: "inherit",
   });
 }
+const command = binary;
 const agentDir = join(directory, "pi-agent");
 await mkdir(agentDir, { recursive: true });
 await writeFile(
@@ -283,7 +277,7 @@ await writeFile(
   JSON.stringify({
     providers: {
       faux: {
-        baseUrl: `http://127.0.0.1:${ollamaAddress.port}/v1`,
+        baseUrl: `http://127.0.0.1:${ollamaPort}/v1`,
         apiKey: "fixture",
         api: "openai-completions",
         models: models.map(({ id, name, reasoning }) => ({
@@ -298,31 +292,6 @@ await writeFile(
       },
     },
   }),
-);
-// This Pi extension stands in for web-server.ts's test tool: it returns the
-// supplied text after the fixture releases a gated tool.
-const toolName = "fixture_echo";
-const toolExtension = join(agentDir, "fixture-tool.js");
-await writeFile(
-  toolExtension,
-  `export default function (pi) {
-  pi.registerTool({
-    name: ${JSON.stringify(toolName)},
-    label: ${JSON.stringify(toolName)},
-    description: "Return the supplied text.",
-    parameters: {
-      type: "object",
-      properties: { text: { type: "string" }, fail: { type: "boolean" } },
-      required: ["text"],
-    },
-    async execute(_id, params, signal) {
-      await fetch(${JSON.stringify(`http://127.0.0.1:${ollamaAddress.port}/tool`)}, { method: "POST", signal });
-      if (params.fail) throw new Error(params.text);
-      return { content: [{ type: "text", text: params.text }], details: {} };
-    },
-  });
-}
-`,
 );
 const bin = join(root, "packages", "agent", "node_modules", ".bin");
 const args = [
@@ -339,8 +308,6 @@ const args = [
   join(root, "contracts", "api"),
   "-pi-extension",
   join(root, "packages", "agent", "src", "harness", "pi-tools.mjs"),
-  "-pi-extension",
-  toolExtension,
 ];
 const options = {
   // Outside the repository so persona.config.json does not select hosted mode.
@@ -359,8 +326,8 @@ const watchdog =
   'exec 3<&0; "$@" </dev/null 3<&- & pid=$!; { cat <&3 >/dev/null; kill -9 0; } & wait $pid';
 const launch = () =>
   process.platform === "win32"
-    ? spawn(binary, args, options)
-    : spawn("sh", ["-c", watchdog, "sh", binary, ...args], {
+    ? spawn(command, args, options)
+    : spawn("sh", ["-c", watchdog, "sh", command, ...args], {
         ...options,
         detached: true,
       });
@@ -400,7 +367,8 @@ async function listening(child: ChildProcess) {
 const { child: service, port } = await startService();
 service.on("exit", () => process.exit(1));
 await configure();
-process.send?.({ type: "ready", port, toolName });
+// Pi's own ls stands in for web-server.ts's gated test tool.
+process.send?.({ type: "ready", port, toolName: "ls" });
 
 // web-server.ts opens every Bot with the faux model and prepares its engine;
 // here each Bot is configured through engines.configure instead.
@@ -443,8 +411,6 @@ async function configure() {
 let release: (() => void) | undefined;
 process.on("message", async (message) => {
   if (message === "gate") {
-    // wait-model then waits for the request this gate holds.
-    modelStarted = Promise.withResolvers<void>();
     gate = Promise.withResolvers<void>();
     release = gate.resolve;
     process.send?.({ type: "gated" });

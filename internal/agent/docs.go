@@ -219,12 +219,6 @@ var (
 	SkillsDoc         = Doc[SkillsState]{Kind: "persona.skills", Scope: "session"}
 )
 
-// ComputerRequests is the persona.computer-requests document; internal/approval
-// owns its writes and the chat shows its pending approvals.
-type ComputerRequests struct {
-	Approvals []json.RawMessage `json:"approvals"`
-}
-
 // SkillItem is the part of a persona.skills record the prompt section reads.
 type SkillItem struct {
 	ID          string  `json:"id"`
@@ -256,6 +250,12 @@ type RoutineRun struct {
 // RoutinesState is the part of persona.routines this package reads.
 type RoutinesState struct {
 	Runs []RoutineRun `json:"runs"`
+}
+
+// ComputerRequests is the persona.computer-requests document; internal/approval
+// owns its writes and the chat shows its pending approvals.
+type ComputerRequests struct {
+	Approvals []json.RawMessage `json:"approvals"`
 }
 
 // Entry kinds read by the chat projection.

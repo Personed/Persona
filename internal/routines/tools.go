@@ -11,7 +11,7 @@ import (
 )
 
 // Register adds the routine_* product tools to a registry. routine_create and
-// routine_manage change routines only after the shared approver accepts the call.
+// routine_manage change routines only after Service.Confirm accepts the change.
 func Register(registry tools.Registry, service *Service) error {
 	for _, tool := range []tools.Tool{
 		&tool{definition: reportDefinition, run: service.runReport},
@@ -109,7 +109,16 @@ func (s *Service) runCreate(ctx context.Context, call tools.Call) (any, error) {
 		return nil, err
 	}
 	change.Action, change.ID, change.Revision = "create", "", nil
-	return s.confirmed(ctx, call, change)
+	result, err := s.Manage(ctx, call.BotID, change, call.CallID, source(call))
+	if err != nil {
+		return nil, err
+	}
+	if item, ok := result.(Routine); ok && item.Title != "" && s.Deliver != nil {
+		if err := s.Deliver(ctx, call, "已创建定时　◷　"+item.Title); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) runManage(ctx context.Context, call tools.Call) (any, error) {
@@ -119,18 +128,6 @@ func (s *Service) runManage(ctx context.Context, call tools.Call) (any, error) {
 	}
 	if change.Action == "create" || change.ID == "" || change.Revision == nil {
 		return nil, &Error{BadRequest, "参数无效：需要 action、id 和 revision。"}
-	}
-	return s.confirmed(ctx, call, change)
-}
-
-// confirmed applies a Bot's change once the user approves it.
-func (s *Service) confirmed(ctx context.Context, call tools.Call, change Change) (any, error) {
-	allowed, err := s.confirm(ctx, call.BotID, change, call.CallID)
-	if err != nil {
-		return nil, err
-	}
-	if !allowed {
-		return map[string]string{"status": "declined"}, nil
 	}
 	return s.Manage(ctx, call.BotID, change, call.CallID, source(call))
 }

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -252,6 +253,50 @@ func TestComputerBrowserRestart(t *testing.T) {
 		}
 		if _, err := act(client, dir, "b", "browser", "agent_browser_click"); err != nil {
 			t.Fatalf("action after restart: %v", err)
+		}
+
+		closed, _ := os.ReadFile(filepath.Join(dir, "closed"))
+		socket, session, _ := strings.Cut(string(closed), "\n")
+		daemon := exec.Command(executable(t), "linger")
+		isolate(daemon)
+		if err := daemon.Start(); err != nil {
+			t.Fatal(err)
+		}
+		exited := make(chan struct{})
+		go func() { _ = daemon.Wait(); close(exited) }()
+		t.Cleanup(func() { _ = daemon.Process.Kill() })
+		if err := os.WriteFile(filepath.Join(socket, session+".pid"), []byte(strconv.Itoa(daemon.Process.Pid)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.RestartBrowser(ctx, dir, 7); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			t.Fatal("restart reconnected while the old browser daemon ran")
+		}
+
+		// A crashed daemon's pid file whose pid now names another program.
+		other := exec.Command("sleep", "60")
+		if runtime.GOOS == "windows" {
+			other = exec.Command("ping", "-n", "60", "127.0.0.1")
+		}
+		if err := other.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = other.Process.Kill(); _ = other.Wait() })
+		if err := os.WriteFile(filepath.Join(socket, session+".pid"), []byte(strconv.Itoa(other.Process.Pid)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.RestartBrowser(ctx, dir, 7); code(err) != "EIO" {
+			t.Fatalf("restart over another program's pid: %v", err)
+		}
+		if !processAlive(other.Process.Pid) {
+			t.Fatal("restart stopped a program that is not the browser daemon")
+		}
+		if _, err := act(client, dir, "c", "browser", "agent_browser_click"); code(err) != "COMPUTER_UNCERTAIN" {
+			t.Fatalf("action after an unconfirmed restart: %v", err)
 		}
 	})
 }
@@ -505,4 +550,112 @@ func TestComputerBrowserSocketRefused(t *testing.T) {
 			t.Fatalf("browser with a planted socket directory: %v", err)
 		}
 	})
+}
+
+func TestComputerStatus(t *testing.T) {
+	eachComputer(t, func(t *testing.T, dir string, dial func(map[string]*MCPConfig) *Client) {
+		log := filepath.Join(dir, "cli")
+		browser := func(env map[string]string) *MCPConfig {
+			env["TEST_BROWSER_CLOSED"] = filepath.Join(dir, "closed")
+			env["TEST_BROWSER_CLI"] = log
+			return &MCPConfig{Transport: "stdio", Command: executable(t), Args: []string{"browser-driver"}, Env: env}
+		}
+		client := dial(map[string]*MCPConfig{"browser": browser(map[string]string{})})
+		ctx := context.Background()
+		calls := func() []string {
+			data, _ := os.ReadFile(log)
+			return strings.Split(strings.TrimSpace(string(data)), "\n")
+		}
+
+		if status, err := client.PrepareComputer(ctx, dir, "desktop"); err != nil || !status.Available {
+			t.Fatalf("desktop prepare: %+v, %v", status, err)
+		}
+		status, err := client.PrepareComputer(ctx, dir, "browser")
+		if err != nil || !status.Available || status.Mode != "headless" || status.SharedDesktop {
+			t.Fatalf("browser prepare: %+v, %v", status, err)
+		}
+		if got := calls(); len(got) != 1 || !strings.HasPrefix(got[0], "set viewport 1280 720 --json") {
+			t.Fatalf("prepare commands: %q", got)
+		}
+		if status, err := client.InstallBrowser(ctx, dir); err != nil || !status.Available {
+			t.Fatalf("install: %+v, %v", status, err)
+		}
+		if got := calls(); !strings.HasPrefix(got[len(got)-1], "install --use-system-ca") {
+			t.Fatalf("install command: %q", got)
+		}
+		if _, err := client.SetBrowserMode(ctx, dir, "windowed"); code(err) != "EINVAL" {
+			t.Fatalf("invalid mode: %v", err)
+		}
+
+		if _, err := act(client, dir, "a", "browser", "agent_browser_wedge"); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.SettleComputer(ctx, dir, "browser"); code(err) != "COMPUTER_UNCERTAIN" {
+			t.Fatalf("settle with an unknown outcome: %v", err)
+		}
+		headless := calls()[0]
+		status, err = client.SetBrowserMode(ctx, dir, "headed")
+		if err != nil || !status.Available || status.Mode != "headed" || !status.SharedDesktop {
+			t.Fatalf("headed mode: %+v, %v", status, err)
+		}
+		if closed, err := os.ReadFile(filepath.Join(dir, "closed")); err != nil || len(closed) == 0 {
+			t.Fatalf("mode change did not restart the browser: %v", err)
+		}
+		if got := calls(); got[len(got)-1] == headless {
+			t.Fatalf("headed browser prepared like the headless one: %q", got)
+		}
+		if err := client.SettleComputer(ctx, dir, "browser"); err != nil {
+			t.Fatalf("settle after restart: %v", err)
+		}
+		if _, err := act(client, dir, "b", "browser", "agent_browser_click"); err != nil {
+			t.Fatalf("action after mode change: %v", err)
+		}
+		if err := client.SettleComputer(ctx, dir, "desktop"); err != nil {
+			t.Fatalf("desktop settle: %v", err)
+		}
+
+		broken := dial(map[string]*MCPConfig{
+			"browser": browser(map[string]string{"TEST_BROWSER_FAIL": "1"}),
+			"desktop": {Transport: "stdio", Command: filepath.Join(dir, "missing-driver")},
+		})
+		if status, err := broken.PrepareComputer(ctx, dir, "browser"); err != nil || status.Available || !strings.Contains(status.Error, "browser unavailable") {
+			t.Fatalf("failing browser prepare: %+v, %v", status, err)
+		}
+		if status, err := broken.PrepareComputer(ctx, dir, "desktop"); err != nil || status.Available || status.Error == "" {
+			t.Fatalf("missing desktop driver prepare: %+v, %v", status, err)
+		}
+		if status, err := broken.SetBrowserMode(ctx, dir, "headless"); err != nil || status.Available {
+			t.Fatalf("mode change whose browser does not prepare: %+v, %v", status, err)
+		}
+		if err := broken.SettleComputer(ctx, dir, "browser"); code(err) != "COMPUTER_UNCERTAIN" {
+			t.Fatalf("settle after an incomplete restart: %v", err)
+		}
+	})
+}
+
+func TestBrowserDaemonExecutable(t *testing.T) {
+	names := browserNativeNames()
+	root := t.TempDir()
+	bin := filepath.Join(root, "node_modules", "agent-browser", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(bin, "agent-browser.js")
+	// Both architectures: Node.js's can differ from the worker's.
+	x64, arm64 := filepath.Join(bin, names[0]), filepath.Join(bin, names[len(names)-1])
+	similar := filepath.Join(bin, names[0]+"-helper")
+	other := filepath.Join(root, names[0])
+	for _, path := range []string{launcher, x64, arm64, similar, other} {
+		if err := os.WriteFile(path, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, check := range []struct {
+		executable string
+		want       bool
+	}{{launcher, true}, {x64, true}, {arm64, true}, {similar, false}, {other, false}, {filepath.Join(bin, "node"), false}} {
+		if got := browserDaemonExecutable(check.executable, launcher); got != check.want {
+			t.Errorf("browserDaemonExecutable(%s) = %v", check.executable, got)
+		}
+	}
 }

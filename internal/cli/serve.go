@@ -173,7 +173,6 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	// Work services shared by the RPC layer and the product tools below.
 	memorySvc := memory.NewService(records, nil)
 	routineSvc := routines.NewService(records, nil)
-	routineSvc.Confirm = approvals.Request
 	skillSvc := skills.NewService(records, os.DirFS(filepath.Join(filesRoot, "skills")), catalog.Workspace)
 	skillSvc.UsePackageDir(filepath.Join(filesRoot, "skills"))
 	work := server.Work{Memory: memorySvc, Routines: routineSvc, Skills: skillSvc}
@@ -190,14 +189,25 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		if err := memory.Register(registry, memorySvc); err != nil {
 			return err
 		}
-		if err := delivery.Register(registry, delivery.NewService(delivery.Options{
+		deliverySvc := delivery.NewService(delivery.Options{
 			Store: records, Root: filesRoot,
 			Workspace: func(ctx context.Context, botID int64) (delivery.Workspace, error) {
 				target, dir, err := catalog.Workspace(ctx, botID)
 				return delivery.Workspace{Target: target, Dir: dir}, err
 			},
-		})); err != nil {
+		})
+		if err := delivery.Register(registry, deliverySvc); err != nil {
 			return err
+		}
+		routineSvc.Confirm = func(ctx context.Context, botID int64, request approval.Request) (bool, error) {
+			answer, err := approvals.Request(ctx, botID, request)
+			if err != nil {
+				return false, err
+			}
+			return answer.Allow, nil
+		}
+		routineSvc.Deliver = func(ctx context.Context, call tools.Call, text string) error {
+			return deliverySvc.Deliver(ctx, call, delivery.Message{Notice: &delivery.Notice{Text: text}})
 		}
 		runtime = agent.NewRuntime(bots, agent.RuntimeOptions{Engine: engine, Native: true,
 			Tools: registry, Approvals: approvals, Memory: memorySvc})
