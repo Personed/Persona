@@ -488,8 +488,10 @@ type ComputerStatus struct {
 	Error     string `json:"error,omitempty"`
 	// Mode is the browser's "headless" or "headed" mode.
 	Mode string `json:"mode,omitempty"`
-	// SharedDesktop is set when the headed browser shares desktop control.
-	SharedDesktop bool `json:"sharedDesktop,omitempty"`
+	// SharedDesktop reports whether the headed browser shares desktop control;
+	// headless reports false, which marks the browser's own control lane
+	// (browser-service.mjs sharedDesktop).
+	SharedDesktop bool `json:"sharedDesktop"`
 }
 
 func browserMode(dir string) string {
