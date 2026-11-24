@@ -515,7 +515,8 @@ test("sending paints the outgoing message before the network receipt", async ({
       )
       .toBe(1);
     const duration = await page.evaluate(
-      () => performance.getEntriesByName("send-paint")[0]!.duration,
+      () =>
+        performance.getEntriesByName("send-paint")[0]?.duration ?? Number.NaN,
     );
     console.log(
       `send paint with 320 history messages and 4x CPU: ${duration.toFixed(1)}ms`,

@@ -3938,9 +3938,7 @@ test("composer menu adds task materials, keeps drafts, and fits both themes", as
   await add.click();
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("menuitem", { name: "添加图片", exact: true }).click();
-  await (
-    await chooser
-  ).setFiles({
+  await (await chooser).setFiles({
     name: "tiny.png",
     mimeType: "image/png",
     buffer: png(1, 1),
