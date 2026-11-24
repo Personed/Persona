@@ -20,7 +20,9 @@ type view struct {
 	computerID  string
 	controller  bool // holds the control lease (takeover or manual)
 	lease       int64
-	taking      bool // a takeover request is being granted to this viewer
+	grant       chan struct{} // closed when a settling takeover ends (views.ts taking)
+	grantErr    error         // the settled takeover's failure, if any
+	taking      bool          // a takeover request is being granted to this viewer
 	requestID   string
 	cursorColor string
 	done        chan struct{}
@@ -163,14 +165,25 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 	}
 	switch envelope.Type {
 	case "take":
-		// Takeover: reserve this viewer's lease before the grant waits; a
-		// held lease is reused (views.ts take).
+		// A second take waits for the grant in flight (views.ts awaits
+		// view.taking); a held lease is reused.
+		if grant := session.grant; grant != nil {
+			<-grant
+			if session.grantErr != nil {
+				return session.grantErr
+			}
+		}
 		if session.lease != 0 {
 			return nil
 		}
+		session.grant = make(chan struct{})
 		lease := v.s.nextLease()
 		session.lease = lease
-		if err := v.s.takeover(ctx, session.service, session.botID, lease); err != nil {
+		err := v.s.takeover(ctx, session.service, session.botID, lease)
+		session.grantErr = err
+		close(session.grant)
+		session.grant = nil
+		if err != nil {
 			session.lease = 0
 			return err
 		}
@@ -183,6 +196,13 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 		session.controller = true
 		return nil
 	case "back":
+		// views.ts awaits a grant in flight before handing back.
+		if grant := session.grant; grant != nil {
+			<-grant
+			if session.grantErr != nil {
+				return session.grantErr
+			}
+		}
 		if session.lease == 0 {
 			return nil
 		}
@@ -216,6 +236,9 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 	if session.lease != 0 && ctl.lease != session.lease {
 		return rpc.NewError("CONFLICT", "这次接管已失效。")
 	}
+	if envelope.Type != "ack" && session.grant != nil {
+		return rpc.NewError("CONFLICT", "正在交接控制权。请等待。")
+	}
 	if envelope.Type != "ack" && session.lease == 0 {
 		return rpc.NewError("CONFLICT", "请先接管，再操作电脑。")
 	}
@@ -234,6 +257,10 @@ func (v *views) close(ctx context.Context, id string) {
 		return
 	}
 	session.closeOnce.Do(func() {
+		// views.ts close awaits a grant in flight before releasing.
+		if grant := session.grant; grant != nil {
+			<-grant
+		}
 		if session.lease != 0 {
 			v.s.release(session.service, session.botID, session.lease)
 			session.lease = 0

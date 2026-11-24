@@ -118,10 +118,23 @@ func (c *Catalog) TakeRequest(ctx context.Context, botID int64, requestID, viewI
 	if session.botID != botID || session.service != card.Takeover.Service {
 		return rpc.NewError("FORBIDDEN", "viewer 不属于该请求。")
 	}
+	// A grant already settling reports its real outcome, like views.ts take
+	// awaiting view.taking.
+	if grant := session.grant; grant != nil {
+		<-grant
+		if session.grantErr != nil {
+			return session.grantErr
+		}
+	}
 	if session.lease == 0 {
+		session.grant = make(chan struct{})
 		lease := c.svcs.nextLease()
 		session.lease = lease
-		if err := c.svcs.takeover(ctx, session.service, botID, lease); err != nil {
+		err := c.svcs.takeover(ctx, session.service, botID, lease)
+		session.grantErr = err
+		close(session.grant)
+		session.grant = nil
+		if err != nil {
 			session.lease = 0
 			return err
 		}
