@@ -3,7 +3,7 @@ package computers
 import (
 	"context"
 	"encoding/json"
-	"strconv"
+	"fmt"
 	"sync"
 	"time"
 
@@ -40,35 +40,62 @@ type views struct {
 
 	mu       sync.Mutex
 	sessions map[string]*view
-	seq      int64
 }
 
 func newViews(s *services) *views {
 	return &views{s: s, sessions: map[string]*view{}}
 }
 
-// frame is one computer.watch stream event to the client.
+// frame is one computer.watch stream event to the client: `ready` once with
+// the viewer id, then one `frame` event per screen image (computer.ts watch).
 type frame struct {
-	Type    string          `json:"type"` // opened, message, closed, error
-	ViewID  string          `json:"viewId,omitempty"`
-	Message json.RawMessage `json:"message,omitempty"`
-	Error   string          `json:"error,omitempty"`
+	Type  string          `json:"type"` // ready, frame
+	ID    string          `json:"id,omitempty"`
+	Frame json.RawMessage `json:"frame,omitempty"`
 }
 
-// open starts a viewer session: resolves the binding, reserves the worker's
-// view session and registers the viewer (views.ts open).
-func (v *views) open(ctx context.Context, botID int64, service, cursorColor string) (*view, []byte, error) {
+// newViewID is a UUIDv4, the shape the computer.input schema requires.
+func newViewID() string {
+	var b [16]byte
+	if _, err := randRead(b[:]); err != nil {
+		panic(err)
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// open starts a viewer session: resolves the binding, prepares the service so
+// a browser that cannot produce frames fails here, reserves the worker's view
+// session and registers the viewer (views.ts open).
+func (v *views) open(ctx context.Context, botID int64, service, cursorColor string) (*view, error) {
 	record, _, err := v.s.binding(ctx, botID, service)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	w, dir, err := v.s.workerFor(ctx, botID, service)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	v.mu.Lock()
-	v.seq++
-	id := strconv.FormatInt(v.seq, 10)
+	prepared, err := w.ComputerRequest(ctx, worker.ComputerInput{Action: "prepare", Service: service, Dir: dir})
+	var state struct {
+		Available bool    `json:"available"`
+		Error     *string `json:"error"`
+	}
+	if err == nil && len(prepared.Result) > 0 {
+		err = json.Unmarshal(prepared.Result, &state)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !state.Available {
+		message := "电脑服务不可用。"
+		if state.Error != nil {
+			message = *state.Error
+		}
+		return nil, errUnavailable(message)
+	}
+	id := newViewID()
 	session := &view{
 		id:          id,
 		botID:       botID,
@@ -77,17 +104,17 @@ func (v *views) open(ctx context.Context, botID int64, service, cursorColor stri
 		cursorColor: cursorColor,
 		done:        make(chan struct{}),
 	}
+	v.mu.Lock()
 	v.sessions[id] = session
 	v.mu.Unlock()
-	result, err := w.ComputerRequest(ctx, worker.ComputerInput{
+	if _, err := w.ComputerRequest(ctx, worker.ComputerInput{
 		Action: "view", View: "open", Service: service, Dir: dir,
 		ViewID: id, CursorColor: cursorColor,
-	})
-	if err != nil {
+	}); err != nil {
 		v.remove(session)
-		return nil, nil, err
+		return nil, err
 	}
-	return session, result.Result, nil
+	return session, nil
 }
 
 // next waits for the worker's next frame batch (views.ts next).

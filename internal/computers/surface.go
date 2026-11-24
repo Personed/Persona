@@ -360,12 +360,12 @@ func (c *Catalog) Watch(ctx context.Context, botID int64, service string, emit f
 	if service != "browser" && service != "desktop" {
 		return rpc.NewError("BAD_REQUEST", "服务无效。")
 	}
-	session, first, err := c.vw.open(ctx, botID, service, "")
+	session, err := c.vw.open(ctx, botID, service, "")
 	if err != nil {
 		return err
 	}
 	defer c.vw.close(context.Background(), session.id)
-	if err := emit(frame{Type: "opened", ViewID: session.id, Message: first}); err != nil {
+	if err := emit(frame{Type: "ready", ID: session.id}); err != nil {
 		return err
 	}
 	for {
@@ -374,10 +374,10 @@ func (c *Catalog) Watch(ctx context.Context, botID int64, service string, emit f
 			return err
 		}
 		if batch.Closed {
-			return emit(frame{Type: "closed", ViewID: session.id})
+			return nil
 		}
 		for _, message := range batch.Messages {
-			if err := emit(frame{Type: "message", ViewID: session.id, Message: message}); err != nil {
+			if err := emit(frame{Type: "frame", Frame: message}); err != nil {
 				return err
 			}
 		}
