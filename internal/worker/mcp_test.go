@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -132,6 +133,69 @@ func TestMCPStdio(t *testing.T) {
 			}
 			if _, err := client.MCP(ctx, MCPInput{Action: "inspect", Config: &MCPConfig{Transport: "stdio", Command: "persona-missing-mcp"}}, nil); code(err) != "ENOENT" {
 				t.Fatalf("missing program: %v", err)
+			}
+		})
+	}
+}
+
+func TestMCPNativeCatalog(t *testing.T) {
+	clients, _ := mcpClients(t)
+	for name, client := range clients {
+		t.Run(name, func(t *testing.T) {
+			cwd := t.TempDir()
+			if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+				cwd = resolved
+			}
+			result, err := client.MCP(context.Background(), MCPInput{
+				Action: "native",
+				Config: &MCPConfig{Provider: "pi", Command: executable(t)},
+				Cwd:    cwd,
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Items) != 2 || result.Items[0].Name != "docs" || result.Items[0].Source != cwd ||
+				result.Items[0].Enabled || result.Items[0].Status != "disabled" ||
+				result.Items[1].Name != "local" || result.Items[1].Enabled != true {
+				t.Fatalf("native items = %+v", result.Items)
+			}
+			if result.Inheritance != "native" || !result.Readonly {
+				t.Fatalf("native catalog flags = inheritance %q, readonly %t", result.Inheritance, result.Readonly)
+			}
+		})
+	}
+}
+
+func TestParseNativeCatalogText(t *testing.T) {
+	tests := []struct {
+		provider string
+		output   string
+		want     []MCPNativeItem
+	}{
+		{
+			provider: "claude",
+			output:   "docs: connected\npersona: connected\n",
+			want: []MCPNativeItem{
+				{Name: "docs", Source: "claude 用户/项目配置", Enabled: true, Status: "unknown"},
+			},
+		},
+		{
+			provider: "opencode",
+			output:   "\x1b[32m● docs connected\x1b[0m\n○ local disabled\npersona connected\n",
+			want: []MCPNativeItem{
+				{Name: "docs", Source: "opencode 用户/项目配置", Enabled: true, Status: "connected"},
+				{Name: "local", Source: "opencode 用户/项目配置", Enabled: false, Status: "disabled"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.provider, func(t *testing.T) {
+			items, err := parseNativeCatalog(test.provider, false, test.output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fmt.Sprint(items) != fmt.Sprint(test.want) {
+				t.Fatalf("items = %+v, want %+v", items, test.want)
 			}
 		})
 	}

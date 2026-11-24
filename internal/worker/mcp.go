@@ -20,6 +20,7 @@ import (
 
 // MCPConfig is a saved MCP connection: a stdio program or an HTTP endpoint.
 type MCPConfig struct {
+	Provider  string            `json:"provider,omitempty"`
 	Transport string            `json:"transport"`
 	Command   string            `json:"command,omitempty"`
 	Args      []string          `json:"args,omitempty"`
@@ -29,11 +30,13 @@ type MCPConfig struct {
 }
 
 // MCPInput is one managed MCP operation, in the shape the TypeScript worker
-// accepted: inspect, connect, request, disconnect, authorize or complete.
+// accepted: inspect, connect, request, disconnect, authorize, complete or
+// native. Config holds the connection config or native Harness config.
 type MCPInput struct {
 	Action            string          `json:"action"`
 	ID                string          `json:"id,omitempty"`
 	Config            *MCPConfig      `json:"config,omitempty"`
+	Cwd               string          `json:"cwd,omitempty"`
 	OAuth             *OAuthState     `json:"oauth,omitempty"`
 	RedirectURL       string          `json:"redirectUrl,omitempty"`
 	State             string          `json:"state,omitempty"`
@@ -43,13 +46,25 @@ type MCPInput struct {
 }
 
 // MCPResult answers an MCPInput. OAuth is the connection's OAuth state after
-// the operation, which the service stores again.
+// the operation, which the service stores again. Items, Inheritance and
+// Readonly answer a "native" operation.
 type MCPResult struct {
 	Capabilities     *mcp.ServerCapabilities `json:"capabilities,omitempty"`
 	Tools            []*mcp.Tool             `json:"tools"`
 	Result           json.RawMessage         `json:"result,omitempty"`
 	AuthorizationURL string                  `json:"authorizationUrl,omitempty"`
 	OAuth            *OAuthState             `json:"oauth"`
+	Items            []MCPNativeItem         `json:"items,omitempty"`
+	Inheritance      string                  `json:"inheritance,omitempty"`
+	Readonly         bool                    `json:"readonly,omitempty"`
+}
+
+// MCPNativeItem is one connection the Bot's native Harness configures itself.
+type MCPNativeItem struct {
+	Name    string `json:"name"`
+	Source  string `json:"source"`
+	Enabled bool   `json:"enabled"`
+	Status  string `json:"status"`
 }
 
 // MCPProgress is a progress notification for a forwarded request.
@@ -94,6 +109,8 @@ func (s *server) mcp(ctx context.Context, id uint32, input MCPInput) (*MCPResult
 
 func (s *server) mcpOperation(ctx context.Context, id uint32, input MCPInput) (*MCPResult, error) {
 	switch input.Action {
+	case "native":
+		return nativeMCP(ctx, input.Config, input.Cwd)
 	case "authorize", "complete":
 		return authorizeMCP(ctx, input)
 	case "request":

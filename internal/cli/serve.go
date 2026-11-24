@@ -242,6 +242,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	server.RegisterWork(procedures, bots, runtime, work)
 	connections := mcp.NewService(records, credentials, nil)
 	connections.Runner = catalog.MCPRunner()
+	connections.Catalog = catalog.NativeCatalog
 	service.MCP = connections
 	service.Files = server.AgentFiles(bots.Files)
 	if !*headless {
