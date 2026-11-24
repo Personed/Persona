@@ -218,7 +218,13 @@ func (r *nativeTools) dispatch(ctx context.Context, service string, call tools.C
 			return r.runBrowserSteps(ctx, call)
 		}
 	}
-	return r.journaled(ctx, service, call, call.Name[len(service)+1:], call.Input, call.CallID)
+	// Only browser names carry the service prefix; desktop tools keep their
+	// native names, so stripping a prefix there would corrupt the call.
+	name := call.Name
+	if service != "desktop" {
+		name = call.Name[len(service)+1:]
+	}
+	return r.journaled(ctx, service, call, name, call.Input, call.CallID)
 }
 
 // journaled sends one native tool call through the worker's journaled call op.
@@ -308,6 +314,16 @@ func (r *nativeTools) runBrowserSteps(ctx context.Context, call tools.Call) (too
 	for _, definition := range native {
 		available[definition.Name] = true
 	}
+	// Validate every step's action before sending anything, so a malformed
+	// batch never leaves delivered steps concealed behind a "no action" error.
+	for _, step := range input.Steps {
+		action, _ := step["action"].(string)
+		if !available["browser_agent_browser_"+action] {
+			return tools.Result{IsError: true, Content: []tools.Content{{
+				Type: "text", Text: fmt.Sprintf("Browser action agent_browser_%s is unavailable. No action was sent.", action),
+			}}}, nil
+		}
+	}
 	var results []tools.Result
 	var content []tools.Content
 	failed := false
@@ -315,11 +331,6 @@ func (r *nativeTools) runBrowserSteps(ctx context.Context, call tools.Call) (too
 		action, _ := step["action"].(string)
 		delete(step, "action")
 		name := "agent_browser_" + action
-		if !available["browser_"+name] {
-			return tools.Result{IsError: true, Content: []tools.Content{{
-				Type: "text", Text: fmt.Sprintf("Browser action %s is unavailable. No action was sent.", name),
-			}}}, nil
-		}
 		result, err := r.journaled(ctx, "browser", call, name, step, fmt.Sprintf("%s:%d", call.CallID, index))
 		if err != nil {
 			failed = true
