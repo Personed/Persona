@@ -163,19 +163,38 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 	}
 	switch envelope.Type {
 	case "take":
-		// Takeover: reserve this viewer's lease before the grant waits.
+		// Takeover: reserve this viewer's lease before the grant waits; a
+		// held lease is reused (views.ts take).
+		if session.lease != 0 {
+			return nil
+		}
 		lease, err := v.s.takeover(ctx, session.service, session.botID)
 		if err != nil {
 			return err
 		}
 		session.lease = lease
 		session.controller = true
+		return nil
 	case "back":
-		if session.lease != 0 {
-			v.s.release(session.service, session.botID, session.lease)
-			session.lease = 0
-			session.controller = false
+		if session.lease == 0 {
+			return nil
 		}
+		w, dir, err := v.s.workerFor(ctx, session.botID, session.service)
+		if err != nil {
+			return err
+		}
+		// The worker clears a held pointer while the lease still stands;
+		// views.ts sends "back" before releasing.
+		if _, err := w.ComputerRequest(ctx, worker.ComputerInput{
+			Action: "view", View: "send", Service: session.service, Dir: dir,
+			ViewID: id, Message: message,
+		}); err != nil {
+			return err
+		}
+		v.s.release(session.service, session.botID, session.lease)
+		session.lease = 0
+		session.controller = false
+		return nil
 	}
 	w, dir, err := v.s.workerFor(ctx, session.botID, session.service)
 	if err != nil {
