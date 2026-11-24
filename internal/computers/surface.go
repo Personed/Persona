@@ -384,7 +384,8 @@ func (c *Catalog) Watch(ctx context.Context, botID int64, service string, emit f
 	}
 }
 
-// Input sends a viewer action (computer.input), views.ts action().
+// Input sends a viewer action (computer.input), views.ts action(), and
+// reports whether the viewer holds control, as views.ts returns.
 func (c *Catalog) Input(ctx context.Context, botID int64, view string, action json.RawMessage) (any, error) {
 	session := c.vw.get(view)
 	if session == nil {
@@ -396,7 +397,10 @@ func (c *Catalog) Input(ctx context.Context, botID int64, view string, action js
 	if err := c.vw.action(ctx, view, action); err != nil {
 		return nil, err
 	}
-	return map[string]any{"ok": true}, nil
+	session.mu.Lock()
+	controlling := session.lease != 0
+	session.mu.Unlock()
+	return map[string]any{"controlling": controlling}, nil
 }
 
 // AssistantKey stores the provider key (computer.assistantKey).
