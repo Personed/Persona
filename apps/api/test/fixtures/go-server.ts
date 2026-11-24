@@ -452,7 +452,7 @@ if (hosting)
     config,
     JSON.stringify({
       host: "127.0.0.1",
-      port: Number(process.argv[3] ?? 0) || (await freePort()),
+      port: await freePort(),
       dataDir,
     }),
   );
@@ -460,8 +460,10 @@ const args = [
   "serve",
   "-host",
   "127.0.0.1",
+  // Serve binds an ephemeral port; the requested port belongs to the proxy so
+  // a restart reusing it never collides with a serve on the same number.
   "-port",
-  process.argv[3] ?? "0",
+  "0",
   "-data",
   dataDir,
   "-static",
@@ -486,11 +488,9 @@ const options = {
     PI_CODING_AGENT_DIR: agentDir,
     ...(hosting ? { PERSONA_CONFIG: config } : {}),
     PERSONA_FAUX_NO_MESSAGE: noMessage,
-    PERSONA_COMPUTER_DRIVER_BROWSER: JSON.stringify({
-      transport: "stdio",
-      command: fileURLToPath(new URL("./browser-driver.mjs", import.meta.url)),
-      env: { PERSONA_BROWSER_METRICS_FILE: metricsFile },
-    }),
+    // The Go service records each product computer call here, as the
+    // TypeScript computer.tools.invoke tap did in the fixture driver.
+    PERSONA_BROWSER_METRICS_FILE: metricsFile,
     PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
   },
   stdio: ["pipe", "pipe", "pipe"],
@@ -738,9 +738,8 @@ process.on("message", async (message) => {
     const open = async () => {
       const code = await new Promise<number>((resolve) => {
         const child = spawn(
-          process.execPath,
+          "agent-browser",
           [
-            fileURLToPath(new URL("./browser-driver.mjs", import.meta.url)),
             "open",
             `http://127.0.0.1:${fixturePort}/takeover-fixture`,
             "--json",
