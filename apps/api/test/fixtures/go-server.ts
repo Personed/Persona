@@ -41,7 +41,10 @@ type Reply = {
 let scripted: Reply[] = [];
 let gate: PromiseWithResolvers<void> | undefined;
 let toolGate: PromiseWithResolvers<void> | undefined;
-const modelStarted = Promise.withResolvers<void>();
+// True while a fixture tool call that already waited at /tool still owes its
+// tool result to a model request, which then must not take the next gate.
+let toolReported = false;
+let modelStarted = Promise.withResolvers<void>();
 
 function lastUserText(body: {
   messages?: { role: string; content: unknown }[];
@@ -139,14 +142,24 @@ async function complete(
   const model = String(body.model ?? "");
   const aborted = new AbortController();
   response.on("close", () => aborted.abort());
-  // Pi runs tools itself, so a gated tool holds the request that reports its result.
+  // Pi runs tools itself, so a gated tool holds the request that reports its
+  // result — except the fixture tool, which already waits at /tool. A gate
+  // armed for the next tool call must not be stolen by the request reporting
+  // a tool that was already held.
   const afterTool =
     (body.messages as { role: string }[] | undefined)?.at(-1)?.role === "tool";
   const next = scripted.shift();
-  // Like web-server.ts's faux answer factory, gate holds only the unscripted answer.
-  const waiting = afterTool && toolGate ? toolGate : next ? undefined : gate;
-  if (waiting === toolGate) toolGate = undefined;
-  else if (waiting) gate = undefined;
+  let waiting: PromiseWithResolvers<void> | undefined;
+  if (afterTool && toolReported) {
+    toolReported = false;
+    waiting = next ? undefined : gate;
+  } else if (afterTool && toolGate) {
+    waiting = toolGate;
+    toolGate = undefined;
+  } else {
+    waiting = next ? undefined : gate;
+  }
+  if (waiting && waiting === gate) gate = undefined;
   if (waiting) {
     aborted.signal.addEventListener("abort", () => waiting.resolve(), {
       once: true,
@@ -228,6 +241,21 @@ async function complete(
   response.end();
 }
 
+// The fixture tool's Pi extension asks here before it returns, so a gated
+// tool stays running the way web-server.ts's test tool does.
+async function runTool(response: ServerResponse) {
+  // Each "gate-tool" arms one hold for the next tool call. Mark the call's
+  // result outstanding so the request that reports it skips the tool gate.
+  const waiting = toolGate;
+  toolGate = undefined;
+  toolReported = true;
+  if (waiting) {
+    response.on("close", () => waiting.resolve());
+    await waiting.promise;
+  }
+  response.end();
+}
+
 const ollama = createServer((request, response) => {
   let raw = "";
   request.on("data", (part) => {
@@ -252,6 +280,8 @@ const ollama = createServer((request, response) => {
       });
     if (request.url === "/v1/chat/completions" && request.method === "POST")
       return void complete(JSON.parse(raw || "{}"), response);
+    if (request.url === "/tool" && request.method === "POST")
+      return void runTool(response);
     response.statusCode = 404;
     response.end();
   });
@@ -305,6 +335,32 @@ await writeFile(
     },
   }),
 );
+// Pi loads extensions from its agent directory. This one stands in for
+// web-server.ts's test tool: it returns the supplied text after the fixture
+// releases a gated tool.
+const toolName = "fixture_echo";
+await mkdir(join(agentDir, "extensions"), { recursive: true });
+await writeFile(
+  join(agentDir, "extensions", "fixture-tool.js"),
+  `export default function (pi) {
+  pi.registerTool({
+    name: ${JSON.stringify(toolName)},
+    label: ${JSON.stringify(toolName)},
+    description: "Return the supplied text.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string" }, fail: { type: "boolean" } },
+      required: ["text"],
+    },
+    async execute(_id, params, signal) {
+      await fetch(${JSON.stringify(`http://127.0.0.1:${ollamaPort}/tool`)}, { method: "POST", signal });
+      if (params.fail) throw new Error(params.text);
+      return { content: [{ type: "text", text: params.text }], details: {} };
+    },
+  });
+}
+`,
+);
 const bin = join(root, "packages", "agent", "node_modules", ".bin");
 const dataDir = join(directory, "go-data");
 // web-server.ts's "hosting" mode: a hosting config puts serve behind device
@@ -335,9 +391,12 @@ const args = [
   "-pi-extension",
   join(root, "packages", "agent", "src", "harness", "pi-tools.mjs"),
   // serve always runs Pi with --no-extensions, so settings.json extensions
-  // never load; the faux failure stream must be an explicit extension.
+  // never load; the faux failure stream and the fixture tool must be explicit
+  // extensions.
   "-pi-extension",
   fileURLToPath(new URL("./pi-faux-failure.mjs", import.meta.url)),
+  "-pi-extension",
+  join(agentDir, "extensions", "fixture-tool.js"),
 ];
 const options = {
   // Outside the repository so persona.config.json does not select hosted mode.
@@ -415,8 +474,7 @@ const pairing = hosting
       }
     ).code
   : undefined;
-// Pi's own ls stands in for web-server.ts's gated test tool.
-process.send?.({ type: "ready", port, toolName: "ls", pairing });
+process.send?.({ type: "ready", port, toolName, pairing });
 
 async function hosted(path: string, json: unknown) {
   const response = await fetch(`${origin}/hosting/${path}`, {
@@ -491,6 +549,8 @@ async function configure() {
 let release: (() => void) | undefined;
 process.on("message", async (message) => {
   if (message === "gate") {
+    // wait-model then waits for the request this gate holds.
+    modelStarted = Promise.withResolvers<void>();
     gate = Promise.withResolvers<void>();
     release = gate.resolve;
     process.send?.({ type: "gated" });
