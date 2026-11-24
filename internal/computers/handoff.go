@@ -120,32 +120,44 @@ func (c *Catalog) TakeRequest(ctx context.Context, botID int64, requestID, viewI
 	}
 	// A grant already settling reports its real outcome, like views.ts take
 	// awaiting view.taking.
-	if grant := session.grant; grant != nil {
-		<-grant
-		if session.grantErr != nil {
-			return session.grantErr
+	session.mu.Lock()
+	for session.grant != nil {
+		grant := session.grant
+		session.mu.Unlock()
+		<-grant.done
+		session.mu.Lock()
+		if grant.err != nil {
+			session.mu.Unlock()
+			return grant.err
 		}
 	}
 	if session.lease == 0 {
-		session.grant = make(chan struct{})
+		grant := &pendingGrant{done: make(chan struct{})}
+		session.grant = grant
 		lease := c.svcs.nextLease()
 		session.lease = lease
+		session.mu.Unlock()
 		err := c.svcs.takeover(ctx, session.service, botID, lease)
-		session.grantErr = err
-		close(session.grant)
+		session.mu.Lock()
+		grant.err = err
+		close(grant.done)
 		session.grant = nil
 		if err != nil {
 			session.lease = 0
+			session.mu.Unlock()
 			return err
 		}
+		session.mu.Unlock()
 		// A viewer that closed during the grant released nothing it never
 		// saw; give the claimed lane back.
 		if c.vw.get(viewID) == nil {
 			c.svcs.release(session.service, botID, lease)
 			return rpc.NewError("GONE", "画面连接已断开。")
 		}
+		session.mu.Lock()
 		session.controller = true
 	}
+	session.mu.Unlock()
 	// Concurrent requests from the owning viewer reuse the live grant.
 	session.taking = true
 	session.requestID = requestID

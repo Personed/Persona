@@ -18,15 +18,22 @@ type view struct {
 	botID       int64
 	service     string
 	computerID  string
-	controller  bool // holds the control lease (takeover or manual)
+	mu          sync.Mutex // grant lifecycle, like views.ts's event loop
+	controller  bool       // holds the control lease (takeover or manual)
 	lease       int64
-	grant       chan struct{} // closed when a settling takeover ends (views.ts taking)
-	grantErr    error         // the settled takeover's failure, if any
+	grant       *pendingGrant // non-nil while a takeover is settling (views.ts taking)
 	taking      bool          // a takeover request is being granted to this viewer
 	requestID   string
 	cursorColor string
 	done        chan struct{}
 	closeOnce   sync.Once
+}
+
+// pendingGrant is a takeover still settling (views.ts's view.taking promise):
+// done closes when it ends and err is its outcome.
+type pendingGrant struct {
+	done chan struct{}
+	err  error
 }
 
 // frames is the worker's view stream reply shape.
@@ -165,28 +172,39 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 	}
 	switch envelope.Type {
 	case "take":
-		// A second take waits for the grant in flight (views.ts awaits
-		// view.taking); a held lease is reused.
-		if grant := session.grant; grant != nil {
-			<-grant
-			if session.grantErr != nil {
-				return session.grantErr
+		// A second take waits for the grant in flight and shares its
+		// outcome (views.ts awaits view.taking); a held lease is reused.
+		session.mu.Lock()
+		for session.grant != nil {
+			grant := session.grant
+			session.mu.Unlock()
+			<-grant.done
+			session.mu.Lock()
+			if err := grant.err; err != nil {
+				session.mu.Unlock()
+				return err
 			}
 		}
 		if session.lease != 0 {
+			session.mu.Unlock()
 			return nil
 		}
-		session.grant = make(chan struct{})
+		grant := &pendingGrant{done: make(chan struct{})}
+		session.grant = grant
 		lease := v.s.nextLease()
 		session.lease = lease
+		session.mu.Unlock()
 		err := v.s.takeover(ctx, session.service, session.botID, lease)
-		session.grantErr = err
-		close(session.grant)
+		session.mu.Lock()
+		grant.err = err
+		close(grant.done)
 		session.grant = nil
 		if err != nil {
 			session.lease = 0
+			session.mu.Unlock()
 			return err
 		}
+		session.mu.Unlock()
 		// A viewer that closed during the grant released nothing it never
 		// saw; give the claimed lane back (views.ts sessions.has).
 		if v.get(id) == nil {
@@ -197,10 +215,13 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 		return nil
 	case "back":
 		// views.ts awaits a grant in flight before handing back.
-		if grant := session.grant; grant != nil {
-			<-grant
-			if session.grantErr != nil {
-				return session.grantErr
+		session.mu.Lock()
+		grant := session.grant
+		session.mu.Unlock()
+		if grant != nil {
+			<-grant.done
+			if grant.err != nil {
+				return grant.err
 			}
 		}
 		if session.lease == 0 {
@@ -229,17 +250,20 @@ func (v *views) action(ctx context.Context, id string, message json.RawMessage) 
 	}
 	// Input requires this viewer's granted lease, as viewAccess in
 	// services.ts; a viewer never drives a Bot-owned computer.
+	session.mu.Lock()
+	lease, granting := session.lease, session.grant != nil
+	session.mu.Unlock()
 	ctl := v.s.controlOf(session.service, session.botID)
-	if ctl.lease != 0 && ctl.lease != session.lease {
+	if ctl.lease != 0 && ctl.lease != lease {
 		return rpc.NewError("CONFLICT", "用户正在另一窗口接管。请等待交还控制权。")
 	}
-	if session.lease != 0 && ctl.lease != session.lease {
+	if lease != 0 && ctl.lease != lease {
 		return rpc.NewError("CONFLICT", "这次接管已失效。")
 	}
-	if envelope.Type != "ack" && session.grant != nil {
+	if envelope.Type != "ack" && granting {
 		return rpc.NewError("CONFLICT", "正在交接控制权。请等待。")
 	}
-	if envelope.Type != "ack" && session.lease == 0 {
+	if envelope.Type != "ack" && lease == 0 {
 		return rpc.NewError("CONFLICT", "请先接管，再操作电脑。")
 	}
 	_, err = w.ComputerRequest(ctx, worker.ComputerInput{
@@ -258,13 +282,18 @@ func (v *views) close(ctx context.Context, id string) {
 	}
 	session.closeOnce.Do(func() {
 		// views.ts close awaits a grant in flight before releasing.
-		if grant := session.grant; grant != nil {
-			<-grant
+		session.mu.Lock()
+		grant := session.grant
+		session.mu.Unlock()
+		if grant != nil {
+			<-grant.done
 		}
+		session.mu.Lock()
 		if session.lease != 0 {
 			v.s.release(session.service, session.botID, session.lease)
 			session.lease = 0
 		}
+		session.mu.Unlock()
 		v.remove(session)
 		close(session.done)
 		if w, dir, err := v.s.workerFor(ctx, session.botID, session.service); err == nil {
